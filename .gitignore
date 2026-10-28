@@ -1,0 +1,52 @@
+# --- Private data: never commit (see docs/privacy.md) ---
+/data/
+/sessions/
+/reports/*
+!/reports/examples/
+*.sqlite
+*.sqlite3
+*.db
+*.db-wal
+*.db-shm
+*.ndjson
+!/fixtures/**/*.ndjson
+*.fits
+*.fit
+*.fts
+*.xisf
+*.heic
+*.HEIC
+*.jpg
+*.jpeg
+*.JPG
+*.png
+!/docs/images/**
+*.mov
+*.MOV
+*.local.*
+site.toml
+Local.xcconfig
+*.mobileprovision
+*.p12
+*.cer
+.env
+.env.*
+
+# Source documents (converted to docs/*.md)
+*.docx
+
+# --- Rust ---
+/rust/target/
+target/
+
+# --- Xcode / Swift ---
+DerivedData/
+xcuserdata/
+*.xcuserstate
+.build/
+.swiftpm/
+
+# --- OS / editors ---
+.DS_Store
+.vscode/
+.idea/

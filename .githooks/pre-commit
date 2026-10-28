@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Run the privacy check on staged files. Enable with: git config core.hooksPath .githooks
+set -euo pipefail
+files=()
+while IFS= read -r -d '' f; do files+=("$f"); done < <(git diff --cached --name-only --diff-filter=ACMR -z)
+[ "${#files[@]}" -eq 0 ] && exit 0
+exec "$(git rev-parse --show-toplevel)/scripts/privacy-check.sh" "${files[@]}"

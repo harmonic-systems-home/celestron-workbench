@@ -1,0 +1,15 @@
+name: privacy
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  privacy-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install exiftool
+        run: sudo apt-get update && sudo apt-get install -y libimage-exiftool-perl
+      - name: Scan tracked files for private data
+        run: scripts/privacy-check.sh
