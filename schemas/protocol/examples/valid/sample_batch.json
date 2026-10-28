@@ -1,0 +1,24 @@
+{
+  "type": "sample_batch",
+  "protocol_version": 1,
+  "session_id": "11111111-1111-4111-8111-111111111111",
+  "device_id": "22222222-2222-4222-8222-222222222222",
+  "first_seq": 0,
+  "last_seq": 3,
+  "samples": [
+    {
+      "stream": "device_motion",
+      "seq": 0,
+      "t_ns": 512000000000,
+      "attitude": { "w": 1.0, "x": 0.0, "y": 0.0, "z": 0.0 },
+      "rotation_rate": [0.0001, -0.0002, 0.00005],
+      "gravity": [0.0, 0.0, -9.80665],
+      "user_accel": [0.001, 0.0, -0.002],
+      "magnetic_field_ut": null,
+      "magnetic_accuracy": null
+    },
+    { "stream": "gyro", "seq": 1, "t_ns": 512002000000, "rotation_rate": [0.0012, -0.0021, 0.0004] },
+    { "stream": "accel", "seq": 2, "t_ns": 512004000000, "accel": [0.012, -0.004, -9.811] },
+    { "stream": "magnetometer", "seq": 3, "t_ns": 512006000000, "magnetic_field_ut": [21.5, -4.2, -38.9] }
+  ]
+}

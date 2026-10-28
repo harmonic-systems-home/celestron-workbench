@@ -4,13 +4,25 @@ Diagnostics for Celestron computerized telescope mounts, using an iPhone's motio
 
 Developed on a NexStar Evolution 8 EdgeHD with StarSense, an iPhone 17 Pro Max and a MacBook. The mount-specific code sits behind an adapter, so the rest of the system doesn't depend on one particular mount.
 
-> **Status:** planning. No code yet. See [docs/plan.md](docs/plan.md).
+> **Status:** M0 foundation. Protocol schema, database schema, decision records and CI are in place; no hardware code yet. See [docs/plan.md](docs/plan.md).
 
 ## What it does
 
 1. **Bench characterization** (Phase 1). An iOS logger (Swift, Core Motion) streams timestamped motion samples to a Mac recorder (Rust, SQLite). Reproducible reports measure noise, drift, timing and known rotations of the phone and its cradle before it goes near a telescope.
 2. **Indoor mount diagnostics** (Phase 2). Short, low-speed, single-axis commands run behind a safety state machine with interlocks. The phone measures onset, rate, settling, reversal and backlash.
 3. **Optical truth** (Phase 3, optional). Plate solves provide an absolute sky reference. ASIAIR data can be imported, but ASIAIR is never a safety dependency.
+
+## Repository layout
+
+| Path | Contents |
+|---|---|
+| [docs/plan.md](docs/plan.md) | The build specification |
+| [docs/adr/](docs/adr/) | Architecture decisions: time, frames, storage, transport, mount safety |
+| [docs/building.md](docs/building.md) | Build and test instructions |
+| [docs/assumptions.md](docs/assumptions.md) | What still has to be verified on real hardware |
+| [schemas/](schemas/) | JSON Schema for the phone–Mac protocol, shared examples, SQL migrations |
+| [rust/](rust/) | Mac side: `protocol`, `storage`, `mount-core` (state machine only), `cli` (`cwb`) |
+| [ios/ImuLogger/](ios/ImuLogger/) | Phone side: `ImuLoggerCore` Swift package; the app target arrives in M1 |
 
 ## Safety
 

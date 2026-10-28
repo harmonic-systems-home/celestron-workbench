@@ -1,0 +1,328 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/harmonic-systems-home/celestron-workbench/schemas/protocol/v1.schema.json",
+  "title": "Celestron Workbench phone-Mac protocol, version 1",
+  "description": "One JSON object per frame (ADR 0004). Units and frames per ADR 0002; timestamps per ADR 0001.",
+  "oneOf": [
+    { "$ref": "#/$defs/hello" },
+    { "$ref": "#/$defs/hello_ack" },
+    { "$ref": "#/$defs/sample_batch" },
+    { "$ref": "#/$defs/batch_ack" },
+    { "$ref": "#/$defs/clock_ping" },
+    { "$ref": "#/$defs/clock_pong" },
+    { "$ref": "#/$defs/clock_result" },
+    { "$ref": "#/$defs/marker" },
+    { "$ref": "#/$defs/event" },
+    { "$ref": "#/$defs/error" },
+    { "$ref": "#/$defs/bye" }
+  ],
+  "$defs": {
+    "protocol_version": { "const": 1 },
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "ns": {
+      "description": "Integer nanoseconds in the sender's monotonic clock domain.",
+      "type": "integer"
+    },
+    "seq": { "type": "integer", "minimum": 0 },
+    "vec3": {
+      "description": "[x, y, z] in the phone body frame.",
+      "type": "array",
+      "items": { "type": "number" },
+      "minItems": 3,
+      "maxItems": 3
+    },
+    "quaternion": {
+      "description": "Hamilton unit quaternion, w scalar. Attitude rotates phone-body vectors into the reference frame.",
+      "type": "object",
+      "properties": {
+        "w": { "type": "number" },
+        "x": { "type": "number" },
+        "y": { "type": "number" },
+        "z": { "type": "number" }
+      },
+      "required": ["w", "x", "y", "z"],
+      "additionalProperties": false
+    },
+    "stream": { "enum": ["device_motion", "gyro", "accel", "magnetometer"] },
+    "magnetic_accuracy": { "enum": ["uncalibrated", "low", "medium", "high"] },
+    "attitude_reference_frame": {
+      "enum": [
+        "x_arbitrary_z_vertical",
+        "x_arbitrary_corrected_z_vertical",
+        "x_magnetic_north_z_vertical",
+        "x_true_north_z_vertical"
+      ]
+    },
+
+    "hello": {
+      "description": "Phone to Mac, first message on every connection.",
+      "type": "object",
+      "properties": {
+        "type": { "const": "hello" },
+        "protocol_version": { "$ref": "#/$defs/protocol_version" },
+        "session_id": { "$ref": "#/$defs/uuid" },
+        "device": {
+          "type": "object",
+          "properties": {
+            "device_id": { "$ref": "#/$defs/uuid", "description": "Random UUID generated once by the app. Not a hardware identifier." },
+            "vendor": { "type": "string" },
+            "model": { "type": "string" },
+            "os_version": { "type": "string" },
+            "app_version": { "type": "string" },
+            "boot_id": { "$ref": "#/$defs/uuid", "description": "Changes whenever the phone monotonic clock domain changes." }
+          },
+          "required": ["device_id", "vendor", "model", "os_version", "app_version", "boot_id"],
+          "additionalProperties": false
+        },
+        "sensor_availability": {
+          "type": "object",
+          "properties": {
+            "device_motion": { "type": "boolean" },
+            "gyro": { "type": "boolean" },
+            "accel": { "type": "boolean" },
+            "magnetometer": { "type": "boolean" }
+          },
+          "required": ["device_motion", "gyro", "accel", "magnetometer"],
+          "additionalProperties": false
+        },
+        "streams": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/stream" },
+          "uniqueItems": true
+        },
+        "attitude_reference_frame": { "$ref": "#/$defs/attitude_reference_frame" },
+        "requested_interval_s": { "type": "number", "exclusiveMinimum": 0 },
+        "accel_g0_m_s2": { "const": 9.80665 }
+      },
+      "required": [
+        "type", "protocol_version", "session_id", "device", "sensor_availability",
+        "streams", "attitude_reference_frame", "requested_interval_s", "accel_g0_m_s2"
+      ],
+      "additionalProperties": false
+    },
+
+    "hello_ack": {
+      "description": "Mac to phone. highest_contiguous_seq is null when nothing is stored yet; the phone resends everything after it.",
+      "type": "object",
+      "properties": {
+        "type": { "const": "hello_ack" },
+        "protocol_version": { "$ref": "#/$defs/protocol_version" },
+        "session_id": { "$ref": "#/$defs/uuid" },
+        "accepted": { "type": "boolean" },
+        "highest_contiguous_seq": { "oneOf": [{ "$ref": "#/$defs/seq" }, { "type": "null" }] },
+        "reason": { "type": "string" }
+      },
+      "required": ["type", "protocol_version", "session_id", "accepted", "highest_contiguous_seq"],
+      "additionalProperties": false
+    },
+
+    "sample": {
+      "oneOf": [
+        { "$ref": "#/$defs/sample_device_motion" },
+        { "$ref": "#/$defs/sample_gyro" },
+        { "$ref": "#/$defs/sample_accel" },
+        { "$ref": "#/$defs/sample_magnetometer" }
+      ]
+    },
+    "sample_device_motion": {
+      "description": "Fused CMDeviceMotion. Accelerations in m/s^2, rates in rad/s.",
+      "type": "object",
+      "properties": {
+        "stream": { "const": "device_motion" },
+        "seq": { "$ref": "#/$defs/seq" },
+        "t_ns": { "$ref": "#/$defs/ns" },
+        "attitude": { "$ref": "#/$defs/quaternion" },
+        "rotation_rate": { "$ref": "#/$defs/vec3" },
+        "gravity": { "$ref": "#/$defs/vec3" },
+        "user_accel": { "$ref": "#/$defs/vec3" },
+        "magnetic_field_ut": { "oneOf": [{ "$ref": "#/$defs/vec3" }, { "type": "null" }] },
+        "magnetic_accuracy": { "oneOf": [{ "$ref": "#/$defs/magnetic_accuracy" }, { "type": "null" }] }
+      },
+      "required": ["stream", "seq", "t_ns", "attitude", "rotation_rate", "gravity", "user_accel", "magnetic_field_ut", "magnetic_accuracy"],
+      "additionalProperties": false
+    },
+    "sample_gyro": {
+      "description": "Raw CMGyroData, rad/s.",
+      "type": "object",
+      "properties": {
+        "stream": { "const": "gyro" },
+        "seq": { "$ref": "#/$defs/seq" },
+        "t_ns": { "$ref": "#/$defs/ns" },
+        "rotation_rate": { "$ref": "#/$defs/vec3" }
+      },
+      "required": ["stream", "seq", "t_ns", "rotation_rate"],
+      "additionalProperties": false
+    },
+    "sample_accel": {
+      "description": "Raw CMAccelerometerData converted to m/s^2.",
+      "type": "object",
+      "properties": {
+        "stream": { "const": "accel" },
+        "seq": { "$ref": "#/$defs/seq" },
+        "t_ns": { "$ref": "#/$defs/ns" },
+        "accel": { "$ref": "#/$defs/vec3" }
+      },
+      "required": ["stream", "seq", "t_ns", "accel"],
+      "additionalProperties": false
+    },
+    "sample_magnetometer": {
+      "description": "Raw CMMagnetometerData, microtesla.",
+      "type": "object",
+      "properties": {
+        "stream": { "const": "magnetometer" },
+        "seq": { "$ref": "#/$defs/seq" },
+        "t_ns": { "$ref": "#/$defs/ns" },
+        "magnetic_field_ut": { "$ref": "#/$defs/vec3" }
+      },
+      "required": ["stream", "seq", "t_ns", "magnetic_field_ut"],
+      "additionalProperties": false
+    },
+
+    "sample_batch": {
+      "description": "Phone to Mac. Samples cover first_seq..=last_seq contiguously, in seq order.",
+      "type": "object",
+      "properties": {
+        "type": { "const": "sample_batch" },
+        "protocol_version": { "$ref": "#/$defs/protocol_version" },
+        "session_id": { "$ref": "#/$defs/uuid" },
+        "device_id": { "$ref": "#/$defs/uuid" },
+        "first_seq": { "$ref": "#/$defs/seq" },
+        "last_seq": { "$ref": "#/$defs/seq" },
+        "samples": { "type": "array", "items": { "$ref": "#/$defs/sample" }, "minItems": 1 }
+      },
+      "required": ["type", "protocol_version", "session_id", "device_id", "first_seq", "last_seq", "samples"],
+      "additionalProperties": false
+    },
+
+    "batch_ack": {
+      "description": "Mac to phone. Highest sequence number stored durably with no gaps below it.",
+      "type": "object",
+      "properties": {
+        "type": { "const": "batch_ack" },
+        "protocol_version": { "$ref": "#/$defs/protocol_version" },
+        "session_id": { "$ref": "#/$defs/uuid" },
+        "device_id": { "$ref": "#/$defs/uuid" },
+        "highest_contiguous_seq": { "$ref": "#/$defs/seq" }
+      },
+      "required": ["type", "protocol_version", "session_id", "device_id", "highest_contiguous_seq"],
+      "additionalProperties": false
+    },
+
+    "clock_ping": {
+      "description": "Phone to Mac, start of a four-timestamp exchange (ADR 0001).",
+      "type": "object",
+      "properties": {
+        "type": { "const": "clock_ping" },
+        "protocol_version": { "$ref": "#/$defs/protocol_version" },
+        "session_id": { "$ref": "#/$defs/uuid" },
+        "device_id": { "$ref": "#/$defs/uuid" },
+        "exchange_index": { "type": "integer", "minimum": 0 },
+        "phone_send_ns": { "$ref": "#/$defs/ns" }
+      },
+      "required": ["type", "protocol_version", "session_id", "device_id", "exchange_index", "phone_send_ns"],
+      "additionalProperties": false
+    },
+    "clock_pong": {
+      "description": "Mac to phone.",
+      "type": "object",
+      "properties": {
+        "type": { "const": "clock_pong" },
+        "protocol_version": { "$ref": "#/$defs/protocol_version" },
+        "session_id": { "$ref": "#/$defs/uuid" },
+        "exchange_index": { "type": "integer", "minimum": 0 },
+        "phone_send_ns": { "$ref": "#/$defs/ns" },
+        "mac_receive_ns": { "$ref": "#/$defs/ns" },
+        "mac_send_ns": { "$ref": "#/$defs/ns" }
+      },
+      "required": ["type", "protocol_version", "session_id", "exchange_index", "phone_send_ns", "mac_receive_ns", "mac_send_ns"],
+      "additionalProperties": false
+    },
+    "clock_result": {
+      "description": "Phone to Mac, completing the exchange with the phone receive time.",
+      "type": "object",
+      "properties": {
+        "type": { "const": "clock_result" },
+        "protocol_version": { "$ref": "#/$defs/protocol_version" },
+        "session_id": { "$ref": "#/$defs/uuid" },
+        "device_id": { "$ref": "#/$defs/uuid" },
+        "exchange_index": { "type": "integer", "minimum": 0 },
+        "phone_send_ns": { "$ref": "#/$defs/ns" },
+        "mac_receive_ns": { "$ref": "#/$defs/ns" },
+        "mac_send_ns": { "$ref": "#/$defs/ns" },
+        "phone_receive_ns": { "$ref": "#/$defs/ns" }
+      },
+      "required": ["type", "protocol_version", "session_id", "device_id", "exchange_index", "phone_send_ns", "mac_receive_ns", "mac_send_ns", "phone_receive_ns"],
+      "additionalProperties": false
+    },
+
+    "marker": {
+      "description": "Phone to Mac. Operator-placed marker in phone time.",
+      "type": "object",
+      "properties": {
+        "type": { "const": "marker" },
+        "protocol_version": { "$ref": "#/$defs/protocol_version" },
+        "session_id": { "$ref": "#/$defs/uuid" },
+        "device_id": { "$ref": "#/$defs/uuid" },
+        "marker_id": { "$ref": "#/$defs/uuid" },
+        "label": { "type": "string", "minLength": 1 },
+        "t_ns": { "$ref": "#/$defs/ns" },
+        "notes": { "type": "string" }
+      },
+      "required": ["type", "protocol_version", "session_id", "device_id", "marker_id", "label", "t_ns"],
+      "additionalProperties": false
+    },
+
+    "event": {
+      "description": "Phone to Mac. Lifecycle and health events that explain gaps or rate changes.",
+      "type": "object",
+      "properties": {
+        "type": { "const": "event" },
+        "protocol_version": { "$ref": "#/$defs/protocol_version" },
+        "session_id": { "$ref": "#/$defs/uuid" },
+        "device_id": { "$ref": "#/$defs/uuid" },
+        "t_ns": { "$ref": "#/$defs/ns" },
+        "kind": {
+          "enum": [
+            "thermal_state", "battery_state", "app_state", "interruption",
+            "dropped_samples", "buffer_pressure", "effective_rate", "attitude_discontinuity"
+          ]
+        },
+        "severity": { "enum": ["info", "warning", "error"] },
+        "detail": { "type": "object" }
+      },
+      "required": ["type", "protocol_version", "session_id", "device_id", "t_ns", "kind", "severity", "detail"],
+      "additionalProperties": false
+    },
+
+    "error": {
+      "description": "Either direction. The sender may close the connection afterwards.",
+      "type": "object",
+      "properties": {
+        "type": { "const": "error" },
+        "protocol_version": { "$ref": "#/$defs/protocol_version" },
+        "code": { "enum": ["unsupported_version", "unknown_session", "device_mismatch", "invalid_message", "internal"] },
+        "message": { "type": "string" }
+      },
+      "required": ["type", "protocol_version", "code", "message"],
+      "additionalProperties": false
+    },
+
+    "bye": {
+      "description": "Phone to Mac, orderly end of a session.",
+      "type": "object",
+      "properties": {
+        "type": { "const": "bye" },
+        "protocol_version": { "$ref": "#/$defs/protocol_version" },
+        "session_id": { "$ref": "#/$defs/uuid" },
+        "device_id": { "$ref": "#/$defs/uuid" },
+        "last_seq": { "oneOf": [{ "$ref": "#/$defs/seq" }, { "type": "null" }] },
+        "reason": { "enum": ["operator_stop", "app_terminating", "error"] }
+      },
+      "required": ["type", "protocol_version", "session_id", "device_id", "last_seq", "reason"],
+      "additionalProperties": false
+    }
+  }
+}
