@@ -8,6 +8,7 @@ private func validExamples() throws -> [(name: String, data: Data)] {
     let directory = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent()  // ImuLoggerCoreTests
         .deletingLastPathComponent()  // Tests
+        .deletingLastPathComponent()  // Core
         .deletingLastPathComponent()  // ImuLogger
         .deletingLastPathComponent()  // ios
         .deletingLastPathComponent()  // repo root

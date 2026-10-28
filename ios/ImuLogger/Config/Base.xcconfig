@@ -1,0 +1,12 @@
+// Shared build settings for the ImuLogger app.
+//
+// Personal settings (Apple signing team, bundle ID prefix) go in
+// Local.xcconfig next to this file. It is git-ignored; copy
+// Local.xcconfig.example to start. Never commit a team ID (docs/privacy.md).
+
+CWB_BUNDLE_ID_PREFIX = org.example.celestron-workbench
+PRODUCT_BUNDLE_IDENTIFIER = $(CWB_BUNDLE_ID_PREFIX).ImuLogger
+CODE_SIGN_STYLE = Automatic
+DEVELOPMENT_TEAM =
+
+#include? "Local.xcconfig"

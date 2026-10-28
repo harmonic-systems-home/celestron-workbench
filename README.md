@@ -4,7 +4,7 @@ Diagnostics for Celestron computerized telescope mounts, using an iPhone's motio
 
 Developed on a NexStar Evolution 8 EdgeHD with StarSense, an iPhone 17 Pro Max and a MacBook. The mount-specific code sits behind an adapter, so the rest of the system doesn't depend on one particular mount.
 
-> **Status:** M0 foundation. Protocol schema, database schema, decision records and CI are in place; no hardware code yet. See [docs/plan.md](docs/plan.md).
+> **Status:** M1 phone logger. The iPhone app records and streams motion data; the Mac receiver is next (M2). No mount code yet. See [docs/plan.md](docs/plan.md).
 
 ## What it does
 
@@ -22,7 +22,7 @@ Developed on a NexStar Evolution 8 EdgeHD with StarSense, an iPhone 17 Pro Max a
 | [docs/assumptions.md](docs/assumptions.md) | What still has to be verified on real hardware |
 | [schemas/](schemas/) | JSON Schema for the phone–Mac protocol, shared examples, SQL migrations |
 | [rust/](rust/) | Mac side: `protocol`, `storage`, `mount-core` (state machine only), `cli` (`cwb`) |
-| [ios/ImuLogger/](ios/ImuLogger/) | Phone side: `ImuLoggerCore` Swift package; the app target arrives in M1 |
+| [ios/ImuLogger/](ios/ImuLogger/) | Phone side: the IMU Logger iPhone app (`App/`) and its tested core library (`Core/`) |
 
 ## Safety
 

@@ -2,7 +2,7 @@
 import PackageDescription
 
 let package = Package(
-    name: "ImuLogger",
+    name: "ImuLoggerCore",
     platforms: [.iOS(.v18), .macOS(.v15)],
     products: [
         .library(name: "ImuLoggerCore", targets: ["ImuLoggerCore"])

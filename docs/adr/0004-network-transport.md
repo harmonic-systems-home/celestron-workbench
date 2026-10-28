@@ -8,7 +8,7 @@ Core Motion data can't be streamed over the Lightning/USB-C cable as a serial de
 
 ## Decision
 
-- **Transport:** TCP on the local network. The phone connects to the Mac's receiver. The Mac's address is entered or discovered via Bonjour (`_cwb-imu._tcp`). Addresses are local config and are never committed.
+- **Transport:** TCP on the local network. The phone connects to the Mac's receiver. The Mac's address is entered or discovered via Bonjour (`_cwb-imu._tcp`). The default port is 47800. Addresses are local config and are never committed.
 - **Framing:** every message is one frame:
 
   ```text

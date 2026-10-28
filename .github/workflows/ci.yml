@@ -34,8 +34,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Toolchain
-        run: swift --version
+        run: swift --version && xcodebuild -version
       - name: Format
-        run: swift format lint --strict -r Sources Tests Package.swift
-      - name: Test
+        run: swift format lint --strict -r Core/Sources Core/Tests Core/Package.swift App
+      - name: Test core (includes loopback network tests)
+        working-directory: ios/ImuLogger/Core
         run: swift test
+      - name: Build app for the simulator (unsigned)
+        run: >
+          xcodebuild -project ImuLogger.xcodeproj -scheme ImuLogger
+          -destination 'generic/platform=iOS Simulator'
+          CODE_SIGNING_ALLOWED=NO build

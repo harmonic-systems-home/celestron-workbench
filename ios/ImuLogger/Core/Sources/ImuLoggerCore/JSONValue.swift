@@ -1,4 +1,4 @@
-/// An arbitrary JSON value, for free-form fields such as `Event.detail`.
+/// An arbitrary JSON value, for free-form fields such as `SessionEvent.detail`.
 public enum JSONValue: Equatable, Sendable, Codable {
     case null
     case bool(Bool)

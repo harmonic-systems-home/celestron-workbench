@@ -63,7 +63,7 @@ public struct Quaternion: Equatable, Sendable, Codable {
     }
 }
 
-public enum Stream: String, Codable, Sendable, CaseIterable {
+public enum SensorStream: String, Codable, Sendable, CaseIterable {
     case deviceMotion = "device_motion"
     case gyro
     case accel
@@ -92,7 +92,7 @@ public enum Message: Equatable, Sendable, Codable {
     case clockPong(ClockPong)
     case clockResult(ClockResult)
     case marker(Marker)
-    case event(Event)
+    case event(SessionEvent)
     case error(ErrorMessage)
     case bye(Bye)
 
@@ -109,7 +109,7 @@ public enum Message: Equatable, Sendable, Codable {
         case "clock_pong": self = .clockPong(try ClockPong(from: decoder))
         case "clock_result": self = .clockResult(try ClockResult(from: decoder))
         case "marker": self = .marker(try Marker(from: decoder))
-        case "event": self = .event(try Event(from: decoder))
+        case "event": self = .event(try SessionEvent(from: decoder))
         case "error": self = .error(try ErrorMessage(from: decoder))
         case "bye": self = .bye(try Bye(from: decoder))
         default:
@@ -158,7 +158,7 @@ public struct Hello: Equatable, Sendable, Codable {
     public var sessionId: String
     public var device: DeviceInfo
     public var sensorAvailability: SensorAvailability
-    public var streams: [Stream]
+    public var streams: [SensorStream]
     public var attitudeReferenceFrame: AttitudeReferenceFrame
     public var requestedIntervalS: Double
     public var accelG0MS2: Double
@@ -172,6 +172,22 @@ public struct Hello: Equatable, Sendable, Codable {
         case attitudeReferenceFrame = "attitude_reference_frame"
         case requestedIntervalS = "requested_interval_s"
         case accelG0MS2 = "accel_g0_m_s2"
+    }
+
+    public init(
+        protocolVersion: Int, sessionId: String, device: DeviceInfo,
+        sensorAvailability: SensorAvailability, streams: [SensorStream],
+        attitudeReferenceFrame: AttitudeReferenceFrame, requestedIntervalS: Double,
+        accelG0MS2: Double
+    ) {
+        self.protocolVersion = protocolVersion
+        self.sessionId = sessionId
+        self.device = device
+        self.sensorAvailability = sensorAvailability
+        self.streams = streams
+        self.attitudeReferenceFrame = attitudeReferenceFrame
+        self.requestedIntervalS = requestedIntervalS
+        self.accelG0MS2 = accelG0MS2
     }
 }
 
@@ -192,6 +208,18 @@ public struct DeviceInfo: Equatable, Sendable, Codable {
         case appVersion = "app_version"
         case bootId = "boot_id"
     }
+
+    public init(
+        deviceId: String, vendor: String, model: String, osVersion: String, appVersion: String,
+        bootId: String
+    ) {
+        self.deviceId = deviceId
+        self.vendor = vendor
+        self.model = model
+        self.osVersion = osVersion
+        self.appVersion = appVersion
+        self.bootId = bootId
+    }
 }
 
 public struct SensorAvailability: Equatable, Sendable, Codable {
@@ -203,6 +231,13 @@ public struct SensorAvailability: Equatable, Sendable, Codable {
     enum CodingKeys: String, CodingKey {
         case deviceMotion = "device_motion"
         case gyro, accel, magnetometer
+    }
+
+    public init(deviceMotion: Bool, gyro: Bool, accel: Bool, magnetometer: Bool) {
+        self.deviceMotion = deviceMotion
+        self.gyro = gyro
+        self.accel = accel
+        self.magnetometer = magnetometer
     }
 }
 
@@ -230,6 +265,17 @@ public struct HelloAck: Equatable, Sendable, Codable {
         try c.encode(highestContiguousSeq, forKey: .highestContiguousSeq)
         try c.encodeIfPresent(reason, forKey: .reason)
     }
+
+    public init(
+        protocolVersion: Int, sessionId: String, accepted: Bool, highestContiguousSeq: Seq? = nil,
+        reason: String? = nil
+    ) {
+        self.protocolVersion = protocolVersion
+        self.sessionId = sessionId
+        self.accepted = accepted
+        self.highestContiguousSeq = highestContiguousSeq
+        self.reason = reason
+    }
 }
 
 public struct SampleBatch: Equatable, Sendable, Codable {
@@ -256,6 +302,18 @@ public struct SampleBatch: Equatable, Sendable, Codable {
         else { return false }
         return samples.enumerated().allSatisfy { $1.seq == firstSeq + Seq($0) }
     }
+
+    public init(
+        protocolVersion: Int, sessionId: String, deviceId: String, firstSeq: Seq, lastSeq: Seq,
+        samples: [Sample]
+    ) {
+        self.protocolVersion = protocolVersion
+        self.sessionId = sessionId
+        self.deviceId = deviceId
+        self.firstSeq = firstSeq
+        self.lastSeq = lastSeq
+        self.samples = samples
+    }
 }
 
 public enum Sample: Equatable, Sendable, Codable {
@@ -268,7 +326,7 @@ public enum Sample: Equatable, Sendable, Codable {
 
     public init(from decoder: Decoder) throws {
         let stream = try decoder.container(keyedBy: StreamKey.self)
-            .decode(Stream.self, forKey: .stream)
+            .decode(SensorStream.self, forKey: .stream)
         switch stream {
         case .deviceMotion: self = .deviceMotion(try DeviceMotionSample(from: decoder))
         case .gyro: self = .gyro(try GyroSample(from: decoder))
@@ -288,7 +346,7 @@ public enum Sample: Equatable, Sendable, Codable {
         }
     }
 
-    public var stream: Stream {
+    public var stream: SensorStream {
         switch self {
         case .deviceMotion: .deviceMotion
         case .gyro: .gyro
@@ -351,6 +409,20 @@ public struct DeviceMotionSample: Equatable, Sendable, Codable {
         try c.encode(magneticFieldUt, forKey: .magneticFieldUt)
         try c.encode(magneticAccuracy, forKey: .magneticAccuracy)
     }
+
+    public init(
+        seq: Seq, tNs: Nanos, attitude: Quaternion, rotationRate: Vec3, gravity: Vec3,
+        userAccel: Vec3, magneticFieldUt: Vec3? = nil, magneticAccuracy: MagneticAccuracy? = nil
+    ) {
+        self.seq = seq
+        self.tNs = tNs
+        self.attitude = attitude
+        self.rotationRate = rotationRate
+        self.gravity = gravity
+        self.userAccel = userAccel
+        self.magneticFieldUt = magneticFieldUt
+        self.magneticAccuracy = magneticAccuracy
+    }
 }
 
 /// Raw CMGyroData, rad/s.
@@ -363,6 +435,12 @@ public struct GyroSample: Equatable, Sendable, Codable {
         case seq
         case tNs = "t_ns"
         case rotationRate = "rotation_rate"
+    }
+
+    public init(seq: Seq, tNs: Nanos, rotationRate: Vec3) {
+        self.seq = seq
+        self.tNs = tNs
+        self.rotationRate = rotationRate
     }
 }
 
@@ -377,6 +455,12 @@ public struct AccelSample: Equatable, Sendable, Codable {
         case tNs = "t_ns"
         case accel
     }
+
+    public init(seq: Seq, tNs: Nanos, accel: Vec3) {
+        self.seq = seq
+        self.tNs = tNs
+        self.accel = accel
+    }
 }
 
 /// Raw CMMagnetometerData, µT.
@@ -389,6 +473,12 @@ public struct MagnetometerSample: Equatable, Sendable, Codable {
         case seq
         case tNs = "t_ns"
         case magneticFieldUt = "magnetic_field_ut"
+    }
+
+    public init(seq: Seq, tNs: Nanos, magneticFieldUt: Vec3) {
+        self.seq = seq
+        self.tNs = tNs
+        self.magneticFieldUt = magneticFieldUt
     }
 }
 
@@ -403,6 +493,15 @@ public struct BatchAck: Equatable, Sendable, Codable {
         case sessionId = "session_id"
         case deviceId = "device_id"
         case highestContiguousSeq = "highest_contiguous_seq"
+    }
+
+    public init(
+        protocolVersion: Int, sessionId: String, deviceId: String, highestContiguousSeq: Seq
+    ) {
+        self.protocolVersion = protocolVersion
+        self.sessionId = sessionId
+        self.deviceId = deviceId
+        self.highestContiguousSeq = highestContiguousSeq
     }
 }
 
@@ -419,6 +518,17 @@ public struct ClockPing: Equatable, Sendable, Codable {
         case deviceId = "device_id"
         case exchangeIndex = "exchange_index"
         case phoneSendNs = "phone_send_ns"
+    }
+
+    public init(
+        protocolVersion: Int, sessionId: String, deviceId: String, exchangeIndex: UInt64,
+        phoneSendNs: Nanos
+    ) {
+        self.protocolVersion = protocolVersion
+        self.sessionId = sessionId
+        self.deviceId = deviceId
+        self.exchangeIndex = exchangeIndex
+        self.phoneSendNs = phoneSendNs
     }
 }
 
@@ -437,6 +547,18 @@ public struct ClockPong: Equatable, Sendable, Codable {
         case phoneSendNs = "phone_send_ns"
         case macReceiveNs = "mac_receive_ns"
         case macSendNs = "mac_send_ns"
+    }
+
+    public init(
+        protocolVersion: Int, sessionId: String, exchangeIndex: UInt64, phoneSendNs: Nanos,
+        macReceiveNs: Nanos, macSendNs: Nanos
+    ) {
+        self.protocolVersion = protocolVersion
+        self.sessionId = sessionId
+        self.exchangeIndex = exchangeIndex
+        self.phoneSendNs = phoneSendNs
+        self.macReceiveNs = macReceiveNs
+        self.macSendNs = macSendNs
     }
 }
 
@@ -460,6 +582,20 @@ public struct ClockResult: Equatable, Sendable, Codable {
         case macSendNs = "mac_send_ns"
         case phoneReceiveNs = "phone_receive_ns"
     }
+
+    public init(
+        protocolVersion: Int, sessionId: String, deviceId: String, exchangeIndex: UInt64,
+        phoneSendNs: Nanos, macReceiveNs: Nanos, macSendNs: Nanos, phoneReceiveNs: Nanos
+    ) {
+        self.protocolVersion = protocolVersion
+        self.sessionId = sessionId
+        self.deviceId = deviceId
+        self.exchangeIndex = exchangeIndex
+        self.phoneSendNs = phoneSendNs
+        self.macReceiveNs = macReceiveNs
+        self.macSendNs = macSendNs
+        self.phoneReceiveNs = phoneReceiveNs
+    }
 }
 
 public struct Marker: Equatable, Sendable, Codable {
@@ -480,9 +616,22 @@ public struct Marker: Equatable, Sendable, Codable {
         case tNs = "t_ns"
         case notes
     }
+
+    public init(
+        protocolVersion: Int, sessionId: String, deviceId: String, markerId: String, label: String,
+        tNs: Nanos, notes: String? = nil
+    ) {
+        self.protocolVersion = protocolVersion
+        self.sessionId = sessionId
+        self.deviceId = deviceId
+        self.markerId = markerId
+        self.label = label
+        self.tNs = tNs
+        self.notes = notes
+    }
 }
 
-public struct Event: Equatable, Sendable, Codable {
+public struct SessionEvent: Equatable, Sendable, Codable {
     public enum Kind: String, Codable, Sendable {
         case thermalState = "thermal_state"
         case batteryState = "battery_state"
@@ -513,6 +662,19 @@ public struct Event: Equatable, Sendable, Codable {
         case tNs = "t_ns"
         case kind, severity, detail
     }
+
+    public init(
+        protocolVersion: Int, sessionId: String, deviceId: String, tNs: Nanos, kind: Kind,
+        severity: Severity, detail: [String: JSONValue]
+    ) {
+        self.protocolVersion = protocolVersion
+        self.sessionId = sessionId
+        self.deviceId = deviceId
+        self.tNs = tNs
+        self.kind = kind
+        self.severity = severity
+        self.detail = detail
+    }
 }
 
 public struct ErrorMessage: Equatable, Sendable, Codable {
@@ -531,6 +693,12 @@ public struct ErrorMessage: Equatable, Sendable, Codable {
     enum CodingKeys: String, CodingKey {
         case protocolVersion = "protocol_version"
         case code, message
+    }
+
+    public init(protocolVersion: Int, code: Code, message: String) {
+        self.protocolVersion = protocolVersion
+        self.code = code
+        self.message = message
     }
 }
 
@@ -563,5 +731,16 @@ public struct Bye: Equatable, Sendable, Codable {
         try c.encode(deviceId, forKey: .deviceId)
         try c.encode(lastSeq, forKey: .lastSeq)
         try c.encode(reason, forKey: .reason)
+    }
+
+    public init(
+        protocolVersion: Int, sessionId: String, deviceId: String, lastSeq: Seq? = nil,
+        reason: Reason
+    ) {
+        self.protocolVersion = protocolVersion
+        self.sessionId = sessionId
+        self.deviceId = deviceId
+        self.lastSeq = lastSeq
+        self.reason = reason
     }
 }

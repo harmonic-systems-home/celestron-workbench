@@ -41,13 +41,36 @@ Keep databases outside the repo (see [privacy](privacy.md)).
 
 ## Swift (phone side)
 
+`ios/ImuLogger/` has two parts:
+
+- `Core/`: the `ImuLoggerCore` Swift package. Wire messages, framing, sequencing, the bounded acquisition buffer, rate measurement, attitude continuity, the NDJSON session log, delivery tracking and the network uplink. Everything here is tested on the Mac, including the uplink against a fake receiver on loopback (interruptions, resend, rejection). The tests decode the same shared examples as the Rust tests.
+- `App/` with `ImuLogger.xcodeproj`: the iPhone app. Core Motion acquisition, the session pipeline and the SwiftUI screens.
+
 ```sh
 cd ios/ImuLogger
-swift format lint --strict -r Sources Tests Package.swift
-swift test
+swift format lint --strict -r Core/Sources Core/Tests Core/Package.swift App
+(cd Core && swift test)
+xcodebuild -project ImuLogger.xcodeproj -scheme ImuLogger \
+  -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build
 ```
 
-`ImuLoggerCore` holds the platform-independent code (wire messages, framing, CRC) and runs its tests on the Mac. The tests decode the same shared examples as the Rust tests, so both sides agree on the wire format. The iPhone app target (Core Motion, UI) arrives with plan Prompt 2.
+### Running on your iPhone
+
+1. Copy `ios/ImuLogger/Config/Local.xcconfig.example` to `Local.xcconfig` in the same folder (git-ignored) and fill in your Apple team ID and a bundle ID prefix you own.
+2. Open `ios/ImuLogger/ImuLogger.xcodeproj`, choose your iPhone, and run.
+3. On first use of a receiver, iOS asks for local network access; allow it.
+
+The simulator has no motion sensors, so it can only show the interface. Real recordings need the phone.
+
+### Using the logger
+
+- **Send to:** a Mac receiver found by Bonjour, an address you type in (default port 47800), or nowhere. With no receiver, the session is still recorded in full on the phone.
+- **Start recording** creates a session ID and a log file `Sessions/<UTC time>_<id>.ndjson` in the app's Documents folder. The screen stays awake while recording.
+- **Live** shows the rate each stream actually delivers, measured from sensor timestamps; samples dropped on the phone; buffer high water; rotation since the start; and attitude discontinuities.
+- **Markers** are timestamped on the phone clock; add one before and after each fixture movement.
+- **Recorded sessions** lists the logs for export (share sheet), and they also appear in the Files app under IMU Logger. Check a log on the Mac with `cwb validate <file>.ndjson`.
+
+Session logs are private data (docs/privacy.md); keep them out of this repo.
 
 ## CI
 
