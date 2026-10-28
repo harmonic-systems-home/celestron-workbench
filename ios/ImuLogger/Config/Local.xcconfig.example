@@ -1,5 +1,5 @@
-// Copy to Local.xcconfig (git-ignored) and fill in your own values.
-// Find your team ID in Xcode > Settings > Accounts, or developer.apple.com.
+// Written by scripts/ios-local-config.sh from $APPLE_TEAM_ID; git-ignored.
+// To create it by hand, copy this file to Local.xcconfig and fill in your values.
 
 DEVELOPMENT_TEAM = YOUR_TEAM_ID
-CWB_BUNDLE_ID_PREFIX = com.yourname
+// CWB_BUNDLE_ID_PREFIX = com.example

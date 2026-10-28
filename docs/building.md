@@ -56,11 +56,25 @@ xcodebuild -project ImuLogger.xcodeproj -scheme ImuLogger \
 
 ### Running on your iPhone
 
-1. Copy `ios/ImuLogger/Config/Local.xcconfig.example` to `Local.xcconfig` in the same folder (git-ignored) and fill in your Apple team ID and a bundle ID prefix you own.
-2. Open `ios/ImuLogger/ImuLogger.xcodeproj`, choose your iPhone, and run.
-3. On first use of a receiver, iOS asks for local network access; allow it.
+Signing reads your team ID from the `APPLE_TEAM_ID` environment variable (exported from your shell profile), so it is never committed. The bundle ID is `com.popperbiz.ImuLogger`; set `CWB_BUNDLE_ID_PREFIX` to change the prefix.
 
-The simulator has no motion sensors, so it can only show the interface. Real recordings need the phone.
+- **Command line:** `xcodebuild` sees the variable directly:
+
+  ```sh
+  cd ios/ImuLogger
+  xcodebuild -project ImuLogger.xcodeproj -scheme ImuLogger \
+    -destination 'generic/platform=iOS' -allowProvisioningUpdates build
+  ```
+
+- **Xcode app:** Xcode launched from the Dock doesn't see shell variables. Run this once (and again if the team changes); it writes the git-ignored `ios/ImuLogger/Config/Local.xcconfig`:
+
+  ```sh
+  scripts/ios-local-config.sh
+  ```
+
+  Then open `ios/ImuLogger/ImuLogger.xcodeproj`, choose your iPhone, and run.
+
+On first use of a receiver, iOS asks for local network access; allow it. The simulator has no motion sensors, so it can only show the interface. Real recordings need the phone.
 
 ### Using the logger
 
