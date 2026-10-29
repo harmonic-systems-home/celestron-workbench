@@ -33,9 +33,9 @@ cargo test
 - **Analysis golden tests** (`crates/analysis/tests/golden.rs`): synthetic sessions with known answers (zero motion, bias and drift, known rotations, missing data, heading wrap, quaternion sign) and byte-identical reports.
 - **Mount safety suite** (`crates/mount-sim/tests/safety.rs`): every injected fault stops the simulated mount or latches with a cut-power alert, plus a randomized search over 1,000 fault combinations (ADR 0005). Run it alone with `cargo test -p cwb-mount-sim`.
 - **Celestron discovery** (`crates/celestron-discovery/tests/`): every sendable command is a documented read-only query (no motion, setters, location or time), replies decode as the protocol document's examples, and discovery against the simulated hand controller passes when healthy and fails or warns on a missing motor, silence, tracking on, another model or a moving mount (ADR 0010).
-- **Hand controller time and location** (`crates/celestron-setup/tests/`): set time and set location bytes match the documented layout, local time and daylight saving come from the time zone, coordinates round to whole arcseconds, read-back confirms or reports a drifting clock, a forgotten setting or silence, only `H`, `W`, `h` and `w` can be sent, and coordinates never appear in `Debug` or error text (ADR 0011).
+- **Hand controller time and location** (`crates/celestron-setup/tests/`): set time and set location bytes match the documented layout, local time and daylight saving come from the time zone, coordinates round to whole arcseconds, read-back confirms or reports a drifting clock, a forgotten setting or silence, anti-backlash bytes follow libnexstar and every set is read back, only time, location and anti-backlash commands can be sent, and coordinates never appear in `Debug` or error text (ADR 0011).
 - **Session sites** (`crates/storage/tests/ingest.rs`, shared examples): a site is stored once, an inconsistent one is refused, it survives export and import, the session list shows the latest environment, and `Debug` hides coordinates (ADR 0012).
-- **Mount motion** (`crates/mount-celestron/tests/`, `crates/mount-core/tests/imu.rs`, `crates/mount-runner/tests/`): every transaction the adapter can produce is a documented slew or stop; a move is acknowledged, runs and stops on the simulated hand controller; a dropped link is reported and stops still go out; dropping the adapter stops both axes; preparation turns tracking off; the phone-to-mount axis conversion holds at any roll; and the runner gates moves behind the checklist, asks before each first move, stops on Enter, faults a reversed axis, quits cleanly, logs the session and takes live phone samples through the clock model (ADR 0013).
+- **Mount motion** (`crates/mount-celestron/tests/`, `crates/mount-core/tests/imu.rs`, `crates/mount-runner/tests/`): every transaction the adapter can produce is a documented slew or stop; a move is acknowledged, runs and stops on the simulated hand controller; a dropped link is reported and stops still go out; dropping the adapter stops both axes; preparation turns tracking off; the phone-to-mount axis conversion holds at any roll; the runner measures the raw gyroscope's offset at arming and catches a slow turn iOS's fused rate has absorbed, and it gates moves behind the checklist, asks before each first move, stops on Enter, faults a reversed axis, quits cleanly, logs the session and takes live phone samples through the clock model (ADR 0013).
 - **Framing**, **mount state machine** and **safety configuration** unit tests.
 
 ### The `cwb` command
@@ -124,7 +124,17 @@ cwb celestron setup --port /dev/cu.usbserial-XXXX --time-only
 cwb celestron setup --port /dev/cu.usbserial-XXXX --location-from site-file
 ```
 
-It checks the hand controller answers, shows what it will send (the site's name and hemispheres, never its coordinates), asks for confirmation, then sets each value and reads it back (ADR 0011). It exits non-zero unless every value is confirmed. `--site FILE` or `CWB_SITE` points at another site file; `--simulate` runs without hardware.
+It checks the hand controller answers, shows what it will send (the site's name and hemispheres, never its coordinates), asks for confirmation, then sets each value and reads it back (ADR 0011).
+
+### Anti-backlash
+
+```sh
+cwb celestron backlash --port /dev/cu.usbserial-XXXX                  # read all four
+cwb celestron backlash --port /dev/cu.usbserial-XXXX --set-all 0      # set, then read back
+cwb celestron backlash --port /dev/cu.usbserial-XXXX --set azm+=20 --set azm-=20
+```
+
+Values are 0–99 per axis and direction, set on the motor controllers and read back. `cwb mount run` refuses to start unless all four are 0, so compensation can't hide the backlash being measured. It exits non-zero unless every value is confirmed. `--site FILE` or `CWB_SITE` points at another site file; `--simulate` runs without hardware.
 
 ### Moving the mount
 
@@ -140,7 +150,7 @@ On the mount: review `config/mount.toml` (axis signs, tube axis, safety limits),
 cwb mount run --port /dev/cu.usbserial-XXXX --db ~/path/outside/repo/workbench.sqlite
 ```
 
-It checks the hand controller (turning tracking off if needed), starts receiving from the phone (start a recording on the phone and choose this Mac), and shows the mount-session checklist. Type `yes` once every item holds. Then `status` until the IMU shows fresh with a clock model, `arm`, and a move such as `az+ 0.1 1` (0.1 °/s for 1 s). The first move each way asks for `yes`. **An empty line (Enter) is always Stop.** `help` lists the commands. The run log goes to `reports/mount/<time>/run.ndjson` (git-ignored).
+It claims the phone's port, checks the hand controller (turning tracking off if needed, and requiring anti-backlash 0), starts receiving from the phone (start a recording on the phone and choose this Mac), and shows the mount-session checklist. Type `yes` once every item holds. Then `status` until the IMU shows fresh with a clock model, keep the mount still for 3 s, and `arm`: it measures the raw gyroscope's offset (the app's Raw gyroscope setting must be on) and from then on the safety checks use the raw gyroscope. Then try a move such as `az+ 0.1 1` (0.1 °/s for 1 s). The first move each way asks for `yes`. **An empty line (Enter) is always Stop.** `help` lists the commands. The run log goes to `reports/mount/<time>/run.ndjson` (git-ignored).
 
 ## Swift (phone side)
 

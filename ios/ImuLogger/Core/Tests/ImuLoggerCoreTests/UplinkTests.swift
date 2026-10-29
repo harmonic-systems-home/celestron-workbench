@@ -1,4 +1,5 @@
 import Foundation
+import Network
 import Synchronization
 import Testing
 
@@ -159,6 +160,26 @@ import Testing
             await eventually {
                 if case .waitingToRetry = box.state { return true }
                 return false
+            })
+        uplink.cancel()
+        #expect(await eventually { box.state == .finished })
+    }
+
+    @Test func anUnadvertisedReceiverIsRetriedRatherThanAwaitedForever() async throws {
+        // A Bonjour name nobody advertises never fails; it waits to resolve.
+        let endpoint = NWEndpoint.service(
+            name: "cwb-test-\(UUID().uuidString)", type: "_cwb-imu._tcp", domain: "local.",
+            interface: nil)
+        let box = StatusBox()
+        let uplink = Uplink(
+            endpoint: endpoint, hello: testHello(), logURL: nil, connectTimeout: 0.2
+        ) { status in
+            box.latest.withLock { $0 = status }
+        }
+        uplink.start()
+        #expect(
+            await eventually {
+                box.latest.withLock { $0?.lastError?.contains("no receiver answered") ?? false }
             })
         uplink.cancel()
         #expect(await eventually { box.state == .finished })

@@ -19,7 +19,7 @@ pub const LIBNEXSTAR_URL: &str = "https://github.com/indigo-astronomy/libnexstar
 pub const REPLY_TIMEOUT_MS: u64 = 3_500;
 
 /// Devices on the mount's bus, as pass-through destinations.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Device {
     AzmMotor,
@@ -33,6 +33,15 @@ impl Device {
             Device::AltMotor => 17,
         }
     }
+}
+
+/// Which way a backlash setting applies: when the axis turns to positive,
+/// or to negative.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Sense {
+    Positive,
+    Negative,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,10 +60,25 @@ pub enum Query {
     PreciseAzmAlt,
     /// Motor controller firmware, by pass-through.
     DeviceVersion(Device),
+    /// A motor controller's anti-backlash setting (0–99), by pass-through.
+    /// Not in Celestron's document: from libnexstar's `tc_get_backlash`.
+    Backlash(Device, Sense),
 }
 
-/// Pass-through message ID for "get version"; the only one discovery sends.
+/// Pass-through message ID for "get version".
 pub const GET_DEVICE_VERSION: u8 = 254;
+/// Pass-through message IDs for "get backlash" (libnexstar).
+pub const GET_BACKLASH_POSITIVE: u8 = 0x40;
+pub const GET_BACKLASH_NEGATIVE: u8 = 0x41;
+
+impl Sense {
+    pub fn get_id(self) -> u8 {
+        match self {
+            Sense::Positive => GET_BACKLASH_POSITIVE,
+            Sense::Negative => GET_BACKLASH_NEGATIVE,
+        }
+    }
+}
 
 impl Query {
     pub fn bytes(self) -> Vec<u8> {
@@ -68,6 +92,7 @@ impl Query {
             Query::AzmAlt => vec![b'Z'],
             Query::PreciseAzmAlt => vec![b'z'],
             Query::DeviceVersion(d) => vec![b'P', 1, d.id(), GET_DEVICE_VERSION, 0, 0, 0, 2],
+            Query::Backlash(d, sense) => vec![b'P', 1, d.id(), sense.get_id(), 0, 0, 0, 1],
         }
     }
 
@@ -83,7 +108,7 @@ impl Query {
 
     /// Pass-through commands flag a missing device with one extra byte.
     pub fn is_pass_through(self) -> bool {
-        matches!(self, Query::DeviceVersion(_))
+        matches!(self, Query::DeviceVersion(_) | Query::Backlash(..))
     }
 
     /// Lowest hand control version the document lists for this command.
@@ -94,7 +119,7 @@ impl Query {
             | Query::AlignmentComplete
             | Query::GotoInProgress
             | Query::AzmAlt => (1, 2),
-            Query::DeviceVersion(_) => (1, 6),
+            Query::DeviceVersion(_) | Query::Backlash(..) => (1, 6),
             Query::Model | Query::PreciseAzmAlt => (2, 2),
             Query::TrackingMode => (2, 3),
         }
@@ -105,6 +130,7 @@ impl Query {
         match self {
             Query::AzmAlt | Query::PreciseAzmAlt => "Get Position Commands",
             Query::TrackingMode => "Tracking Commands: Get Tracking Mode",
+            Query::Backlash(..) => "libnexstar tc_get_backlash (not in Celestron's document)",
             _ => "Miscellaneous Commands",
         }
     }
@@ -128,6 +154,7 @@ impl Query {
                 _ => return None,
             },
             Query::TrackingMode => Value::TrackingMode(payload[0]),
+            Query::Backlash(..) => Value::Backlash(payload[0]),
             Query::AzmAlt => parse_angles(payload, 4)?,
             Query::PreciseAzmAlt => parse_angles(payload, 8)?,
         })
@@ -147,6 +174,18 @@ impl fmt::Display for Query {
             Query::PreciseAzmAlt => f.write_str("precise azm-alt position"),
             Query::DeviceVersion(Device::AzmMotor) => f.write_str("azimuth motor version"),
             Query::DeviceVersion(Device::AltMotor) => f.write_str("altitude motor version"),
+            Query::Backlash(d, sense) => write!(
+                f,
+                "{} backlash, {}",
+                match d {
+                    Device::AzmMotor => "azimuth",
+                    Device::AltMotor => "altitude",
+                },
+                match sense {
+                    Sense::Positive => "positive",
+                    Sense::Negative => "negative",
+                }
+            ),
         }
     }
 }
@@ -179,6 +218,7 @@ pub enum Value {
     Model(u8),
     Flag(bool),
     TrackingMode(u8),
+    Backlash(u8),
     Angles {
         azm_deg: f64,
         alt_deg: f64,
@@ -200,6 +240,7 @@ impl fmt::Display for Value {
                 Some(name) => write!(f, "{m} ({name})"),
                 None => write!(f, "{m} (unknown)"),
             },
+            Value::Backlash(v) => write!(f, "{v}"),
             Value::Angles {
                 azm_deg, alt_deg, ..
             } => write!(f, "azm {azm_deg:.5}°, alt {alt_deg:.5}°"),
@@ -249,6 +290,10 @@ pub fn plan(repeats: usize) -> Vec<Query> {
         Query::Model,
         Query::DeviceVersion(Device::AzmMotor),
         Query::DeviceVersion(Device::AltMotor),
+        Query::Backlash(Device::AzmMotor, Sense::Positive),
+        Query::Backlash(Device::AzmMotor, Sense::Negative),
+        Query::Backlash(Device::AltMotor, Sense::Positive),
+        Query::Backlash(Device::AltMotor, Sense::Negative),
         Query::AlignmentComplete,
         Query::GotoInProgress,
         Query::TrackingMode,

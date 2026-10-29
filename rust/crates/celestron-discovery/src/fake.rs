@@ -17,6 +17,8 @@ pub struct FakeSetup {
     pub tracking_mode: u8,
     /// Axis angles as fractions of a revolution × 2³².
     pub position: [u32; 2],
+    /// Anti-backlash settings: [azimuth, altitude] × [positive, negative].
+    pub backlash: [[u8; 2]; 2],
     /// Added to each precise reading, cycling: encoder jitter.
     pub jitter: Vec<i32>,
     /// Answers nothing at all.
@@ -43,6 +45,7 @@ impl Default for FakeSetup {
             aligned: false,
             tracking_mode: 0,
             position: [0x1234_5600, 0x0800_0000],
+            backlash: [[0, 0], [0, 0]],
             jitter: vec![0, 0x100, -0x100, 0],
             silent: false,
         }
@@ -94,6 +97,9 @@ impl FakeHandController {
                 let azm = setup.position[0].wrapping_add_signed(j) & 0xFFFF_FF00;
                 let alt = setup.position[1].wrapping_add_signed(-j) & 0xFFFF_FF00;
                 format!("{azm:08X},{alt:08X}").into_bytes()
+            }
+            [b'P', 1, dev @ (16 | 17), id @ (0x40 | 0x41), 0, 0, 0, 1] => {
+                vec![setup.backlash[usize::from(*dev - 16)][usize::from(*id - 0x40)]]
             }
             [b'P', 1, dev @ (16 | 17), 254, 0, 0, 0, 2] => {
                 match setup.motor_versions[usize::from(*dev - 16)] {

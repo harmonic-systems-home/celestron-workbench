@@ -5,7 +5,7 @@
 
 use cwb_celestron_discovery::{
     HandController, Link, Outcome, Query,
-    query::{Device, Value},
+    query::{Device, Sense, Value},
     transact,
 };
 use cwb_mount_core::{MountIdentity, MountQueries};
@@ -17,6 +17,9 @@ pub struct Prepared {
     pub identity: MountIdentity,
     /// The mount's own axis angles before any motion.
     pub positions_deg: [f64; 2],
+    /// Anti-backlash settings, [azimuth, altitude] × [positive, negative];
+    /// `None` where the motor didn't answer.
+    pub backlash: [[Option<u8>; 2]; 2],
     /// Things done or noticed on the way, for the run log.
     pub notes: Vec<String>,
 }
@@ -66,9 +69,18 @@ fn checks<L: Link>(hc: &mut HandController<L>) -> Result<Prepared, String> {
         _ => return Err("the tracking mode query went unanswered".into()),
     }
     let positions_deg = hc.axis_positions_deg().map_err(|e| e.0)?;
+    let backlash = [Device::AzmMotor, Device::AltMotor].map(|d| {
+        [Sense::Positive, Sense::Negative].map(|sense| {
+            match hc.query(Query::Backlash(d, sense)).value {
+                Some(Value::Backlash(v)) => Some(v),
+                _ => None,
+            }
+        })
+    });
     Ok(Prepared {
         identity,
         positions_deg,
+        backlash,
         notes,
     })
 }

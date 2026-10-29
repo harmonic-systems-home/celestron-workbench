@@ -2,7 +2,7 @@
 //! in it is private). The safety section is the session's safety
 //! configuration (ADR 0005); the operator approves it before a session.
 
-use cwb_mount_celestron::AxisSigns;
+use cwb_mount_celestron::CelestronSettings;
 use cwb_mount_core::SafetyConfig;
 use serde::{Deserialize, Serialize};
 
@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 #[serde(deny_unknown_fields)]
 pub struct RunnerConfig {
     pub phone: PhoneConfig,
-    pub celestron: AxisSigns,
+    pub celestron: CelestronSettings,
     pub moves: MoveDefaults,
     pub safety: SafetyConfig,
 }

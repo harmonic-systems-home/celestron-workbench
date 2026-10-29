@@ -15,6 +15,10 @@ tube_axis = "+y"
 # opposite motion.
 reverse_azimuth = false
 reverse_altitude = false
+# How a move's own stop is sent: "both" (variable rate 0, then fixed rate
+# 0), "variable" or "fixed" (the stop-form trial). Stops after a fault, and
+# on quitting, always send both.
+stop = "both"
 
 [moves]
 # Used when a move command gives no rate or duration.

@@ -178,6 +178,25 @@ enum CelestronCommand {
         #[arg(long)]
         notes: Option<String>,
     },
+    /// Read the motor controllers' anti-backlash settings, and optionally set
+    /// them (0–99), reading each back. No motion.
+    Backlash {
+        /// Serial device, e.g. /dev/cu.usbserial-… (see `cwb celestron ports`).
+        #[arg(long, required_unless_present = "simulate")]
+        port: Option<String>,
+        /// Use a simulated hand controller instead of hardware.
+        #[arg(long, conflicts_with = "port")]
+        simulate: bool,
+        /// Set one value: azm+=N, azm-=N, alt+=N or alt-=N. Repeatable.
+        #[arg(long, value_name = "SLOT=N")]
+        set: Vec<String>,
+        /// Set all four to this value.
+        #[arg(long, value_name = "N", conflicts_with = "set")]
+        set_all: Option<u8>,
+        /// Don't ask for confirmation.
+        #[arg(long)]
+        yes: bool,
+    },
     /// Set the hand controller's time (from this Mac's clock) and location
     /// (from the site file), then read each back to confirm. No motion.
     Setup {
@@ -532,6 +551,40 @@ fn celestron(command: CelestronCommand) -> Result<ExitCode> {
                 ExitCode::FAILURE
             })
         }
+        CelestronCommand::Backlash {
+            port,
+            simulate,
+            set,
+            set_all,
+            yes,
+        } => {
+            use cwb_celestron_setup::backlash::{MAX, Slot};
+            let mut changes: Vec<(Slot, u8)> = Vec::new();
+            if let Some(v) = set_all {
+                changes.extend(Slot::ALL.iter().map(|s| (*s, v)));
+            }
+            for item in &set {
+                let (slot, value) = item
+                    .split_once('=')
+                    .and_then(|(s, v)| Some((Slot::parse(s)?, v.parse::<u8>().ok()?)))
+                    .with_context(|| {
+                        format!("--set {item}: use azm+=N, azm-=N, alt+=N or alt-=N")
+                    })?;
+                changes.push((slot, value));
+            }
+            if let Some((slot, v)) = changes.iter().find(|(_, v)| *v > MAX) {
+                anyhow::bail!("{slot}={v}: values are 0–{MAX}");
+            }
+            if simulate {
+                let mut fake = cwb_celestron_setup::fake::FakeSetter::default();
+                fake.backlash = [[50, 50], [50, 50]];
+                backlash(fake, &changes, yes)
+            } else {
+                let path = port.expect("clap requires --port without --simulate");
+                let link = SerialLink::open(&path).with_context(|| format!("opening {path}"))?;
+                backlash(link, &changes, yes)
+            }
+        }
         CelestronCommand::Setup {
             port,
             simulate,
@@ -558,6 +611,75 @@ fn celestron(command: CelestronCommand) -> Result<ExitCode> {
             }
         }
     }
+}
+
+fn backlash(
+    mut link: impl cwb_celestron_discovery::Link,
+    changes: &[(cwb_celestron_setup::backlash::Slot, u8)],
+    yes: bool,
+) -> Result<ExitCode> {
+    use cwb_celestron_setup::{
+        ReadBack,
+        backlash::{self, Slot},
+    };
+    use std::io::{IsTerminal, Write};
+
+    let show = |link: &mut dyn FnMut(Slot) -> Option<u8>| -> String {
+        Slot::ALL
+            .iter()
+            .map(|s| format!("{s} {}", link(*s).map_or("—".into(), |v| v.to_string())))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    println!(
+        "anti-backlash now: {}",
+        show(&mut |s| backlash::read(&mut link, s))
+    );
+    if changes.is_empty() {
+        return Ok(ExitCode::SUCCESS);
+    }
+    let plan = changes
+        .iter()
+        .map(|(s, v)| format!("{s}={v}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    println!("will set: {plan}");
+    if !yes {
+        if !std::io::stdin().is_terminal() {
+            anyhow::bail!("no terminal to confirm on: pass --yes to proceed");
+        }
+        print!("Send to the motor controllers? The mount must be still. [y/N] ");
+        std::io::stdout().flush()?;
+        let mut answer = String::new();
+        std::io::stdin().read_line(&mut answer)?;
+        if !answer.trim().eq_ignore_ascii_case("y") {
+            println!("nothing sent");
+            return Ok(ExitCode::FAILURE);
+        }
+    }
+    let mut all = true;
+    for (slot, value) in changes {
+        let applied = backlash::set(&mut link, *slot, *value);
+        all &= applied.confirmed();
+        let text = match (&applied.read_back, applied.acknowledged) {
+            (Some(ReadBack::Matches), _) => "set and confirmed by read-back".to_owned(),
+            (Some(ReadBack::Differs(why)), _) => format!("acknowledged, but {why}"),
+            (Some(ReadBack::NotAnswered(o)), _) => {
+                format!("acknowledged, but the read-back went unanswered ({o:?})")
+            }
+            (None, o) => format!("not acknowledged ({o:?})"),
+        };
+        println!("{slot}={value}: {text}");
+    }
+    println!(
+        "anti-backlash now: {}",
+        show(&mut |s| backlash::read(&mut link, s))
+    );
+    Ok(if all {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    })
 }
 
 /// What `cwb celestron setup` will send. Coordinates are never printed:

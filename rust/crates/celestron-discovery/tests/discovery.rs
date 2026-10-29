@@ -41,7 +41,8 @@ fn a_healthy_evolution_passes_and_only_catalog_bytes_are_sent() {
     assert!(d.ready(), "{:#?}", d.checks);
     assert_eq!(status(&d, "Model"), Status::Pass);
     assert_eq!(status(&d, "Positions steady"), Status::Pass);
-    assert_eq!(d.exchanges.len(), 9 + 2 * 5);
+    assert_eq!(d.exchanges.len(), 13 + 2 * 5);
+    assert_eq!(status(&d, "Anti-backlash"), Status::Pass);
     let planned: Vec<Vec<u8>> = query::plan(5).into_iter().map(Query::bytes).collect();
     assert_eq!(fake.received, planned, "sent exactly the plan");
     assert_eq!(d.identity.model.as_deref(), Some("22 (NexStar Evolution)"));
@@ -121,6 +122,29 @@ fn a_low_version_number_is_information_when_the_newer_queries_answer() {
     );
     assert!(d.ready(), "{:#?}", d.checks);
     assert_eq!(status(&d, "Hand controller version"), Status::Info);
+}
+
+#[test]
+fn non_zero_anti_backlash_warns_with_the_values() {
+    let (d, _) = run(
+        FakeSetup {
+            backlash: [[12, 0], [0, 99]],
+            ..FakeSetup::default()
+        },
+        1,
+    );
+    assert!(d.ready());
+    assert_eq!(status(&d, "Anti-backlash"), Status::Warn);
+    let detail = &d
+        .checks
+        .iter()
+        .find(|c| c.name == "Anti-backlash")
+        .unwrap()
+        .detail;
+    assert!(
+        detail.contains("azimuth + 12") && detail.contains("altitude − 99"),
+        "{detail}"
+    );
 }
 
 #[test]

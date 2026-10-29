@@ -21,3 +21,9 @@ To orient on the sky, the hand controller needs the date, time and observing sit
 - Each observing session starts with one command instead of keypad entry.
 - The reference lists these commands from hand controller version 2.3. The StarSense numbers its firmware differently (ADR 0010), so the read-back, not the version, shows whether they work.
 - The terminal shows the time zone name. That's coarse, but it's worth knowing before pasting the output anywhere.
+
+## Anti-backlash (added 2026-10-29)
+
+- `cwb celestron backlash` reads the motor controllers' four anti-backlash settings and, with `--set azm+=N …` or `--set-all N` (0–99), sets them and reads each back, after confirmation. Not in Celestron's document: the commands are libnexstar's pass-through get (`P 01 10|11 40|41 00 00 00 01`) and set (`P 02 10|11 10|11 N 00 00 00`). The setup crate's allowlist covers exactly these.
+- First use: all four read 50, were set to 0, and read back 0. Whether the hand controller restores its own stored values at power-up is still to be checked.
+- The values are unitless 0–99 in every source found. Measuring their unit, and then the values that cancel this mount's backlash, is one of this project's outputs (ADR 0013).

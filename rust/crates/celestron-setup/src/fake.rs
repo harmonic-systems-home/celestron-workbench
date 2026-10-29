@@ -25,6 +25,8 @@ pub struct FakeSetter {
     quirks: Quirks,
     pub time: Option<[u8; 8]>,
     pub location: Option<[u8; 8]>,
+    /// Anti-backlash: [azimuth, altitude] × [positive, negative].
+    pub backlash: [[u8; 2]; 2],
     /// Every command received, in order.
     pub received: Vec<Vec<u8>>,
     pending: Vec<u8>,
@@ -59,6 +61,18 @@ impl FakeSetter {
                 t.to_vec()
             }
             GET_LOCATION => self.location.unwrap_or_default().to_vec(),
+            b'P' => match *cmd {
+                [_, 1, dev @ (16 | 17), id @ (0x40 | 0x41), 0, 0, 0, 1] => {
+                    vec![self.backlash[usize::from(dev - 16)][usize::from(id - 0x40)]]
+                }
+                [_, 2, dev @ (16 | 17), id @ (0x10 | 0x11), value, 0, 0, 0] => {
+                    if !self.quirks.forgets {
+                        self.backlash[usize::from(dev - 16)][usize::from(id - 0x10)] = value;
+                    }
+                    Vec::new()
+                }
+                _ => return None,
+            },
             b'K' => vec![cmd[1]],
             // NexStar Evolution.
             b'm' => vec![22],
@@ -75,6 +89,7 @@ impl Link for FakeSetter {
         while let Some(&first) = self.pending.first() {
             let len = match first {
                 SET_TIME | SET_LOCATION => 9,
+                b'P' => 8,
                 b'K' => 2,
                 _ => 1,
             };

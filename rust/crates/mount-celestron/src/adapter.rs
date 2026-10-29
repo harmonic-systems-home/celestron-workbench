@@ -15,7 +15,7 @@ use std::{
 use cwb_celestron_discovery::{Link, Outcome, Query, query::Value, transact};
 use cwb_mount_core::{CommandId, MountAdapter, MountCommand, MountReport, Nanos, TransportError};
 
-use crate::encode::{AxisSigns, transactions};
+use crate::encode::{CelestronSettings, transactions};
 
 /// Consecutive unanswered commands before the link counts as lost: the USB
 /// adapter can stay up while the hand controller or its cable is gone.
@@ -30,8 +30,19 @@ pub struct Position {
     pub deg: [f64; 2],
 }
 
+/// One motion command's serial exchange: when it went out, when the reply
+/// came, and what it was. Stop timing is measured from these.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct Transaction {
+    pub sent_ns: Nanos,
+    pub reply_ns: Nanos,
+    pub bytes: [u8; 8],
+    pub outcome: Outcome,
+}
+
 enum Event {
     Ack(CommandId),
+    Transaction(Transaction),
     Lost(String),
     Position(Position),
     Note(String),
@@ -44,6 +55,7 @@ pub struct CelestronAdapter {
     events: mpsc::Receiver<Event>,
     lost: bool,
     positions: Vec<Position>,
+    transactions: Vec<Transaction>,
     notes: Vec<String>,
     worker: Option<JoinHandle<()>>,
 }
@@ -53,7 +65,7 @@ impl CelestronAdapter {
     /// positions whenever no command has arrived for that long.
     pub fn spawn<L: Link + Send + 'static>(
         link: L,
-        signs: AxisSigns,
+        signs: CelestronSettings,
         clock: Clock,
         position_every: Option<Duration>,
     ) -> Self {
@@ -68,6 +80,7 @@ impl CelestronAdapter {
                     clock,
                     events: tx,
                     timeouts: 0,
+                    moving: false,
                 }
                 .run(rx, position_every)
             })
@@ -77,6 +90,7 @@ impl CelestronAdapter {
             events,
             lost: false,
             positions: Vec::new(),
+            transactions: Vec::new(),
             notes: Vec::new(),
             worker: Some(worker),
         }
@@ -85,6 +99,11 @@ impl CelestronAdapter {
     /// Axis positions read since the last call.
     pub fn take_positions(&mut self) -> Vec<Position> {
         std::mem::take(&mut self.positions)
+    }
+
+    /// Motion commands' serial exchanges since the last call.
+    pub fn take_transactions(&mut self) -> Vec<Transaction> {
+        std::mem::take(&mut self.transactions)
     }
 
     /// Things the operator should know that aren't faults by themselves.
@@ -119,10 +138,11 @@ impl MountAdapter for CelestronAdapter {
                     if !self.lost {
                         self.lost = true;
                         reports.push(MountReport::TransportLost);
+                        self.notes.push(why);
                     }
-                    self.notes.push(why);
                 }
                 Event::Position(p) => self.positions.push(p),
+                Event::Transaction(t) => self.transactions.push(t),
                 Event::Note(n) => self.notes.push(n),
             }
         }
@@ -142,10 +162,14 @@ impl Drop for CelestronAdapter {
 
 struct Worker<L: Link> {
     link: L,
-    signs: AxisSigns,
+    signs: CelestronSettings,
     clock: Clock,
     events: mpsc::Sender<Event>,
     timeouts: u32,
+    /// A move has been sent and no stop since. Positions aren't read then:
+    /// the hand controller answers `z` slowly while a motor slews (hundreds
+    /// of ms), and a stop must never wait behind it.
+    moving: bool,
 }
 
 impl<L: Link> Worker<L> {
@@ -163,7 +187,8 @@ impl<L: Link> Worker<L> {
                         self.execute(&command);
                     }
                 }
-                Err(RecvTimeoutError::Timeout) => self.read_position(),
+                Err(RecvTimeoutError::Timeout) if !self.moving => self.read_position(),
+                Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => {
                     self.execute(&MountCommand::StopAll);
                     return;
@@ -173,9 +198,17 @@ impl<L: Link> Worker<L> {
     }
 
     fn execute(&mut self, command: &MountCommand) {
+        self.moving = matches!(command, MountCommand::Move { .. });
         let mut all_ok = true;
         for bytes in transactions(command, self.signs) {
+            let sent_ns = (self.clock)();
             let (outcome, _) = transact(&mut self.link, &bytes, 0, true);
+            let _ = self.events.send(Event::Transaction(Transaction {
+                sent_ns,
+                reply_ns: (self.clock)(),
+                bytes,
+                outcome,
+            }));
             all_ok &= outcome == Outcome::Ok;
             self.outcome(outcome, command);
         }
@@ -193,6 +226,16 @@ impl<L: Link> Worker<L> {
                     "a motor controller didn't answer {command:?}"
                 )));
             }
+            Outcome::Timeout | Outcome::Malformed | Outcome::LinkError => self.link_health(outcome),
+        }
+    }
+
+    /// Unanswered commands and a failed port count against the link,
+    /// whether they were motion commands or position reads: a dead link must
+    /// show before anything is armed, not when a move is sent.
+    fn link_health(&mut self, outcome: Outcome) {
+        match outcome {
+            Outcome::Ok | Outcome::DeviceNoResponse => self.timeouts = 0,
             Outcome::Timeout | Outcome::Malformed => {
                 self.timeouts += 1;
                 if self.timeouts >= TIMEOUTS_UNTIL_LOST {
@@ -203,9 +246,10 @@ impl<L: Link> Worker<L> {
                 }
             }
             Outcome::LinkError => {
-                let _ = self
-                    .events
-                    .send(Event::Lost("the serial port failed".into()));
+                let _ = self.events.send(Event::Lost(
+                    "the serial port failed (was the USB cable or hand controller reset? restart the runner)"
+                        .into(),
+                ));
             }
         }
     }
@@ -213,16 +257,24 @@ impl<L: Link> Worker<L> {
     fn read_position(&mut self) {
         let query = Query::PreciseAzmAlt;
         let (outcome, reply) = transact(&mut self.link, &query.bytes(), query.reply_len(), false);
-        if outcome == Outcome::Ok
-            && let Some(Value::Angles {
+        let decoded = (outcome == Outcome::Ok)
+            .then(|| query.decode(&reply[..query.reply_len()]))
+            .flatten();
+        match decoded {
+            Some(Value::Angles {
                 azm_deg, alt_deg, ..
-            }) = query.decode(&reply[..query.reply_len()])
-        {
-            self.timeouts = 0;
-            let _ = self.events.send(Event::Position(Position {
-                t_ns: (self.clock)(),
-                deg: [azm_deg, alt_deg],
-            }));
+            }) => {
+                self.timeouts = 0;
+                let _ = self.events.send(Event::Position(Position {
+                    t_ns: (self.clock)(),
+                    deg: [azm_deg, alt_deg],
+                }));
+            }
+            _ => self.link_health(if outcome == Outcome::Ok {
+                Outcome::Malformed
+            } else {
+                outcome
+            }),
         }
     }
 }

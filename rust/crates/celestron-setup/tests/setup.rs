@@ -3,6 +3,7 @@
 //! here are fictitious.
 
 use cwb_celestron_discovery::Outcome;
+use cwb_celestron_setup::backlash::{self, Slot};
 use cwb_celestron_setup::{
     Dms, HandTime, Location, ReadBack, SetupError, Site,
     apply::until_next_second,
@@ -160,4 +161,49 @@ fn the_site_file_rejects_placeholders_ranges_and_unknown_keys() {
 fn the_time_is_sent_on_a_whole_second() {
     let ts: Timestamp = "2026-10-29T19:34:56.25Z".parse().unwrap();
     assert_eq!(until_next_second(ts).as_millis(), 750);
+}
+
+#[test]
+fn backlash_bytes_follow_libnexstar() {
+    let azm_pos = Slot::parse("azm+").unwrap();
+    assert_eq!(azm_pos.get_bytes(), [b'P', 1, 16, 0x40, 0, 0, 0, 1]);
+    assert_eq!(azm_pos.set_bytes(0), [b'P', 2, 16, 0x10, 0, 0, 0, 0]);
+    let alt_neg = Slot::parse("alt-").unwrap();
+    assert_eq!(alt_neg.set_bytes(99), [b'P', 2, 17, 0x11, 99, 0, 0, 0]);
+    assert_eq!(alt_neg.to_string(), "alt-");
+    assert!(Slot::parse("ra+").is_none());
+}
+
+#[test]
+fn backlash_is_set_and_confirmed_by_read_back() {
+    let mut hc = FakeSetter::default();
+    hc.backlash = [[50, 50], [50, 50]];
+    for slot in Slot::ALL {
+        assert_eq!(backlash::read(&mut hc, slot), Some(50));
+        assert!(backlash::set(&mut hc, slot, 0).confirmed());
+    }
+    assert_eq!(hc.backlash, [[0, 0], [0, 0]]);
+    // Only backlash gets and sets went out: pass-through to the motors.
+    for cmd in &hc.received {
+        let get = cmd[1] == 1 && [0x40, 0x41].contains(&cmd[3]) && cmd[4..] == [0, 0, 0, 1];
+        let set = cmd[1] == 2 && [0x10, 0x11].contains(&cmd[3]) && cmd[5..] == [0, 0, 0];
+        assert!(
+            cmd[0] == b'P' && [16, 17].contains(&cmd[2]) && (get || set),
+            "{cmd:?}"
+        );
+    }
+}
+
+#[test]
+fn a_backlash_value_that_does_not_take_is_reported() {
+    let mut hc = FakeSetter::new(Quirks {
+        forgets: true,
+        ..Quirks::default()
+    });
+    hc.backlash = [[50, 50], [50, 50]];
+    let applied = backlash::set(&mut hc, Slot::ALL[0], 0);
+    assert_eq!(applied.acknowledged, Outcome::Ok);
+    assert!(
+        matches!(applied.read_back, Some(ReadBack::Differs(ref why)) if why.contains("reads back 50"))
+    );
 }

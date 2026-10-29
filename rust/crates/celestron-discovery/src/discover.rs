@@ -8,7 +8,7 @@ use serde::Serialize;
 
 use crate::{
     link::{self, Link, UsbInfo},
-    query::{self, Device, EVOLUTION_MODEL, Query, Value},
+    query::{self, Device, EVOLUTION_MODEL, Query, Sense, Value},
 };
 
 pub use crate::link::Outcome;
@@ -309,6 +309,50 @@ pub fn summarize(
         if both { Status::Pass } else { Status::Fail },
         motors.join("; "),
     );
+
+    let backlash: Vec<(String, Option<u8>)> = [
+        ("azimuth +", Device::AzmMotor, Sense::Positive),
+        ("azimuth −", Device::AzmMotor, Sense::Negative),
+        ("altitude +", Device::AltMotor, Sense::Positive),
+        ("altitude −", Device::AltMotor, Sense::Negative),
+    ]
+    .into_iter()
+    .map(|(name, d, sense)| {
+        let v = match value(Query::Backlash(d, sense)) {
+            Some(Value::Backlash(v)) => Some(v),
+            _ => None,
+        };
+        (name.to_owned(), v)
+    })
+    .collect();
+    let listed = backlash
+        .iter()
+        .map(|(n, v)| format!("{n} {}", v.map_or("—".into(), |v| v.to_string())))
+        .collect::<Vec<_>>()
+        .join(", ");
+    if backlash.iter().any(|(_, v)| v.is_none()) {
+        check(
+            "Anti-backlash",
+            Status::Warn,
+            format!(
+                "{listed}: not every value was read (the query is from libnexstar, not Celestron's document)"
+            ),
+        );
+    } else if backlash.iter().all(|(_, v)| *v == Some(0)) {
+        check(
+            "Anti-backlash",
+            Status::Pass,
+            format!("{listed}: no compensation"),
+        );
+    } else {
+        check(
+            "Anti-backlash",
+            Status::Warn,
+            format!(
+                "{listed}: compensation on a reversal would hide the backlash being measured; set to 0 for characterization"
+            ),
+        );
+    }
 
     match value(Query::GotoInProgress) {
         Some(Value::Flag(false)) => check("Goto in progress", Status::Pass, "no".into()),

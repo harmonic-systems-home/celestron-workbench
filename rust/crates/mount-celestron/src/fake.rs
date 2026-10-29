@@ -22,6 +22,8 @@ pub struct SimHandController {
     clock: Clock,
     /// Tracking mode as `t` reports it; `T` sets it.
     pub tracking: u8,
+    /// Every anti-backlash setting reads as this.
+    pub backlash: u8,
     /// Every command received, shared so tests can read it after the
     /// adapter has taken the link.
     pub received: Arc<Mutex<Vec<Vec<u8>>>>,
@@ -35,6 +37,7 @@ impl SimHandController {
             mount,
             clock,
             tracking: 0,
+            backlash: 0,
             received: Arc::default(),
             pending: Vec::new(),
             reply: VecDeque::new(),
@@ -91,11 +94,18 @@ impl SimHandController {
             mount.poll(now);
             return Ok(Some(Vec::new()));
         }
+        if !self.mount.lock().expect("sim mount").is_connected() {
+            return Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "simulated link is down",
+            ));
+        }
         Ok(Some(match *cmd {
             [b'K', x] => vec![x],
             [b'V'] => vec![1, 22],
             [b'm'] => vec![22],
             [b'P', 1, 16 | 17, 254, 0, 0, 0, 2] => vec![7, 17],
+            [b'P', 1, 16 | 17, 0x40 | 0x41, 0, 0, 0, 1] => vec![self.backlash],
             [b'L'] => vec![b'0'],
             [b't'] => vec![self.tracking],
             [b'T', mode] => {

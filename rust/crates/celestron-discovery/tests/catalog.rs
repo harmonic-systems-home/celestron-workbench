@@ -2,7 +2,8 @@
 //! documented "get" (ADR 0010).
 
 use cwb_celestron_discovery::query::{
-    self, ALLOWED_FIRST_BYTES, Device, GET_DEVICE_VERSION, Query, Value,
+    self, ALLOWED_FIRST_BYTES, Device, GET_BACKLASH_NEGATIVE, GET_BACKLASH_POSITIVE,
+    GET_DEVICE_VERSION, Query, Value,
 };
 
 fn every_query() -> Vec<Query> {
@@ -28,7 +29,13 @@ fn every_sendable_command_is_a_documented_get() {
             assert_eq!(bytes.len(), 8, "{q}");
             assert_eq!(bytes[1], 1, "{q}: one data byte, a get");
             assert!([16, 17].contains(&bytes[2]), "{q}: motors only");
-            assert_eq!(bytes[3], GET_DEVICE_VERSION, "{q}");
+            // Gets only: version (2-byte reply) or backlash (1-byte reply).
+            match bytes[3] {
+                GET_DEVICE_VERSION => assert_eq!(bytes[7], 2, "{q}"),
+                GET_BACKLASH_POSITIVE | GET_BACKLASH_NEGATIVE => assert_eq!(bytes[7], 1, "{q}"),
+                other => panic!("{q}: pass-through message {other:#x}"),
+            }
+            assert_eq!(bytes[4..7], [0, 0, 0], "{q}: no data sent");
         } else if bytes[0] == b'K' {
             assert_eq!(bytes.len(), 2);
         } else {

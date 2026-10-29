@@ -3,11 +3,13 @@
 //!
 //! These are the first commands that change the hand controller, so they
 //! live apart from read-only discovery. The only sendable commands are
-//! Set Time (`H`), Set Location (`W`) and their read-backs (`h`, `w`):
-//! nothing here can move the mount. Site coordinates come from a git-ignored
+//! Set Time (`H`), Set Location (`W`), the motor controllers' anti-backlash
+//! set and get ([`backlash`]), and their read-backs (`h`, `w`): nothing here
+//! can move the mount. Site coordinates come from a git-ignored
 //! site file ([`site`]) and are never printed, logged or shown in `Debug`.
 
 pub mod apply;
+pub mod backlash;
 pub mod command;
 pub mod fake;
 pub mod site;

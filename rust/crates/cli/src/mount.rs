@@ -86,12 +86,9 @@ pub fn run(options: Options) -> Result<ExitCode> {
         .db
         .clone()
         .context("--db or CWB_DB is required: the phone's samples are stored there")?;
-    let link = SerialLink::open(&path).with_context(|| format!("opening {path}"))?;
-    let adapter = start_adapter(link, &config, now.clone(), &redact_path(&path))?;
-    let (runner, out) = Runner::new(config, adapter, log, true, clock.boot_id(), now())
-        .map_err(anyhow::Error::msg)?;
-    print(&out);
     let result = super::runtime()?.block_on(async {
+        // Claim the phone's port first, so a busy port fails before the
+        // hand controller is touched or the checklist is shown.
         let store = super::store(&db, &clock)?;
         let (writer, thread) = writer::spawn(store, 256);
         let (tap, taps) = mpsc::channel(4096);
@@ -112,6 +109,11 @@ pub fn run(options: Options) -> Result<ExitCode> {
                 String::new()
             }
         );
+        let link = SerialLink::open(&path).with_context(|| format!("opening {path}"))?;
+        let adapter = start_adapter(link, &config, now.clone(), &redact_path(&path))?;
+        let (runner, out) = Runner::new(config, adapter, log, true, clock.boot_id(), now())
+            .map_err(anyhow::Error::msg)?;
+        print(&out);
         let (stop_server, stopped) = tokio::sync::oneshot::channel::<()>();
         let server = tokio::spawn(server.run(async {
             let _ = stopped.await;
@@ -155,6 +157,18 @@ fn start_adapter<L: Link + Send + 'static>(
     for note in &prepared.notes {
         println!("note: {note}");
     }
+    let [[azp, azn], [alp, aln]] = prepared.backlash;
+    if prepared.backlash.iter().flatten().any(|v| *v != Some(0)) {
+        let show = |v: Option<u8>| v.map_or("—".into(), |v| v.to_string());
+        anyhow::bail!(
+            "anti-backlash is azm+ {}, azm- {}, alt+ {}, alt- {}: it must be 0 so it doesn't hide the backlash being measured. Run `cwb celestron backlash --port … --set-all 0`.",
+            show(azp),
+            show(azn),
+            show(alp),
+            show(aln)
+        );
+    }
+    println!("anti-backlash 0 on both axes");
     Ok(CelestronAdapter::spawn(
         link,
         config.celestron,

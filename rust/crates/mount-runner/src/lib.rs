@@ -13,9 +13,9 @@ pub mod clock;
 pub mod config;
 pub mod log;
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 
-use cwb_mount_celestron::{CelestronAdapter, Position, encode::quantized_deg_s};
+use cwb_mount_celestron::{CelestronAdapter, Position, Transaction, encode::quantized_deg_s};
 use cwb_mount_core::{
     Action, Axis, Controller, Direction, FaultKind, MountAdapter, MountReport, MountState,
     MoveRequest, Nanos, Observation, imu::AxisMapper,
@@ -30,6 +30,18 @@ pub use config::RunnerConfig;
 pub use log::RunLog;
 
 const MS: Nanos = 1_000_000;
+/// The raw gyroscope's offset is measured over this much stillness when the
+/// operator arms (ADR 0013).
+pub const BIAS_WINDOW_MS: Nanos = 3_000;
+/// At 100 Hz, about 2.5 s of the window.
+const BIAS_MIN_SAMPLES: usize = 250;
+/// The mount's own positions must stay within this during the window.
+const BIAS_STILL_DEG: f64 = 0.002;
+/// Arming and moving need a position read this recently: proof the hand
+/// controller link is alive (positions are read every 250 ms while idle).
+const POSITION_MAX_AGE_MS: Nanos = 1_000;
+/// While armed and idle, a link silent this long is lost.
+const POSITION_LOST_MS: Nanos = 1_500;
 
 /// What the runner needs from a mount adapter beyond [`MountAdapter`].
 pub trait RunnerAdapter: MountAdapter {
@@ -40,6 +52,15 @@ pub trait RunnerAdapter: MountAdapter {
     fn take_notes(&mut self) -> Vec<String> {
         Vec::new()
     }
+    /// Motion commands' serial exchanges since the last call.
+    fn take_transactions(&mut self) -> Vec<Transaction> {
+        Vec::new()
+    }
+    /// Whether the adapter reads the mount's positions while idle: if so,
+    /// their freshness shows the link is alive.
+    fn reports_positions(&self) -> bool {
+        false
+    }
 }
 
 impl RunnerAdapter for CelestronAdapter {
@@ -48,6 +69,12 @@ impl RunnerAdapter for CelestronAdapter {
     }
     fn take_notes(&mut self) -> Vec<String> {
         CelestronAdapter::take_notes(self)
+    }
+    fn take_transactions(&mut self) -> Vec<Transaction> {
+        CelestronAdapter::take_transactions(self)
+    }
+    fn reports_positions(&self) -> bool {
+        true
     }
 }
 
@@ -135,6 +162,18 @@ pub struct Runner<A: RunnerAdapter> {
     records_seen: usize,
     last_observation: Option<Observation>,
     last_position: Option<Position>,
+    /// Recent mount positions, for the stillness check while measuring bias.
+    positions: VecDeque<Position>,
+    /// Gravity from the newest device-motion sample, phone body frame.
+    gravity: Option<[f64; 3]>,
+    /// Recent raw gyroscope samples on the Mac clock, rad/s.
+    gyro: VecDeque<(Nanos, [f64; 3])>,
+    /// The raw gyroscope's offset, measured at arming. While set, the safety
+    /// checks use the raw gyroscope; before it, iOS's fused rate.
+    bias: Option<[f64; 3]>,
+    /// The last time a command was moving or stopping: the adapter reads no
+    /// positions then, so silence doesn't count against the link.
+    last_busy: Nanos,
 }
 
 impl<A: RunnerAdapter> Runner<A> {
@@ -172,6 +211,11 @@ impl<A: RunnerAdapter> Runner<A> {
             records_seen: 0,
             last_observation: None,
             last_position: None,
+            positions: VecDeque::new(),
+            gravity: None,
+            gyro: VecDeque::new(),
+            bias: None,
+            last_busy: now,
             config,
         };
         let mut out = vec![info("Mount-session checklist:")];
@@ -231,7 +275,7 @@ impl<A: RunnerAdapter> Runner<A> {
                 let result = self.controller.connect(now);
                 self.result(result, now, &mut out);
                 out.push(info(
-                    "Checklist confirmed. Wait for the IMU to show fresh (status), then arm. Type help for commands.",
+                    "Checklist confirmed. Type status until it shows IMU fresh, keep the mount still 3 s, then arm. Type help for commands.",
                 ));
             }
             (Stage::Checklist, _) => out.push(prompt(
@@ -245,7 +289,23 @@ impl<A: RunnerAdapter> Runner<A> {
                 None => out.push(info("Nothing to confirm.")),
             },
             (Stage::Ready, "arm") => {
+                if let Err(why) = self.link_alive(now) {
+                    out.push(alert(format!("refused: {why}")));
+                    return out;
+                }
+                if self.session.is_some() {
+                    match self.measure_bias(now) {
+                        Ok(text) => out.push(info(text)),
+                        Err(why) => {
+                            out.push(alert(format!("refused: {why}")));
+                            return out;
+                        }
+                    }
+                }
                 let result = self.controller.arm(now);
+                if result.is_err() {
+                    self.bias = None;
+                }
                 self.result(result, now, &mut out);
             }
             (Stage::Ready, "disarm") => {
@@ -312,12 +372,43 @@ impl<A: RunnerAdapter> Runner<A> {
                     return out;
                 };
                 for sample in &batch.samples {
-                    if let Sample::DeviceMotion(m) = sample
-                        && let Some(o) =
-                            self.mapper
-                                .observe(model.to_mac_ns(m.t_ns), m.rotation_rate, m.gravity)
-                    {
-                        out.extend(self.observation(o, now));
+                    match sample {
+                        Sample::DeviceMotion(m) => {
+                            self.gravity = Some(m.gravity);
+                            // iOS's fused rate absorbs slow steady rotation
+                            // as bias, so it serves only until arming.
+                            if self.bias.is_none()
+                                && let Some(o) = self.mapper.observe(
+                                    model.to_mac_ns(m.t_ns),
+                                    m.rotation_rate,
+                                    m.gravity,
+                                )
+                            {
+                                out.extend(self.observation(o, now));
+                            }
+                        }
+                        Sample::Gyro(g) => {
+                            let t = model.to_mac_ns(g.t_ns);
+                            self.gyro.push_back((t, g.rotation_rate));
+                            while self
+                                .gyro
+                                .front()
+                                .is_some_and(|(s, _)| *s < t - BIAS_WINDOW_MS * MS)
+                            {
+                                self.gyro.pop_front();
+                            }
+                            if let (Some(b), Some(gravity)) = (self.bias, self.gravity) {
+                                let rate = [
+                                    g.rotation_rate[0] - b[0],
+                                    g.rotation_rate[1] - b[1],
+                                    g.rotation_rate[2] - b[2],
+                                ];
+                                if let Some(o) = self.mapper.observe(t, rate, gravity) {
+                                    out.extend(self.observation(o, now));
+                                }
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -358,15 +449,69 @@ impl<A: RunnerAdapter> Runner<A> {
                 json!({ "t_ns": p.t_ns, "deg": p.deg }),
             );
             self.last_position = Some(p);
+            self.positions.push_back(p);
+            while self
+                .positions
+                .front()
+                .is_some_and(|q| q.t_ns < p.t_ns - BIAS_WINDOW_MS * MS)
+            {
+                self.positions.pop_front();
+            }
+        }
+        for t in self.adapter.take_transactions() {
+            let bytes: Vec<String> = t.bytes.iter().map(|b| format!("{b:02X}")).collect();
+            self.log.write(
+                now,
+                "serial",
+                json!({
+                    "sent_ns": t.sent_ns,
+                    "reply_ns": t.reply_ns,
+                    "bytes": bytes.join(" "),
+                    "outcome": t.outcome,
+                }),
+            );
         }
         for note in self.adapter.take_notes() {
             self.log.write(now, "mount_note", json!({ "note": note }));
             out.push(alert(note));
         }
+        match self.controller.state() {
+            MountState::Moving | MountState::Stopping => self.last_busy = now,
+            MountState::Armed if self.adapter.reports_positions() => {
+                let heard = self
+                    .last_position
+                    .map_or(self.last_busy, |p| p.t_ns.max(self.last_busy));
+                if now - heard > POSITION_LOST_MS * MS {
+                    self.log
+                        .write(now, "link_silent", json!({ "since_ns": heard }));
+                    out.push(alert(
+                        "the hand controller stopped answering position reads",
+                    ));
+                    let actions = self.controller.transport_lost(now);
+                    self.carry_out(actions, now, &mut out);
+                }
+            }
+            _ => {}
+        }
         let actions = self.controller.tick(now);
         self.carry_out(actions, now, &mut out);
         out.extend(self.changes(now));
         out
+    }
+
+    /// With an adapter that reads positions, a recent read proves the link.
+    fn link_alive(&self, now: Nanos) -> Result<(), String> {
+        if !self.adapter.reports_positions() {
+            return Ok(());
+        }
+        match self.last_position {
+            Some(p) if now - p.t_ns <= POSITION_MAX_AGE_MS * MS => Ok(()),
+            Some(p) => Err(format!(
+                "the mount's position was last read {:.1} s ago: the hand controller link may be down (restart the runner)",
+                (now - p.t_ns) as f64 / 1e9
+            )),
+            None => Err("the mount's position hasn't been read yet: wait a moment".into()),
+        }
     }
 
     /// Stops everything; the caller keeps ticking briefly, then exits.
@@ -383,6 +528,11 @@ impl<A: RunnerAdapter> Runner<A> {
     fn request(&mut self, request: MoveRequest, now: Nanos, out: &mut Vec<Out>) {
         self.log
             .write(now, "request", json!({ "request": request }));
+        if let Err(why) = self.link_alive(now) {
+            self.log.write(now, "refused", json!({ "reason": why }));
+            out.push(alert(format!("refused: {why}")));
+            return;
+        }
         match self.controller.request_move(request.clone(), now) {
             Ok(actions) => {
                 out.push(info(format!(
@@ -444,6 +594,10 @@ impl<A: RunnerAdapter> Runner<A> {
         let mut out = Vec::new();
         let state = self.controller.state();
         if state != self.last_state {
+            // Back to read-only (disarmed or reset): measure afresh next time.
+            if state == MountState::ConnectedReadOnly && self.bias.take().is_some() {
+                self.log.write(now, "gyro_bias_cleared", json!({}));
+            }
             self.log.write(
                 now,
                 "state",
@@ -493,10 +647,65 @@ impl<A: RunnerAdapter> Runner<A> {
         out
     }
 
+    /// Measures the raw gyroscope's offset over the last [`BIAS_WINDOW_MS`],
+    /// which must be still: the mount's own positions must not change. A
+    /// steady slow rotation looks just like an offset to a gyroscope, so this
+    /// independent check matters.
+    fn measure_bias(&mut self, now: Nanos) -> Result<String, String> {
+        let since = now - BIAS_WINDOW_MS * MS;
+        let samples: Vec<[f64; 3]> = self
+            .gyro
+            .iter()
+            .filter(|(t, _)| *t >= since)
+            .map(|(_, r)| *r)
+            .collect();
+        if samples.len() < BIAS_MIN_SAMPLES {
+            return Err(format!(
+                "need {:.0} s of raw gyroscope data to measure its offset ({} samples so far): turn on Raw gyroscope in the app, keep the mount still, and try again",
+                BIAS_WINDOW_MS as f64 / 1000.0,
+                samples.len()
+            ));
+        }
+        let recent: Vec<&Position> = self.positions.iter().filter(|p| p.t_ns >= since).collect();
+        for axis in 0..2 {
+            let (lo, hi) = recent.iter().fold((f64::MAX, f64::MIN), |(lo, hi), p| {
+                (lo.min(p.deg[axis]), hi.max(p.deg[axis]))
+            });
+            if recent.len() >= 2 && hi - lo > BIAS_STILL_DEG {
+                return Err(format!(
+                    "the mount's own position changed {:.4}° in the last {:.0} s: it must be still while the gyroscope offset is measured",
+                    hi - lo,
+                    BIAS_WINDOW_MS as f64 / 1000.0
+                ));
+            }
+        }
+        let n = samples.len() as f64;
+        let bias = [0, 1, 2].map(|i| samples.iter().map(|s| s[i]).sum::<f64>() / n);
+        self.bias = Some(bias);
+        let deg = bias.map(f64::to_degrees);
+        self.log.write(
+            now,
+            "gyro_bias",
+            json!({ "rad_s": bias, "deg_s": deg, "samples": samples.len(), "positions": recent.len() }),
+        );
+        Ok(format!(
+            "raw gyroscope offset {:+.4}, {:+.4}, {:+.4} °/s from {} samples; safety checks now use the raw gyroscope",
+            deg[0],
+            deg[1],
+            deg[2],
+            samples.len()
+        ))
+    }
+
     fn status(&self, now: Nanos) -> String {
         let imu = match self.last_observation {
             Some(o) => format!(
-                "IMU {:.0} ms old: azimuth {:+.3} °/s, altitude {:+.3} °/s, tube at {:.1}°",
+                "IMU {} ({:.0} ms old): azimuth {:+.3} °/s, altitude {:+.3} °/s, tube at {:.1}°",
+                if now - o.t_ns <= self.config.safety.imu_max_age_ms as Nanos * MS {
+                    "fresh"
+                } else {
+                    "STALE"
+                },
                 (now - o.t_ns) as f64 / MS as f64,
                 o.rate_deg_s[0],
                 o.rate_deg_s[1],
@@ -514,12 +723,21 @@ impl<A: RunnerAdapter> Runner<A> {
             .last_position
             .map_or("mount positions: none read".into(), |p| {
                 format!(
-                    "mount positions: azimuth {:.4}°, altitude {:.4}°",
-                    p.deg[0], p.deg[1]
+                    "mount positions ({:.0} ms old): azimuth {:.4}°, altitude {:.4}°",
+                    (now - p.t_ns) as f64 / 1e6,
+                    p.deg[0],
+                    p.deg[1]
                 )
             });
+        let source = if self.bias.is_some() {
+            ", raw gyroscope"
+        } else if self.session.is_some() {
+            ", iOS fused rate until armed"
+        } else {
+            ""
+        };
         format!(
-            "state {:?}; {imu}{clock}; unconfirmed travel azimuth {az:+.3}°, altitude {alt:+.3}°; {mount}",
+            "state {:?}; {imu}{clock}{source}; unconfirmed travel azimuth {az:+.3}°, altitude {alt:+.3}°; {mount}",
             self.controller.state()
         )
     }

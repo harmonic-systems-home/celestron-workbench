@@ -117,6 +117,11 @@ impl SimMount {
         }
     }
 
+    /// False once the simulated link has dropped.
+    pub fn is_connected(&self) -> bool {
+        self.connected
+    }
+
     pub fn angles_deg(&self) -> [f64; 2] {
         [self.axes[0].angle_deg, self.axes[1].angle_deg]
     }

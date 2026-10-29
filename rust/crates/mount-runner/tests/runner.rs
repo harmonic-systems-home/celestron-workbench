@@ -7,12 +7,15 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use cwb_mount_core::{MountCommand, MountState, Nanos, Stage};
-use cwb_mount_runner::{Kind, Out, RunLog, Runner, RunnerConfig};
+use cwb_mount_celestron::Position;
+use cwb_mount_core::{
+    MountAdapter, MountCommand, MountReport, MountState, Nanos, Stage, TransportError,
+};
+use cwb_mount_runner::{Kind, Out, RunLog, Runner, RunnerAdapter, RunnerConfig};
 use cwb_mount_sim::{SimFaults, SimMount};
 use cwb_protocol::{
-    AttitudeReferenceFrame, ClockResult, DeviceInfo, DeviceMotionSample, Hello, Message,
-    PROTOCOL_VERSION, Quaternion, Sample, SampleBatch, SensorAvailability, Stream,
+    AttitudeReferenceFrame, ClockResult, DeviceInfo, DeviceMotionSample, GyroSample, Hello,
+    Message, PROTOCOL_VERSION, Quaternion, Sample, SampleBatch, SensorAvailability, Stream,
 };
 use cwb_receiver::Tapped;
 
@@ -252,7 +255,7 @@ fn hello() -> Message {
         protocol_version: PROTOCOL_VERSION,
         session_id: SESSION.into(),
         device: DeviceInfo {
-            device_id: "22222222-2222-4222-8222-222222222222".into(),
+            device_id: DEVICE.into(),
             vendor: "Apple".into(),
             model: "iPhone".into(),
             os_version: "26.0".into(),
@@ -265,12 +268,14 @@ fn hello() -> Message {
             accel: true,
             magnetometer: true,
         },
-        streams: vec![Stream::DeviceMotion],
+        streams: vec![Stream::DeviceMotion, Stream::Gyro],
         attitude_reference_frame: AttitudeReferenceFrame::XArbitraryZVertical,
         requested_interval_s: 0.01,
         accel_g0_m_s2: 9.80665,
     })
 }
+
+const DEVICE: &str = "22222222-2222-4222-8222-222222222222";
 
 /// The phone clock runs exactly 5 s behind the Mac's.
 const PHONE_BEHIND: Nanos = 5_000 * MS;
@@ -279,7 +284,7 @@ fn clock_result(index: u64, mac_ns: Nanos) -> Message {
     Message::ClockResult(ClockResult {
         protocol_version: PROTOCOL_VERSION,
         session_id: SESSION.into(),
-        device_id: "22222222-2222-4222-8222-222222222222".into(),
+        device_id: DEVICE.into(),
         exchange_index: index,
         phone_send_ns: mac_ns - PHONE_BEHIND - 2 * MS,
         mac_receive_ns: mac_ns,
@@ -289,36 +294,62 @@ fn clock_result(index: u64, mac_ns: Nanos) -> Message {
     })
 }
 
-/// A still phone, top toward the sky end, tube at 30° altitude.
-fn batch(mac_ns: Nanos) -> Message {
-    let alt = 30f64.to_radians();
-    // Phone y along the tube, z up-ish: gravity in body terms.
-    let gravity = [0.0, -9.80665 * alt.sin(), -9.80665 * alt.cos()];
-    let samples = (0..10)
-        .map(|i| {
-            Sample::DeviceMotion(DeviceMotionSample {
-                seq: i,
-                t_ns: mac_ns - PHONE_BEHIND - (9 - i as i64) * 10 * MS,
-                attitude: Quaternion {
-                    w: 1.0,
-                    x: 0.0,
-                    y: 0.0,
-                    z: 0.0,
-                },
-                rotation_rate: [0.0; 3],
-                gravity,
-                user_accel: [0.0; 3],
-                magnetic_field_ut: None,
-                magnetic_accuracy: None,
-            })
-        })
-        .collect();
+/// The phone lies on the tube, top toward the sky end, tube at 30°: its y
+/// axis along the tube, z out of the screen. Gravity in body terms, and the
+/// body-frame vector for a rotation about the vertical.
+const ALT: f64 = 30.0;
+
+fn up_body() -> [f64; 3] {
+    let a = ALT.to_radians();
+    [0.0, a.sin(), a.cos()]
+}
+
+/// The raw gyroscope's offset, rad/s: 0.15 °/s, mostly about the vertical.
+fn offset() -> [f64; 3] {
+    let b = 0.15f64.to_radians();
+    let up = up_body();
+    [0.0, b * up[1], b * up[2]]
+}
+
+/// Ten samples of each stream ending at `mac_ns`. `azimuth_deg_s` is the
+/// true rotation, clockwise from above; the fused rate reports `fused`
+/// (iOS's estimate) and the raw gyroscope reports truth plus the offset.
+fn batch(mac_ns: Nanos, azimuth_deg_s: f64, fused_deg_s: f64) -> Message {
+    let up = up_body();
+    let gravity = up.map(|u| -9.80665 * u);
+    let about_down = |deg_s: f64| up.map(|u| -deg_s.to_radians() * u);
+    let truth = about_down(azimuth_deg_s);
+    let b = offset();
+    let mut samples = Vec::new();
+    for i in 0..10u64 {
+        let t_ns = mac_ns - PHONE_BEHIND - (9 - i as i64) * 10 * MS;
+        samples.push(Sample::DeviceMotion(DeviceMotionSample {
+            seq: 2 * i,
+            t_ns,
+            attitude: Quaternion {
+                w: 1.0,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            rotation_rate: about_down(fused_deg_s),
+            gravity,
+            user_accel: [0.0; 3],
+            magnetic_field_ut: None,
+            magnetic_accuracy: None,
+        }));
+        samples.push(Sample::Gyro(GyroSample {
+            seq: 2 * i + 1,
+            t_ns,
+            rotation_rate: [truth[0] + b[0], truth[1] + b[1], truth[2] + b[2]],
+        }));
+    }
     Message::SampleBatch(SampleBatch {
         protocol_version: PROTOCOL_VERSION,
         session_id: SESSION.into(),
-        device_id: "22222222-2222-4222-8222-222222222222".into(),
+        device_id: DEVICE.into(),
         first_seq: 0,
-        last_seq: 9,
+        last_seq: 19,
         samples,
     })
 }
@@ -334,28 +365,98 @@ fn tap(sim: &mut Sim, message: Message) {
     sim.out.extend(out);
 }
 
-#[test]
-fn phone_samples_reach_the_controller_through_the_clock_model() {
+/// Feeds 100 ms batches for `ms`, ticking as it goes.
+fn stream(sim: &mut Sim, ms: u64, azimuth_deg_s: f64, fused_deg_s: f64) {
+    for _ in 0..ms / 100 {
+        sim.now += 100 * MS;
+        let now = sim.now;
+        tap(sim, batch(now, azimuth_deg_s, fused_deg_s));
+        let out = sim.runner.tick(now);
+        sim.out.extend(out);
+    }
+}
+
+fn phone_sim() -> Sim {
     let mut sim = Sim::new(true, SimFaults::default());
     sim.line("yes");
     sim.now = 10_000 * MS;
-    let now = sim.now;
     tap(&mut sim, hello());
-    tap(&mut sim, batch(now));
+    let now = sim.now;
+    tap(&mut sim, clock_result(0, now));
+    sim
+}
+
+#[test]
+fn phone_samples_need_a_clock_model_and_the_tube_altitude_comes_through() {
+    let mut sim = Sim::new(true, SimFaults::default());
+    sim.line("yes");
+    sim.now = 10_000 * MS;
+    tap(&mut sim, hello());
+    let now = sim.now;
+    tap(&mut sim, batch(now, 0.0, 0.0));
     sim.line("status");
     assert!(
         sim.said(Kind::Info, "waiting for a clock model"),
         "no samples are used before the clock is known"
     );
     tap(&mut sim, clock_result(0, now));
-    tap(&mut sim, batch(now));
+    tap(&mut sim, batch(now, 0.0, 0.0));
     sim.line("status");
     assert!(sim.said(Kind::Info, "tube at 30.0°"), "{:#?}", sim.out);
+    assert!(sim.said(Kind::Info, "iOS fused rate until armed"));
+}
+
+#[test]
+fn arming_measures_the_gyro_offset_then_safety_uses_the_raw_gyroscope() {
+    let mut sim = phone_sim();
+    stream(&mut sim, 1_000, 0.0, 0.0);
+    sim.line("arm");
+    assert!(sim.said(Kind::Alert, "need 3 s of raw gyroscope data"));
+    assert_eq!(sim.runner.state(), MountState::ConnectedReadOnly);
+
+    stream(&mut sim, 3_000, 0.0, 0.0);
     sim.line("arm");
     assert_eq!(sim.runner.state(), MountState::Armed, "{:#?}", sim.out);
-    // Samples from another session are ignored, so the IMU goes stale.
+    assert!(sim.said(Kind::Info, "raw gyroscope offset"));
+    // The 0.15 °/s offset is removed: still means still.
+    stream(&mut sim, 1_000, 0.0, 0.0);
+    assert_eq!(sim.runner.state(), MountState::Armed, "{:#?}", sim.out);
+    sim.line("status");
+    assert!(sim.said(Kind::Info, ", raw gyroscope;"));
+
+    // A slow steady turn that iOS's fused rate has absorbed (it reports 0)
+    // is still seen through the raw gyroscope: unexpected motion.
+    stream(&mut sim, 1_000, 0.3, 0.0);
+    assert_eq!(sim.runner.state(), MountState::FaultLatched);
+    assert!(
+        sim.said(Kind::Alert, "FAULT UnexpectedMotion"),
+        "{:#?}",
+        sim.out
+    );
+}
+
+#[test]
+fn disarming_clears_the_offset_so_it_is_measured_again() {
+    let mut sim = phone_sim();
+    stream(&mut sim, 3_500, 0.0, 0.0);
+    sim.line("arm");
+    assert_eq!(sim.runner.state(), MountState::Armed);
+    sim.line("disarm");
+    sim.line("status");
+    assert!(sim.said(Kind::Info, "iOS fused rate until armed"));
+    let events = sim.log.events();
+    assert!(events.iter().any(|e| e == "gyro_bias"));
+    assert!(events.iter().any(|e| e == "gyro_bias_cleared"));
+}
+
+#[test]
+fn samples_from_another_session_are_ignored_so_the_imu_goes_stale() {
+    let mut sim = phone_sim();
+    stream(&mut sim, 3_500, 0.0, 0.0);
+    sim.line("arm");
+    assert_eq!(sim.runner.state(), MountState::Armed);
     sim.now += 1_500 * MS;
-    let Message::SampleBatch(mut other) = batch(sim.now) else {
+    let Message::SampleBatch(mut other) = batch(sim.now, 0.0, 0.0) else {
         unreachable!()
     };
     other.session_id = "99999999-9999-4999-8999-999999999999".into();
@@ -364,4 +465,81 @@ fn phone_samples_reach_the_controller_through_the_clock_model() {
     sim.out.extend(out);
     assert_eq!(sim.runner.state(), MountState::FaultLatched);
     assert!(sim.said(Kind::Alert, "FAULT StaleImu"));
+}
+
+// --- Hand controller link health ----------------------------------------
+
+/// The simulated mount, reporting positions only when the test says so,
+/// like the Celestron adapter's idle position reads.
+struct Reporting {
+    mount: SimMount,
+    positions: Vec<Position>,
+}
+
+impl MountAdapter for Reporting {
+    fn send(&mut self, command: &MountCommand, now: Nanos) -> Result<(), TransportError> {
+        self.mount.send(command, now)
+    }
+    fn poll(&mut self, now: Nanos) -> Vec<MountReport> {
+        self.mount.poll(now)
+    }
+}
+
+impl RunnerAdapter for Reporting {
+    fn take_positions(&mut self) -> Vec<Position> {
+        std::mem::take(&mut self.positions)
+    }
+    fn reports_positions(&self) -> bool {
+        true
+    }
+}
+
+#[test]
+fn arming_needs_a_recent_position_read_and_a_silent_link_is_dropped() {
+    let (mut runner, _) = Runner::new(
+        config(),
+        Reporting {
+            mount: SimMount::new(SimFaults::default(), 30.0, 1),
+            positions: Vec::new(),
+        },
+        RunLog::discard(),
+        false,
+        MAC_BOOT,
+        0,
+    )
+    .unwrap();
+    let mut out = runner.line("yes", 0);
+    let mut now = 0;
+    let mut step = |runner: &mut Runner<Reporting>, ms: u64, read: bool, out: &mut Vec<Out>| {
+        for _ in 0..ms / 10 {
+            now += 10 * MS;
+            if read {
+                runner.adapter_mut().positions.push(Position {
+                    t_ns: now,
+                    deg: [0.0, 30.0],
+                });
+            }
+            let o = runner.adapter_mut().mount.observation(now).unwrap();
+            out.extend(runner.observation(o, now));
+            out.extend(runner.tick(now));
+        }
+        now
+    };
+    // No position has been read yet.
+    let t = step(&mut runner, 500, false, &mut out);
+    out.extend(runner.line("arm", t));
+    assert!(out.iter().any(|o| o.text.contains("hasn't been read yet")));
+    assert_eq!(runner.state(), MountState::ConnectedReadOnly);
+    // Reads arrive: arming works.
+    let t = step(&mut runner, 500, true, &mut out);
+    out.extend(runner.line("arm", t));
+    assert_eq!(runner.state(), MountState::Armed, "{out:#?}");
+    // The reads stop while armed and idle: the link is treated as lost.
+    step(&mut runner, 2_000, false, &mut out);
+    assert_eq!(runner.state(), MountState::FaultLatched);
+    assert!(
+        out.iter()
+            .any(|o| o.text.contains("stopped answering position reads"))
+    );
+    assert!(out.iter().any(|o| o.text.contains("FAULT TransportLost")));
 }

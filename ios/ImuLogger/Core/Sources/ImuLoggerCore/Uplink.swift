@@ -33,6 +33,7 @@ public final class Uplink: @unchecked Sendable {
     private let hello: Hello
     private let logURL: URL?
     private let clockInterval: TimeInterval
+    private let connectTimeout: TimeInterval
     private let now: @Sendable () -> Nanos
     private let onClockResult: @Sendable (ClockResult) -> Void
     private let onStatus: @Sendable (Status) -> Void
@@ -61,11 +62,15 @@ public final class Uplink: @unchecked Sendable {
     ///   - logURL: the session log, reread when more is unacknowledged than fits in memory.
     ///   - maxPendingBatches: unacknowledged batches kept in memory for resending.
     ///   - clockInterval: seconds between clock exchanges after the first burst.
+    ///   - connectTimeout: a connection not ready by then is retried. A Bonjour
+    ///     endpoint that isn't advertised never fails on its own; it waits to
+    ///     resolve, so without this the uplink would sit at its first attempt.
     ///   - now: the phone clock; the same one that stamps samples.
     ///   - onClockResult: a completed exchange, to be logged and sent back.
     public init(
         endpoint: NWEndpoint, hello: Hello, logURL: URL?, maxPendingBatches: Int = 600,
-        clockInterval: TimeInterval = 5, now: @escaping @Sendable () -> Nanos = PhoneClock.nowNs,
+        clockInterval: TimeInterval = 5, connectTimeout: TimeInterval = 5,
+        now: @escaping @Sendable () -> Nanos = PhoneClock.nowNs,
         onClockResult: @escaping @Sendable (ClockResult) -> Void = { _ in },
         onStatus: @escaping @Sendable (Status) -> Void
     ) {
@@ -73,6 +78,7 @@ public final class Uplink: @unchecked Sendable {
         self.hello = hello
         self.logURL = logURL
         self.clockInterval = clockInterval
+        self.connectTimeout = connectTimeout
         self.now = now
         self.onClockResult = onClockResult
         self.tracker = DeliveryTracker(maxPendingBatches: maxPendingBatches)
@@ -149,6 +155,13 @@ public final class Uplink: @unchecked Sendable {
             self?.handle(newState, generation: current)
         }
         connection.start(queue: queue)
+        queue.asyncAfter(deadline: .now() + connectTimeout) { [weak self] in
+            guard let self, current == self.generation, case .connecting = self.state else {
+                return
+            }
+            self.retry(
+                after: "no receiver answered within \(Int(self.connectTimeout)) s")
+        }
         publish()
     }
 

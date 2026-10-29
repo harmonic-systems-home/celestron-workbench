@@ -17,18 +17,36 @@ const VARIABLE_POSITIVE: u8 = 6;
 const VARIABLE_NEGATIVE: u8 = 7;
 const FIXED_POSITIVE: u8 = 36;
 
-/// Which way the hand controller's "positive" slew turns each axis relative
-/// to the IMU's convention (azimuth clockwise from above, altitude up). Set
-/// by the axis-sign trial; a wrong sign shows up at once as opposite motion,
-/// which latches a fault.
+/// How the adapter drives this mount (`[celestron]` in `config/mount.toml`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct AxisSigns {
+pub struct CelestronSettings {
+    /// Which way the hand controller's "positive" slew turns each axis
+    /// relative to the IMU's convention (azimuth clockwise from above,
+    /// altitude up). Set by the axis-sign trial; a wrong sign shows up at
+    /// once as opposite motion, which latches a fault.
     pub reverse_azimuth: bool,
     pub reverse_altitude: bool,
+    /// How a move's own stop is sent (the stop-form trial). Stops after a
+    /// fault, and on shutdown, always send both forms.
+    #[serde(default)]
+    pub stop: StopForm,
 }
 
-impl AxisSigns {
+/// Which stop command ends a move.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StopForm {
+    /// Variable rate 0, then fixed rate 0.
+    #[default]
+    Both,
+    /// Variable rate 0 only (the same mode as the slew).
+    Variable,
+    /// Fixed rate 0 only.
+    Fixed,
+}
+
+impl CelestronSettings {
     fn reversed(self, axis: Axis) -> bool {
         match axis {
             Axis::Azimuth => self.reverse_azimuth,
@@ -50,11 +68,12 @@ pub fn quantized_deg_s(rate_deg_s: f64) -> f64 {
     f64::from(rate_units(rate_deg_s)) / 4.0 / 3600.0
 }
 
-/// The serial transactions for one controller command, in order. A stop is
-/// a variable-rate 0 (the same mode as the slew) and then a fixed-rate 0:
-/// which of them ends a variable-rate slew is still to be observed (ADR
-/// 0010, "To observe"), so both are sent.
-pub fn transactions(command: &MountCommand, signs: AxisSigns) -> Vec<[u8; 8]> {
+/// The serial transactions for one controller command, in order. A move's
+/// own stop uses the configured [`StopForm`]; `StopAll` (faults, shutdown)
+/// always sends a variable-rate 0 and then a fixed-rate 0 on each axis,
+/// since which of them ends a variable-rate slew is still being observed
+/// (ADR 0010, "To observe").
+pub fn transactions(command: &MountCommand, signs: CelestronSettings) -> Vec<[u8; 8]> {
     match *command {
         MountCommand::Move {
             axis,
@@ -79,7 +98,14 @@ pub fn transactions(command: &MountCommand, signs: AxisSigns) -> Vec<[u8; 8]> {
                 0,
             ]]
         }
-        MountCommand::Stop { axis } => stop(axis).to_vec(),
+        MountCommand::Stop { axis } => {
+            let [variable, fixed] = stop(axis);
+            match signs.stop {
+                StopForm::Both => vec![variable, fixed],
+                StopForm::Variable => vec![variable],
+                StopForm::Fixed => vec![fixed],
+            }
+        }
         MountCommand::StopAll => Axis::BOTH.iter().flat_map(|a| stop(*a)).collect(),
     }
 }
