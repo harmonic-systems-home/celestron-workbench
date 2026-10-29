@@ -1,6 +1,6 @@
 # Assumptions that still need physical verification
 
-Nothing below has been checked on real hardware. Each item names the milestone that settles it. Record the outcome here, with the date, device, OS and firmware versions, and keep the evidence in the private data store.
+Items are unverified unless the results log at the end says otherwise. Each item names the milestone that settles it. Record the outcome here, with the date, device, OS and firmware versions, and keep the evidence in the private data store.
 
 ## iPhone and Core Motion (M1, M3)
 
@@ -39,3 +39,18 @@ Nothing below has been checked on real hardware. Each item names the milestone t
 |---|---|---|---|
 | A1 | A rigid, non-magnetic cradle can hold the phone repeatably, so that remove-and-replace error is below the sensor noise. | Otherwise the cradle dominates every measurement. | Phase 1 remove-and-replace trials. |
 | A2 | The available turntable or indexed fixture has a known angle uncertainty. | Ground truth for Phase 1 rotation tests. | Document the fixture; check it against an independent reference. |
+
+## Results log
+
+### 2026-10-28: first bench recording (M1)
+
+iPhone 17 Pro Max, iOS 26.6.2, logger 0.1.0 (1). Phone on a table, logging to the phone only, requested interval 10 ms with device motion, raw gyro and raw accelerometer enabled, reference frame `x_arbitrary_z_vertical`. About 94 s: 15 s settling, 50 s still, one hand rotation of about 90° clockwise seen from above, then pick-up. The log is kept in the private data store.
+
+| # | Outcome | Evidence |
+|---|---|---|
+| P2 | **Confirmed at 100 Hz requested.** All three streams delivered 99.63 Hz (10.037 ms interval, spread ±1.5 µs), with no gaps, no out-of-order timestamps and no drops. Thermal state stayed nominal. Other rates are not yet tested. | 27,931 samples, seq contiguous; interval min 10.036 ms, max 10.039 ms. |
+| P3 | **Confirmed for gravity and Z rotation.** Flat and screen up, gravity was (−0.04, −0.14, −9.806) m/s² (0.9° tilt). A clockwise rotation seen from above gave a negative Z rotation rate, as the right-hand rule about +Z out of the screen predicts. The X and Y axes and the edge orientations are not yet tested. | Raw accelerometer magnitude was 9.833 m/s² (+0.27 %, within factory scale error); fused gravity magnitude was 9.80665. |
+| P4 | **Consistent so far.** The attitude change across the rotation (88.02°, yaw +0.05° → −87.97°) matched the integrated fused Z rate (−88.00°). | Needs a fixture with a known angle (A2) to check absolute accuracy. |
+| P5 | No discontinuities while in the foreground. Yaw drift while still was 0.03°/min. Interruptions are not yet tested. | Discontinuity counter 0. |
+
+Also noted: the raw gyro bias while still was up to 0.0042 rad/s (0.24°/s) per axis, with noise of about 0.0008 rad/s; the fused rotation rate removes the bias. Device motion started about 0.4 s before the raw streams.
