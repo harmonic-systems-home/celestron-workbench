@@ -4,9 +4,9 @@ use std::io::Cursor;
 
 use cwb_protocol::{
     AccelSample, AttitudeReferenceFrame, Bye, ByeReason, ClockResult, DeviceInfo,
-    DeviceMotionSample, ErrorCode, Event, EventKind, GyroSample, Hello, MagnetometerSample, Marker,
-    Message, PROTOCOL_VERSION, Quaternion, Sample, SampleBatch, SensorAvailability, Seq, Severity,
-    Stream,
+    DeviceMotionSample, Environment, ErrorCode, Event, EventKind, GyroSample, Hello, Location,
+    LocationStatus, MagnetometerSample, Marker, Message, PROTOCOL_VERSION, Quaternion, Sample,
+    SampleBatch, SensorAvailability, Seq, Severity, Site, Stream,
 };
 use cwb_storage::{
     Connection, HelloOutcome, StorageError, Store, StoreConfig, clockfit, open_in_memory, sessions,
@@ -155,6 +155,28 @@ const MAC_RUN_B: &str = "77777777-7777-4777-8777-777777777777";
 
 /// An exchange every 2 s from phone time 512 s; the Mac clock reads
 /// 3 s ahead with 1 ms each way and 20 µs turnaround.
+/// A fictitious site.
+fn site() -> Site {
+    Site {
+        protocol_version: PROTOCOL_VERSION,
+        session_id: SESSION.into(),
+        device_id: DEVICE.into(),
+        site_id: "66666666-6666-4666-8666-666666666666".into(),
+        t_ns: 512_001_000_000,
+        environment: Environment::Indoor,
+        location_status: LocationStatus::Fix,
+        location: Some(Location {
+            latitude: 45.5,
+            longitude: -110.25,
+            horizontal_accuracy_m: 35.0,
+            altitude_m: None,
+            vertical_accuracy_m: None,
+            precise: true,
+            fix_age_s: 1.5,
+        }),
+    }
+}
+
 fn clock_result(index: u64, mac_run: &str) -> ClockResult {
     let t1 = 512_000_000_000 + index as i64 * 2_000_000_000;
     let t2 = t1 + 3_000_000_000 + 1_000_000;
@@ -433,6 +455,47 @@ fn markers_and_events_are_stored_once() {
 }
 
 #[test]
+fn a_site_is_stored_once_and_an_inconsistent_one_refused() {
+    let mut store = store();
+    assert!(matches!(
+        store.site(&site(), 1),
+        Err(StorageError::UnknownSession(_))
+    ));
+    accepted(store.hello(&hello(), 1).unwrap());
+    assert!(store.site(&site(), 2).unwrap());
+    assert!(!store.site(&site(), 3).unwrap(), "a resend is skipped");
+
+    let mut no_fix = site();
+    no_fix.site_id = "77777777-7777-4777-8777-777777777777".into();
+    no_fix.location_status = LocationStatus::Denied;
+    assert!(matches!(
+        store.site(&no_fix, 4),
+        Err(StorageError::InvalidMessage(_))
+    ));
+    no_fix.location = None;
+    no_fix.environment = Environment::Outdoor;
+    no_fix.t_ns += 1_000_000_000;
+    assert!(store.site(&no_fix, 4).unwrap());
+
+    let listed = sessions::list(store.connection()).unwrap();
+    assert_eq!(
+        listed[0].environment.as_deref(),
+        Some("outdoor"),
+        "the latest site"
+    );
+    assert_eq!(
+        count(store.connection(), "SELECT COUNT(*) FROM session_sites"),
+        2
+    );
+}
+
+#[test]
+fn location_debug_output_hides_coordinates() {
+    let text = format!("{:?}", site());
+    assert!(!text.contains("45.5") && !text.contains("110.25"), "{text}");
+}
+
+#[test]
 fn bye_ends_a_complete_session() {
     let mut store = store();
     accepted(store.hello(&hello(), 1).unwrap());
@@ -529,6 +592,7 @@ fn validate_reports_missing_bye_and_gaps() {
 fn full_session(store: &mut Store) {
     accepted(store.hello(&hello(), 1).unwrap());
     store.phone_event(&event(), 2).unwrap();
+    store.site(&site(), 2).unwrap();
     for first in (0..600).step_by(250) {
         store
             .batch(&batch(first, (first + 249).min(599)), 3)
@@ -603,6 +667,11 @@ fn export_is_valid_protocol_and_imports_back_identically() {
     assert_eq!(imported.stored_samples, 600);
     assert!(imported.skipped.is_empty(), "{:?}", imported.skipped);
     assert_eq!(imported.clock_exchanges, 2);
+    assert_eq!(imported.sites, 1);
+    assert_eq!(
+        sessions::stored_sites(copy.connection(), SESSION, DEVICE).unwrap(),
+        [site()]
+    );
     assert_eq!(raw_rows(original.connection()), raw_rows(copy.connection()));
     assert_eq!(
         clock_rows(original.connection()),

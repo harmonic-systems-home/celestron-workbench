@@ -4,8 +4,8 @@ use std::io::{BufRead, Write};
 
 use cwb_protocol::{
     AccelSample, Bye, ByeReason, ClockResult, DeviceInfo, DeviceMotionSample, Event, GyroSample,
-    Hello, MagnetometerSample, Marker, Message, Nanos, PROTOCOL_VERSION, Quaternion, Sample,
-    SampleBatch, Seq,
+    Hello, Location, MagnetometerSample, Marker, Message, Nanos, PROTOCOL_VERSION, Quaternion,
+    Sample, SampleBatch, Seq, Site,
 };
 use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde::Serialize;
@@ -29,13 +29,17 @@ pub struct SessionSummary {
     pub status_reason: Option<String>,
     pub samples: u64,
     pub markers: u64,
+    /// As the phone reported it; `None` before sessions carried a site.
+    pub environment: Option<String>,
 }
 
 pub fn list(conn: &Connection) -> Result<Vec<SessionSummary>, StorageError> {
     let mut stmt = conn.prepare(
         "SELECT s.session_id, s.created_utc, s.ended_utc, s.status, s.status_reason,
                 (SELECT COUNT(*) FROM sensor_samples x WHERE x.session_id = s.session_id),
-                (SELECT COUNT(*) FROM markers m WHERE m.session_id = s.session_id)
+                (SELECT COUNT(*) FROM markers m WHERE m.session_id = s.session_id),
+                (SELECT environment FROM session_sites w WHERE w.session_id = s.session_id
+                 ORDER BY source_ns DESC, receive_mac_ns DESC LIMIT 1)
          FROM sessions s ORDER BY s.created_utc",
     )?;
     let rows = stmt.query_map([], |r| {
@@ -47,6 +51,7 @@ pub fn list(conn: &Connection) -> Result<Vec<SessionSummary>, StorageError> {
             status_reason: r.get(4)?,
             samples: r.get::<_, i64>(5)? as u64,
             markers: r.get::<_, i64>(6)? as u64,
+            environment: r.get(7)?,
         })
     })?;
     Ok(rows.collect::<Result<_, _>>()?)
@@ -272,7 +277,7 @@ pub struct ExportSummary {
 }
 
 /// Writes a session as protocol NDJSON: `hello`, then batches, markers,
-/// phone events and clock results in phone-time order, then `bye` if one arrived. The output
+/// phone events, sites and clock results in phone-time order, then `bye` if one arrived. The output
 /// validates with `cwb validate` and can be replayed or imported. Mac-side
 /// ingest events are not protocol messages; `validate` reports them.
 pub fn export(
@@ -344,6 +349,9 @@ pub fn export(
                 detail: serde_json::from_str(&detail)?,
             };
             timeline.push((t_ns, 2, Message::Event(event)));
+        }
+        for site in stored_sites(conn, session_id, &device_id)? {
+            timeline.push((site.t_ns, 2, Message::Site(site)));
         }
         let mut stmt = conn.prepare(
             "SELECT exchange_index, phone_send_ns, mac_receive_ns, mac_send_ns, phone_receive_ns,
@@ -574,6 +582,7 @@ pub struct ImportSummary {
     pub conflicting_samples: u64,
     pub markers: u64,
     pub events: u64,
+    pub sites: u64,
     pub clock_exchanges: u64,
     /// Lines skipped: not protocol messages, or a truncated last line.
     pub skipped: Vec<String>,
@@ -643,6 +652,7 @@ pub fn import(
             }
             Message::Marker(marker) => summary.markers += u64::from(store.marker(&marker)?),
             Message::Event(event) => summary.events += u64::from(store.phone_event(&event, now)?),
+            Message::Site(site) => summary.sites += u64::from(store.site(&site, now)?),
             Message::ClockResult(result) => {
                 summary.clock_exchanges += u64::from(store.clock_result(&result)?);
             }
@@ -671,6 +681,97 @@ pub fn import(
         )?;
     }
     Ok(summary)
+}
+
+/// The newest precise phone fix no less accurate than `max_accuracy_m`.
+#[derive(Debug, Clone)]
+pub struct LatestFix {
+    pub session_id: String,
+    pub session_created_utc: String,
+    pub environment: String,
+    pub location: Location,
+}
+
+pub fn latest_fix(
+    conn: &Connection,
+    max_accuracy_m: f64,
+) -> Result<Option<LatestFix>, StorageError> {
+    Ok(conn
+        .query_row(
+            "SELECT w.session_id, s.created_utc, w.environment, w.latitude, w.longitude,
+                    w.horizontal_accuracy_m, w.altitude_m, w.vertical_accuracy_m, w.fix_age_s
+             FROM session_sites w JOIN sessions s USING (session_id)
+             WHERE w.location_status = 'fix' AND w.precise = 1 AND w.horizontal_accuracy_m <= ?1
+             ORDER BY s.created_utc DESC, w.source_ns DESC LIMIT 1",
+            [max_accuracy_m],
+            |r| {
+                Ok(LatestFix {
+                    session_id: r.get(0)?,
+                    session_created_utc: r.get(1)?,
+                    environment: r.get(2)?,
+                    location: Location {
+                        latitude: r.get(3)?,
+                        longitude: r.get(4)?,
+                        horizontal_accuracy_m: r.get(5)?,
+                        altitude_m: r.get(6)?,
+                        vertical_accuracy_m: r.get(7)?,
+                        precise: true,
+                        fix_age_s: r.get(8)?,
+                    },
+                })
+            },
+        )
+        .optional()?)
+}
+
+/// A device's stored sites, as the phone sent them.
+pub fn stored_sites(
+    conn: &Connection,
+    session_id: &str,
+    device_id: &str,
+) -> Result<Vec<Site>, StorageError> {
+    let mut stmt = conn.prepare(
+        "SELECT site_id, source_ns, environment, location_status, latitude, longitude,
+                horizontal_accuracy_m, altitude_m, vertical_accuracy_m, precise, fix_age_s
+         FROM session_sites WHERE session_id = ?1 AND device_id = ?2
+         ORDER BY source_ns, site_id",
+    )?;
+    let rows = stmt.query_map([session_id, device_id], |r| {
+        let location = match r.get::<_, Option<f64>>(4)? {
+            Some(latitude) => Some(Location {
+                latitude,
+                longitude: r.get(5)?,
+                horizontal_accuracy_m: r.get(6)?,
+                altitude_m: r.get(7)?,
+                vertical_accuracy_m: r.get(8)?,
+                precise: r.get(9)?,
+                fix_age_s: r.get(10)?,
+            }),
+            None => None,
+        };
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, Nanos>(1)?,
+            r.get::<_, String>(2)?,
+            r.get::<_, String>(3)?,
+            location,
+        ))
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (site_id, t_ns, environment, status, location) = row?;
+        out.push(Site {
+            protocol_version: PROTOCOL_VERSION,
+            session_id: session_id.to_owned(),
+            device_id: device_id.to_owned(),
+            site_id,
+            t_ns,
+            environment: serde_json::from_value(serde_json::Value::String(environment))?,
+            location_status: serde_json::from_value(serde_json::Value::String(status))?,
+            location,
+        });
+    }
+    Ok(out)
 }
 
 fn hex(bytes: &[u8]) -> String {

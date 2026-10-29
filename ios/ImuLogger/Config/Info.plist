@@ -4,6 +4,8 @@
 <dict>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>IMU Logger streams motion samples to the Celestron Workbench receiver on your Mac.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>IMU Logger records where each session takes place, so your Mac can set the telescope's location. It goes only to the session file and your Mac.</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_cwb-imu._tcp</string>

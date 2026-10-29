@@ -33,6 +33,7 @@ pub enum Message {
     ClockResult(ClockResult),
     Marker(Marker),
     Event(Event),
+    Site(Site),
     Error(ErrorMessage),
     Bye(Bye),
 }
@@ -49,6 +50,7 @@ impl Message {
             Message::ClockResult(m) => m.protocol_version,
             Message::Marker(m) => m.protocol_version,
             Message::Event(m) => m.protocol_version,
+            Message::Site(m) => m.protocol_version,
             Message::Error(m) => m.protocol_version,
             Message::Bye(m) => m.protocol_version,
         }
@@ -335,6 +337,103 @@ pub enum Severity {
     Info,
     Warning,
     Error,
+}
+
+/// Where a session took place (ADR 0012). Coordinates are private: they
+/// stay in the local database and the private data store.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Site {
+    pub protocol_version: u32,
+    pub session_id: String,
+    pub device_id: String,
+    /// Random; makes a resent site idempotent.
+    pub site_id: String,
+    /// Phone time of the fix, or of the message when there is no fix.
+    pub t_ns: Nanos,
+    pub environment: Environment,
+    pub location_status: LocationStatus,
+    /// Present exactly when `location_status` is `Fix`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location: Option<Location>,
+}
+
+impl Site {
+    pub fn check(&self) -> Result<(), String> {
+        match (self.location_status, &self.location) {
+            (LocationStatus::Fix, None) => {
+                Err("location_status is fix but there is no location".into())
+            }
+            (LocationStatus::Fix, Some(l)) => l.check(),
+            (_, Some(_)) => Err("a location without a fix status".into()),
+            (_, None) => Ok(()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Environment {
+    Indoor,
+    Outdoor,
+    Unspecified,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LocationStatus {
+    Fix,
+    /// The operator switched location off in the app.
+    Off,
+    /// The operator declined or restricted location access.
+    Denied,
+    /// No fix arrived in time.
+    Unavailable,
+}
+
+/// `Debug` hides the coordinates, so logs and panics can't leak them.
+#[derive(Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Location {
+    /// Degrees, WGS 84, north positive.
+    pub latitude: f64,
+    /// Degrees, WGS 84, east positive.
+    pub longitude: f64,
+    /// Radius of 68% confidence, as Core Location reports it.
+    pub horizontal_accuracy_m: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub altitude_m: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vertical_accuracy_m: Option<f64>,
+    /// False when the operator allowed only approximate location.
+    pub precise: bool,
+    pub fix_age_s: f64,
+}
+
+impl std::fmt::Debug for Location {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Location")
+            .field("coordinates", &"<private>")
+            .field("horizontal_accuracy_m", &self.horizontal_accuracy_m)
+            .field("precise", &self.precise)
+            .field("fix_age_s", &self.fix_age_s)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Location {
+    pub fn check(&self) -> Result<(), String> {
+        let ok = self.latitude.abs() <= 90.0
+            && self.longitude.abs() <= 180.0
+            && self.horizontal_accuracy_m >= 0.0
+            && self.fix_age_s >= 0.0
+            && self.vertical_accuracy_m.is_none_or(|v| v >= 0.0);
+        if ok {
+            Ok(())
+        } else {
+            Err("location out of range".into())
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

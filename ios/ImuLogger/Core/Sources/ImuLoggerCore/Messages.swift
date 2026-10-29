@@ -93,6 +93,7 @@ public enum Message: Equatable, Sendable, Codable {
     case clockResult(ClockResult)
     case marker(Marker)
     case event(SessionEvent)
+    case site(Site)
     case error(ErrorMessage)
     case bye(Bye)
 
@@ -110,6 +111,7 @@ public enum Message: Equatable, Sendable, Codable {
         case "clock_result": self = .clockResult(try ClockResult(from: decoder))
         case "marker": self = .marker(try Marker(from: decoder))
         case "event": self = .event(try SessionEvent(from: decoder))
+        case "site": self = .site(try Site(from: decoder))
         case "error": self = .error(try ErrorMessage(from: decoder))
         case "bye": self = .bye(try Bye(from: decoder))
         default:
@@ -131,6 +133,7 @@ public enum Message: Equatable, Sendable, Codable {
         case .clockResult(let m): try m.encode(to: encoder)
         case .marker(let m): try m.encode(to: encoder)
         case .event(let m): try m.encode(to: encoder)
+        case .site(let m): try m.encode(to: encoder)
         case .error(let m): try m.encode(to: encoder)
         case .bye(let m): try m.encode(to: encoder)
         }
@@ -147,6 +150,7 @@ public enum Message: Equatable, Sendable, Codable {
         case .clockResult: "clock_result"
         case .marker: "marker"
         case .event: "event"
+        case .site: "site"
         case .error: "error"
         case .bye: "bye"
         }
@@ -682,6 +686,98 @@ public struct SessionEvent: Equatable, Sendable, Codable {
         self.kind = kind
         self.severity = severity
         self.detail = detail
+    }
+}
+
+/// Where a session took place (ADR 0012). Coordinates are private: they
+/// go to the operator's own Mac and the session log, never the public repo.
+public struct Site: Equatable, Sendable, Codable {
+    public enum Environment: String, Codable, Sendable, CaseIterable {
+        case indoor, outdoor, unspecified
+    }
+
+    public enum LocationStatus: String, Codable, Sendable {
+        case fix
+        /// The operator switched location off in the app.
+        case off
+        /// The operator declined or restricted location access.
+        case denied
+        /// No fix arrived in time.
+        case unavailable
+    }
+
+    public struct Location: Equatable, Sendable, Codable {
+        /// Degrees, WGS 84, north positive.
+        public var latitude: Double
+        /// Degrees, WGS 84, east positive.
+        public var longitude: Double
+        /// Radius of 68% confidence, as Core Location reports it.
+        public var horizontalAccuracyM: Double
+        public var altitudeM: Double?
+        public var verticalAccuracyM: Double?
+        /// False when the operator allowed only approximate location.
+        public var precise: Bool
+        public var fixAgeS: Double
+
+        enum CodingKeys: String, CodingKey {
+            case latitude, longitude
+            case horizontalAccuracyM = "horizontal_accuracy_m"
+            case altitudeM = "altitude_m"
+            case verticalAccuracyM = "vertical_accuracy_m"
+            case precise
+            case fixAgeS = "fix_age_s"
+        }
+
+        public init(
+            latitude: Double, longitude: Double, horizontalAccuracyM: Double,
+            altitudeM: Double? = nil, verticalAccuracyM: Double? = nil, precise: Bool,
+            fixAgeS: Double
+        ) {
+            self.latitude = latitude
+            self.longitude = longitude
+            self.horizontalAccuracyM = horizontalAccuracyM
+            self.altitudeM = altitudeM
+            self.verticalAccuracyM = verticalAccuracyM
+            self.precise = precise
+            self.fixAgeS = fixAgeS
+        }
+    }
+
+    public var protocolVersion: Int
+    public var sessionId: String
+    public var deviceId: String
+    /// Random; makes a resent site idempotent.
+    public var siteId: String
+    /// Phone time of the fix, or of the message when there is no fix.
+    public var tNs: Nanos
+    public var environment: Environment
+    public var locationStatus: LocationStatus
+    /// Present exactly when `locationStatus` is `.fix`.
+    public var location: Location?
+
+    enum CodingKeys: String, CodingKey {
+        case protocolVersion = "protocol_version"
+        case sessionId = "session_id"
+        case deviceId = "device_id"
+        case siteId = "site_id"
+        case tNs = "t_ns"
+        case environment
+        case locationStatus = "location_status"
+        case location
+    }
+
+    public init(
+        protocolVersion: Int, sessionId: String, deviceId: String, siteId: String, tNs: Nanos,
+        environment: Environment, locationStatus: LocationStatus, location: Location?
+    ) {
+        self.protocolVersion = protocolVersion
+        self.sessionId = sessionId
+        self.deviceId = deviceId
+        self.siteId = siteId
+        self.tNs = tNs
+        self.environment = environment
+        self.locationStatus = locationStatus
+        self.location = location
     }
 }
 

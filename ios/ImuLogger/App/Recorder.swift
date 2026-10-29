@@ -42,6 +42,17 @@ final class Recorder {
     {
         didSet { UserDefaults.standard.set(recordRawMagnetometer, forKey: "recordRawMagnetometer") }
     }
+    /// Where the phone is, as the operator says; recorded with each session.
+    var environment: Site.Environment =
+        Site.Environment(rawValue: UserDefaults.standard.string(forKey: "environment") ?? "")
+        ?? .unspecified
+    {
+        didSet { UserDefaults.standard.set(environment.rawValue, forKey: "environment") }
+    }
+    /// Record a location fix with each session (ADR 0012).
+    var recordLocation = UserDefaults.standard.object(forKey: "recordLocation") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(recordLocation, forKey: "recordLocation") }
+    }
     /// Remembered across launches: a discovered receiver by its Bonjour name,
     /// reselected whenever it is advertised again (see `receiversFound`).
     var receiverChoice: ReceiverChoice = Recorder.savedChoice {
@@ -101,6 +112,8 @@ final class Recorder {
     private(set) var lastFinishedFile: URL?
     private(set) var errorMessage: String?
     private(set) var markerCount = 0
+    /// The session's site as recorded: accuracy and status, never coordinates.
+    private(set) var siteSummary: String?
     private var refreshTask: Task<Void, Never>?
     private var notificationTokens: [NSObjectProtocol] = []
 
@@ -196,6 +209,7 @@ final class Recorder {
             id: id, startedAt: startedAt, fileURL: url, pipeline: pipeline, motion: motion,
             streams: streams)
         markerCount = 0
+        recordSite(sessionId: id, pipeline: pipeline)
         UIApplication.shared.isIdleTimerDisabled = true
         observeDeviceState(pipeline)
         refreshTask = Task { [weak self] in
@@ -219,6 +233,42 @@ final class Recorder {
         UIApplication.shared.isIdleTimerDisabled = false
         lastFinishedFile = session.fileURL
         self.session = nil
+    }
+
+    /// Sends the session's `site` once a fix arrives, or straight away when
+    /// location is off. A session stopped first goes without one.
+    private func recordSite(sessionId: String, pipeline: SessionPipeline) {
+        let environment = environment
+        siteSummary = recordLocation ? "Finding location…" : "Location off"
+        Task { [weak self, deviceId = deviceInfo.deviceId] in
+            var outcome = LocationFixer.Outcome(status: .off, location: nil, precise: false)
+            if self?.recordLocation == true {
+                outcome = await LocationFixer().fix()
+            }
+            guard let self, self.session?.id == sessionId else { return }
+            let now = Date()
+            let location = outcome.location.map {
+                Site.Location($0, precise: outcome.precise, now: now)
+            }
+            let ageNs = Int64((location?.fixAgeS ?? 0) * 1e9)
+            pipeline.emit(
+                .site(
+                    Site(
+                        protocolVersion: protocolVersion, sessionId: sessionId, deviceId: deviceId,
+                        siteId: UUID().uuidString.lowercased(), tNs: PhoneClock.nowNs() - ageNs,
+                        environment: environment, locationStatus: outcome.status,
+                        location: location)))
+            siteSummary =
+                switch outcome.status {
+                case .fix:
+                    String(
+                        format: "Recorded, ±%.0f m%@", location?.horizontalAccuracyM ?? 0,
+                        outcome.precise ? "" : " (approximate)")
+                case .off: "Location off"
+                case .denied: "Location access denied in Settings"
+                case .unavailable: "No fix within \(LocationFixer.timeout.components.seconds) s"
+                }
+        }
     }
 
     func addMarker(label: String) {

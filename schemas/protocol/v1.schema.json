@@ -13,6 +13,7 @@
     { "$ref": "#/$defs/clock_result" },
     { "$ref": "#/$defs/marker" },
     { "$ref": "#/$defs/event" },
+    { "$ref": "#/$defs/site" },
     { "$ref": "#/$defs/error" },
     { "$ref": "#/$defs/bye" }
   ],
@@ -297,6 +298,40 @@
       },
       "required": ["type", "protocol_version", "session_id", "device_id", "t_ns", "kind", "severity", "detail"],
       "additionalProperties": false
+    },
+
+    "site": {
+      "description": "Phone to Mac, once per session after recording starts: where the session took place (ADR 0012). location is present exactly when location_status is fix. Coordinates are private: they stay in the local database and the private data store, never the public repo.",
+      "type": "object",
+      "properties": {
+        "type": { "const": "site" },
+        "protocol_version": { "$ref": "#/$defs/protocol_version" },
+        "session_id": { "$ref": "#/$defs/uuid" },
+        "device_id": { "$ref": "#/$defs/uuid" },
+        "site_id": { "$ref": "#/$defs/uuid", "description": "Random; makes a resent site idempotent." },
+        "t_ns": { "$ref": "#/$defs/ns", "description": "Phone time of the fix, or of the message when there is no fix." },
+        "environment": { "enum": ["indoor", "outdoor", "unspecified"], "description": "As the operator chose it on the phone." },
+        "location_status": { "enum": ["fix", "off", "denied", "unavailable"], "description": "off: the operator switched location off in the app; denied: iOS location access was refused or restricted; unavailable: no fix arrived in time." },
+        "location": {
+          "type": "object",
+          "properties": {
+            "latitude": { "type": "number", "minimum": -90, "maximum": 90, "description": "Degrees, WGS 84, north positive." },
+            "longitude": { "type": "number", "minimum": -180, "maximum": 180, "description": "Degrees, WGS 84, east positive." },
+            "horizontal_accuracy_m": { "type": "number", "minimum": 0, "description": "Radius of 68% confidence, as Core Location reports it." },
+            "altitude_m": { "type": "number", "description": "Above mean sea level." },
+            "vertical_accuracy_m": { "type": "number", "minimum": 0 },
+            "precise": { "type": "boolean", "description": "False when the operator allowed only approximate location." },
+            "fix_age_s": { "type": "number", "minimum": 0, "description": "How old the fix was when the phone chose it." }
+          },
+          "required": ["latitude", "longitude", "horizontal_accuracy_m", "precise", "fix_age_s"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["type", "protocol_version", "session_id", "device_id", "site_id", "t_ns", "environment", "location_status"],
+      "additionalProperties": false,
+      "if": { "properties": { "location_status": { "const": "fix" } } },
+      "then": { "required": ["location"] },
+      "else": { "not": { "required": ["location"] } }
     },
 
     "error": {

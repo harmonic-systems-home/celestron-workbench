@@ -232,6 +232,9 @@ private struct LiveSection: View {
                 LabeledContent(
                     "Rotation from start", value: String(format: "%.3f°", rotation * 180 / .pi))
             }
+            if let site = recorder.siteSummary {
+                LabeledContent("Location", value: site)
+            }
             LabeledContent("Attitude discontinuities", value: "\(snapshot.discontinuities)")
                 .foregroundStyle(snapshot.discontinuities > 0 ? .orange : .primary)
             if let error = snapshot.logError {
@@ -268,6 +271,12 @@ private struct SettingsSection: View {
                     }
                 }
             }
+            Picker("Where", selection: $recorder.environment) {
+                Text("Indoors").tag(Site.Environment.indoor)
+                Text("Outdoors").tag(Site.Environment.outdoor)
+                Text("Not specified").tag(Site.Environment.unspecified)
+            }
+            Toggle("Record location", isOn: $recorder.recordLocation)
             Toggle("Raw gyroscope", isOn: $recorder.recordRawGyro)
                 .disabled(!recorder.availability.gyro)
             Toggle("Raw accelerometer", isOn: $recorder.recordRawAccel)
@@ -278,7 +287,7 @@ private struct SettingsSection: View {
             Text("Recording settings")
         } footer: {
             Text(
-                "The requested rate is a request to Core Motion; the delivered rate is measured and recorded. Fused device motion is always recorded when available. Prefer an arbitrary-X frame for bench work; magnetic frames are experimental near the mount."
+                "The requested rate is a request to Core Motion; the delivered rate is measured and recorded. Fused device motion is always recorded when available. Prefer an arbitrary-X frame for bench work; magnetic frames are experimental near the mount. Location is recorded once per session and goes only to the session file and your Mac, which can use it to set the telescope's location."
             )
         }
         .disabled(recorder.isRecording)

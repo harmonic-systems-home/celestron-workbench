@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 
 use cwb_protocol::{
     Bye, ClockResult, ErrorCode, Event, Hello, Marker, Nanos, PROTOCOL_VERSION, Sample,
-    SampleBatch, Seq,
+    SampleBatch, Seq, Site,
 };
 use rusqlite::{
     Connection, OptionalExtension, Transaction, params, params_from_iter, types::Value,
@@ -338,6 +338,38 @@ impl Store {
                 marker.label,
                 marker.t_ns,
                 marker.notes
+            ],
+        )?;
+        Ok(inserted == 1)
+    }
+
+    /// Stores where the session took place (ADR 0012). Returns false if it
+    /// was already stored.
+    pub fn site(&mut self, site: &Site, receive_mac_ns: Nanos) -> Result<bool, StorageError> {
+        site.check().map_err(StorageError::InvalidMessage)?;
+        self.require_device(&site.session_id, &site.device_id)?;
+        let l = site.location.as_ref();
+        let inserted = self.conn.execute(
+            "INSERT INTO session_sites (site_id, session_id, device_id, source_ns, receive_mac_ns,
+                 environment, location_status, latitude, longitude, horizontal_accuracy_m,
+                 altitude_m, vertical_accuracy_m, precise, fix_age_s)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+             ON CONFLICT (site_id) DO NOTHING",
+            params![
+                site.site_id,
+                site.session_id,
+                site.device_id,
+                site.t_ns,
+                receive_mac_ns,
+                enum_str(&site.environment),
+                enum_str(&site.location_status),
+                l.map(|l| l.latitude),
+                l.map(|l| l.longitude),
+                l.map(|l| l.horizontal_accuracy_m),
+                l.and_then(|l| l.altitude_m),
+                l.and_then(|l| l.vertical_accuracy_m),
+                l.map(|l| l.precise),
+                l.map(|l| l.fix_age_s),
             ],
         )?;
         Ok(inserted == 1)

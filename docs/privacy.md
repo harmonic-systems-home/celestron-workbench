@@ -16,6 +16,7 @@ This repository is public. The data this project produces is not.
 ## Where it lives instead
 
 - **Real data:** a separate private repo (`harmonic-systems-home/celestron-workbench-data`), or a local data folder outside this repo. Point the tools at it with a config file or environment variable. Never hard-code the path.
+- **Session sites:** each session records the phone's location fix and an indoor/outdoor choice (ADR 0012). They live in the local database, the phone's session files and exports, all private. Logs, `Debug` output and terminal output never show coordinates.
 - **Site and signing config:** git-ignored local files (`config/site.local.toml`, `Local.xcconfig`). Commit a `*.example` template with placeholder values beside each one.
 - **Fixtures:** only synthetic sessions, or real sessions that went through the sanitizer.
 

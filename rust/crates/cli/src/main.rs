@@ -178,6 +178,13 @@ enum CelestronCommand {
         /// Use a simulated hand controller instead of hardware.
         #[arg(long, conflicts_with = "port")]
         simulate: bool,
+        /// Where the location comes from. `auto` uses the newest precise
+        /// phone fix in the database if there is one, else the site file.
+        #[arg(long, value_enum, default_value_t = LocationFrom::Auto)]
+        location_from: LocationFrom,
+        /// Database holding the phone's fixes (for `auto` and `phone`).
+        #[arg(long, env = "CWB_DB")]
+        db: Option<PathBuf>,
         /// Site file (git-ignored; template in config/site.example.toml).
         #[arg(long, env = "CWB_SITE", default_value = "config/site.local.toml")]
         site: PathBuf,
@@ -192,6 +199,16 @@ enum CelestronCommand {
         yes: bool,
     },
 }
+
+#[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum LocationFrom {
+    Auto,
+    Phone,
+    SiteFile,
+}
+
+/// Phone fixes less accurate than this aren't used to set the hand controller.
+const PHONE_FIX_MAX_ACCURACY_M: f64 = 100.0;
 
 #[derive(Subcommand)]
 enum SessionCommand {
@@ -453,12 +470,20 @@ fn celestron(command: CelestronCommand) -> Result<ExitCode> {
         CelestronCommand::Setup {
             port,
             simulate,
+            location_from,
+            db,
             site,
             time_only,
             location_only,
             yes,
         } => {
-            let plan = SetupPlan::load(&site, !location_only, !time_only)?;
+            let plan = SetupPlan::load(
+                &site,
+                db.as_deref(),
+                location_from,
+                !location_only,
+                !time_only,
+            )?;
             if simulate {
                 setup(cwb_celestron_setup::fake::FakeSetter::default(), &plan, yes)
             } else {
@@ -470,28 +495,88 @@ fn celestron(command: CelestronCommand) -> Result<ExitCode> {
     }
 }
 
-/// What `cwb celestron setup` will send. The site's coordinates are never
-/// printed: only its name and hemispheres.
+/// What `cwb celestron setup` will send. Coordinates are never printed:
+/// only where they came from and their hemispheres.
 struct SetupPlan {
     time_zone: Option<jiff::tz::TimeZone>,
-    site: Option<(cwb_celestron_setup::Site, PathBuf)>,
+    /// The site to send, and where it came from.
+    location: Option<(cwb_celestron_setup::Site, String)>,
 }
 
 impl SetupPlan {
-    fn load(path: &Path, time: bool, location: bool) -> Result<Self> {
-        let site = if location || path.exists() {
+    fn load(
+        path: &Path,
+        db: Option<&Path>,
+        from: LocationFrom,
+        time: bool,
+        location: bool,
+    ) -> Result<Self> {
+        let site_file = || -> Result<cwb_celestron_setup::Site> {
             let text = fs::read_to_string(path).with_context(|| {
                 format!(
                     "reading {}: copy config/site.example.toml there and fill it in, or pass --site",
                     path.display()
                 )
             })?;
-            Some(cwb_celestron_setup::Site::parse(&text)?)
+            Ok(cwb_celestron_setup::Site::parse(&text)?)
+        };
+        // The site file can name the time zone even when the location comes
+        // from the phone.
+        let file = if path.exists() {
+            Some(site_file()?)
         } else {
             None
         };
+        let location = if !location {
+            None
+        } else {
+            let phone = match (from, db) {
+                (LocationFrom::SiteFile, _) => None,
+                (LocationFrom::Phone, None) => {
+                    anyhow::bail!("--location-from phone needs --db or CWB_DB")
+                }
+                (_, None) => None,
+                (_, Some(db)) => {
+                    let conn = cwb_storage::open_read_only(db)
+                        .with_context(|| format!("opening {}", db.display()))?;
+                    sessions::latest_fix(&conn, PHONE_FIX_MAX_ACCURACY_M)?
+                }
+            };
+            Some(match (phone, from) {
+                (Some(fix), _) => (
+                    cwb_celestron_setup::Site {
+                        name: None,
+                        latitude: fix.location.latitude,
+                        longitude: fix.location.longitude,
+                        time_zone: None,
+                    },
+                    format!(
+                        "the phone's fix in session {} ({}, {}, ±{:.0} m)",
+                        &fix.session_id[..8],
+                        fix.session_created_utc,
+                        fix.environment,
+                        fix.location.horizontal_accuracy_m
+                    ),
+                ),
+                (None, LocationFrom::Phone) => anyhow::bail!(
+                    "no precise phone fix within {PHONE_FIX_MAX_ACCURACY_M} m in the database"
+                ),
+                (None, _) => {
+                    let site = match file.clone() {
+                        Some(site) => site,
+                        None => site_file()?,
+                    };
+                    let from = format!(
+                        "site {:?} from {}",
+                        site.name.as_deref().unwrap_or("unnamed"),
+                        path.display()
+                    );
+                    (site, from)
+                }
+            })
+        };
         let time_zone = if time {
-            Some(match site.as_ref().and_then(|s| s.time_zone.as_deref()) {
+            Some(match file.as_ref().and_then(|s| s.time_zone.as_deref()) {
                 Some(name) => jiff::tz::TimeZone::get(name)
                     .with_context(|| format!("time zone {name:?} in {}", path.display()))?,
                 None => jiff::tz::TimeZone::try_system().context("this Mac's time zone")?,
@@ -501,7 +586,7 @@ impl SetupPlan {
         };
         Ok(Self {
             time_zone,
-            site: site.filter(|_| location).map(|s| (s, path.to_owned())),
+            location,
         })
     }
 }
@@ -537,11 +622,9 @@ fn setup(
             tz.iana_name().unwrap_or("this Mac's time zone")
         );
     }
-    if let Some((site, path)) = &plan.site {
+    if let Some((site, from)) = &plan.location {
         println!(
-            "will set location: site {:?} from {} ({}; coordinates not shown)",
-            site.name.as_deref().unwrap_or("unnamed"),
-            path.display(),
+            "will set location: {from} ({}; coordinates not shown)",
             site.hemispheres()
         );
     }
@@ -577,7 +660,7 @@ fn setup(
         let time = HandTime::at(jiff::Timestamp::now(), tz)?;
         report("time", apply::set_time(&mut link, &time));
     }
-    if let Some((site, _)) = &plan.site {
+    if let Some((site, _)) = &plan.location {
         report(
             "location",
             apply::set_location(&mut link, &Location::of(site)),
@@ -769,10 +852,11 @@ fn session(command: SessionCommand) -> Result<ExitCode> {
             }
             for s in list {
                 println!(
-                    "{}  {}  {:<10}  {:>9} samples  {:>3} markers{}",
+                    "{}  {}  {:<10}  {:<11}  {:>9} samples  {:>3} markers{}",
                     s.session_id,
                     s.created_utc,
                     s.status,
+                    s.environment.as_deref().unwrap_or("—"),
                     s.samples,
                     s.markers,
                     s.status_reason
@@ -876,7 +960,7 @@ fn session(command: SessionCommand) -> Result<ExitCode> {
             let summary = sessions::import(&mut store, &mut input, &|| clock.now_ns())?;
             store.checkpoint()?;
             println!(
-                "session {} ({}): {} samples stored, {} already present, {} conflicting, {} markers, {} events, {} clock exchanges",
+                "session {} ({}): {} samples stored, {} already present, {} conflicting, {} markers, {} events, {} sites, {} clock exchanges",
                 summary.session_id.as_deref().unwrap_or("?"),
                 if summary.created { "new" } else { "existing" },
                 summary.stored_samples,
@@ -884,6 +968,7 @@ fn session(command: SessionCommand) -> Result<ExitCode> {
                 summary.conflicting_samples,
                 summary.markers,
                 summary.events,
+                summary.sites,
                 summary.clock_exchanges
             );
             for skipped in &summary.skipped {

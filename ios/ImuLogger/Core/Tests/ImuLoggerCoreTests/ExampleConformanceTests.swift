@@ -40,7 +40,7 @@ private func validExamples() throws -> [(name: String, data: Data)] {
     #expect(
         types == [
             "hello", "hello_ack", "sample_batch", "batch_ack", "clock_ping", "clock_pong",
-            "clock_result", "marker", "event", "error", "bye",
+            "clock_result", "marker", "event", "site", "error", "bye",
         ])
 }
 

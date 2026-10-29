@@ -4,7 +4,7 @@ Diagnostics for Celestron computerized telescope mounts, using an iPhone's motio
 
 Developed on a NexStar Evolution 8 EdgeHD with StarSense, an iPhone 17 Pro Max and a MacBook. The mount-specific code sits behind an adapter, so the rest of the system doesn't depend on one particular mount.
 
-> **Status:** M3 in progress. The iPhone app records and streams motion data, the Mac receiver stores it in SQLite with a phone-to-Mac clock model, and `cwb analyze` reports timing, still windows, noise, drift and angle resolution for a session. The phone is characterized on the scope with the mount's motors (ADR 0009), once the read-only Celestron discovery (Prompt 7) and the operator checklist pass; the simulator safety suite is in place, read-only discovery has run on the mount and its report is approved, and `cwb celestron setup` sets the hand controller's time and location. No code that can move the mount yet. See [docs/plan.md](docs/plan.md).
+> **Status:** M3 in progress. The iPhone app records and streams motion data with each session's location fix and indoor/outdoor setting, the Mac receiver stores it in SQLite with a phone-to-Mac clock model, and `cwb analyze` reports timing, still windows, noise, drift and angle resolution for a session. The phone is characterized on the scope with the mount's motors (ADR 0009), once the read-only Celestron discovery (Prompt 7) and the operator checklist pass; the simulator safety suite is in place, read-only discovery has run on the mount and its report is approved, and `cwb celestron setup` sets the hand controller's time and location from the Mac's clock and the phone's fix. No code that can move the mount yet. See [docs/plan.md](docs/plan.md).
 
 ## What it does
 

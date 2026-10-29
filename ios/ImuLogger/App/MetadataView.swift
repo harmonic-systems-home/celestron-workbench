@@ -46,7 +46,7 @@ struct MetadataView: View {
             }
             Section {
                 Text(
-                    "The device ID is a random identifier created by this app, not a hardware identifier. Session files contain the model, iOS version, and sensor data, but no location."
+                    "The device ID is a random identifier created by this app, not a hardware identifier. Session files contain the model, iOS version and sensor data, and, when Record location is on, where the session took place. Keep them private."
                 )
                 .font(.footnote)
                 .foregroundStyle(.secondary)

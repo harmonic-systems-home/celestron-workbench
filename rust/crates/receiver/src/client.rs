@@ -72,6 +72,7 @@ impl PhoneSession {
                 m @ (Message::SampleBatch(_)
                 | Message::Marker(_)
                 | Message::Event(_)
+                | Message::Site(_)
                 | Message::ClockResult(_)) => items.push(m),
                 Message::Bye(b) => bye = Some(b),
                 _ => {}

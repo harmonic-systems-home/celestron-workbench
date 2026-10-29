@@ -15,7 +15,7 @@ use std::{
     thread,
 };
 
-use cwb_protocol::{Bye, ClockResult, Event, Hello, Marker, Nanos, SampleBatch};
+use cwb_protocol::{Bye, ClockResult, Event, Hello, Marker, Nanos, SampleBatch, Site};
 use cwb_storage::{BatchOutcome, ByeOutcome, HelloOutcome, StorageError, Store};
 use thiserror::Error;
 use tokio::sync::{mpsc, oneshot};
@@ -43,6 +43,7 @@ enum Request {
     Batch(SampleBatch, Nanos, Reply<BatchOutcome>),
     Marker(Marker, Reply<bool>),
     Event(Event, Nanos, Reply<bool>),
+    Site(Site, Nanos, Reply<bool>),
     ClockResult(ClockResult, Reply<bool>),
     Bye(Bye, Nanos, Reply<ByeOutcome>),
     MacEvent {
@@ -93,6 +94,9 @@ fn run(mut store: Store, mut rx: mpsc::Receiver<Request>) -> Store {
             }
             Request::Event(event, ns, reply) => {
                 let _ = reply.send(store.phone_event(&event, ns));
+            }
+            Request::Site(site, ns, reply) => {
+                let _ = reply.send(store.site(&site, ns));
             }
             Request::ClockResult(result, reply) => {
                 let _ = reply.send(store.clock_result(&result));
@@ -169,6 +173,10 @@ impl WriterHandle {
 
     pub async fn event(&self, event: Event, ns: Nanos) -> Result<bool, WriterError> {
         self.call(|reply| Request::Event(event, ns, reply)).await
+    }
+
+    pub async fn site(&self, site: Site, ns: Nanos) -> Result<bool, WriterError> {
+        self.call(|reply| Request::Site(site, ns, reply)).await
     }
 
     pub async fn clock_result(&self, result: ClockResult) -> Result<bool, WriterError> {

@@ -286,6 +286,25 @@ impl Connection {
                     return Ok(Some(self.writer_failed(e)));
                 }
             }
+            Message::Site(site) => {
+                if let Some(close) = self.check_session(&site.session_id, &site.device_id) {
+                    return Ok(Some(close));
+                }
+                // Never the coordinates: logs aren't private storage.
+                tracing::info!(
+                    session = self.short_session(),
+                    environment = ?site.environment,
+                    location = ?site.location_status,
+                    "site"
+                );
+                match self.writer.site(site, receive_mac_ns).await {
+                    Ok(_) => {}
+                    Err(WriterError::Storage(StorageError::InvalidMessage(reason))) => {
+                        return Ok(Some(refuse(ErrorCode::InvalidMessage, reason)));
+                    }
+                    Err(e) => return Ok(Some(self.writer_failed(e))),
+                }
+            }
             Message::Bye(bye) => {
                 if let Some(close) = self.check_session(&bye.session_id, &bye.device_id) {
                     return Ok(Some(close));

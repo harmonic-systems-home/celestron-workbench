@@ -34,6 +34,7 @@ cargo test
 - **Mount safety suite** (`crates/mount-sim/tests/safety.rs`): every injected fault stops the simulated mount or latches with a cut-power alert, plus a randomized search over 1,000 fault combinations (ADR 0005). Run it alone with `cargo test -p cwb-mount-sim`.
 - **Celestron discovery** (`crates/celestron-discovery/tests/`): every sendable command is a documented read-only query (no motion, setters, location or time), replies decode as the protocol document's examples, and discovery against the simulated hand controller passes when healthy and fails or warns on a missing motor, silence, tracking on, another model or a moving mount (ADR 0010).
 - **Hand controller time and location** (`crates/celestron-setup/tests/`): set time and set location bytes match the documented layout, local time and daylight saving come from the time zone, coordinates round to whole arcseconds, read-back confirms or reports a drifting clock, a forgotten setting or silence, only `H`, `W`, `h` and `w` can be sent, and coordinates never appear in `Debug` or error text (ADR 0011).
+- **Session sites** (`crates/storage/tests/ingest.rs`, shared examples): a site is stored once, an inconsistent one is refused, it survives export and import, the session list shows the latest environment, and `Debug` hides coordinates (ADR 0012).
 - **Framing**, **mount state machine** and **safety configuration** unit tests.
 
 ### The `cwb` command
@@ -114,11 +115,12 @@ cwb celestron discover --port /dev/cu.usbserial-XXXX \
 
 ### Hand controller time and location
 
-Copy `config/site.example.toml` to `config/site.local.toml` (git-ignored) and fill in your site. Leave the hand controller at its top-level screen, then:
+The location comes from the newest precise phone fix in the database (`--db` or `CWB_DB`; each session records one, ADR 0012). Without one, copy `config/site.example.toml` to `config/site.local.toml` (git-ignored) and fill in your site. Leave the hand controller at its top-level screen, then:
 
 ```sh
-cwb celestron setup --port /dev/cu.usbserial-XXXX     # time from this Mac, location from the site file
+cwb celestron setup --port /dev/cu.usbserial-XXXX     # time from this Mac; location from the newest phone fix, else the site file
 cwb celestron setup --port /dev/cu.usbserial-XXXX --time-only
+cwb celestron setup --port /dev/cu.usbserial-XXXX --location-from site-file
 ```
 
 It checks the hand controller answers, shows what it will send (the site's name and hemispheres, never its coordinates), asks for confirmation, then sets each value and reads it back (ADR 0011). It exits non-zero unless every value is confirmed. `--site FILE` or `CWB_SITE` points at another site file; `--simulate` runs without hardware.

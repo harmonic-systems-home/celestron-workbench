@@ -43,6 +43,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "0003_clock_domains",
         sql: include_str!("../../../../schemas/sql/0003_clock_domains.sql"),
     },
+    Migration {
+        version: 4,
+        name: "0004_session_sites",
+        sql: include_str!("../../../../schemas/sql/0004_session_sites.sql"),
+    },
 ];
 
 /// The schema version a fully migrated database has.
