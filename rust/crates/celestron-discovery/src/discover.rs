@@ -295,11 +295,22 @@ pub fn summarize(
         check("Link", Status::Fail, "echo failed: check the port, cable and that the hand controller has finished starting up".into());
     }
 
+    // The 2.2 threshold is the 2006 document's numbering. Later hand
+    // controllers number their firmware differently, so what they answer
+    // decides, not the number.
+    let answers_2_2_queries = value(Query::Model).is_some() && !ok(Query::PreciseAzmAlt).is_empty();
     match value(Query::Version) {
         Some(Value::Version { major, minor }) if (major, minor) >= (2, 2) => check(
             "Hand controller version",
             Status::Pass,
             format!("{major}.{minor}: precise positions and model query are documented from 2.2"),
+        ),
+        Some(v) if answers_2_2_queries => check(
+            "Hand controller version",
+            Status::Info,
+            format!(
+                "{v}: below the document's 2.2, but this hand controller answers the model and precise position queries, so its numbering doesn't follow the 2006 document"
+            ),
         ),
         Some(v) => check(
             "Hand controller version",

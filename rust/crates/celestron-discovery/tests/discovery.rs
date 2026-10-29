@@ -110,6 +110,20 @@ fn tracking_on_or_another_model_warns_without_failing() {
 }
 
 #[test]
+fn a_low_version_number_is_information_when_the_newer_queries_answer() {
+    // The Evolution tested on 2026-10-29 reported 1.22 and answered everything.
+    let (d, _) = run(
+        FakeSetup {
+            version: (1, 22),
+            ..FakeSetup::default()
+        },
+        2,
+    );
+    assert!(d.ready(), "{:#?}", d.checks);
+    assert_eq!(status(&d, "Hand controller version"), Status::Info);
+}
+
+#[test]
 fn a_moving_mount_warns_that_positions_are_not_steady() {
     let (d, _) = run(
         FakeSetup {

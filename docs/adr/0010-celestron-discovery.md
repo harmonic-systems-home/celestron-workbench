@@ -23,3 +23,10 @@ Over Wi-Fi the mount speaks its internal motor bus protocol, known mostly from c
 - A `#` reply only means the hand controller relayed a command. Motion is confirmed by the IMU, never by the reply.
 - Several behaviours aren't settled by any document and are observed in the first hardware trials: the slowest effective rate, onset and stop delays, whether a fixed-rate stop ends a variable-rate slew, keypad interference, and whether Celestron's slew limits apply to pass-through slews.
 - The mount's own axis positions (`z`, 0.077″ units, relative to power-on until aligned) give a second motion record to compare with the IMU.
+
+## First hardware run (2026-10-29, report approved)
+
+- **Hand controller:** a StarSense hand controller, firmware 01.22.22308 (dated 8 August 2023), not the NexStar+ assumed above. It answers `V` with 1.22, below the reference's 2.2, yet answers the model and precise position queries, so its numbering doesn't follow the reference. The version check is information when those queries answer.
+- **Mount:** model 22 (NexStar Evolution); both motor controllers report 7.17. The USB link is a Prolific USB-serial adapter, which macOS's built-in driver handles.
+- **Replies:** echo about 5 ms, position about 85 ms (via the motor boards). One position read in three runs took 588 ms, beyond the 300 ms acknowledgement deadline; the deadline stays, and latencies over it are recorded in the first motion trials.
+- **Keypad:** the four arrow keys move the mount directly while the computer is connected; an accidental press moved altitude 0.115°, which `z` reported. Menus are navigated with SCROLL 6 and 9. The operator checklist gets: hands off the arrow keys during runs, since any motion not commanded faults the safety checks.
