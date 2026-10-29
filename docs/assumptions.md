@@ -32,13 +32,14 @@ Items are unverified unless the results log at the end says otherwise. Each item
 | M3 | Cutting mount power stops motion immediately and safely, and is reachable from the operator position. | The independent stop (ADR 0005). | Hardware dry run before any software-commanded motion. |
 | M4 | StarSense and the mount's own alignment state do not change how manual-rate commands behave. | Repeatability across sessions. | Compare trials with and without alignment. |
 | M5 | Firmware limits (altitude slew limits, cord wrap) remain active under manual-rate commands. | Layer 2 of the safety design. | Confirm in documentation; observe carefully at low rate. |
+| M6 | A long move in one direction turns the axis through very nearly its commanded angle (backlash affects reversals, not the total of a one-way move). | The scale reference for on-scope characterization (ADR 0009). | Repeat long one-way moves and check they agree; compare with plate solving if Prompt 9 is reached. |
 
 ## Attachment (M3)
 
 | # | Assumption | Why it matters | How to verify |
 |---|---|---|---|
-| A1 | A rigid, non-magnetic cradle can hold the phone repeatably, so that remove-and-replace error is below the sensor noise. | Otherwise the cradle dominates every measurement. | Phase 1 remove-and-replace trials. |
-| A2 | The available turntable or indexed fixture has a known angle uncertainty. | Ground truth for Phase 1 rotation tests. | Document the fixture; check it against an independent reference. |
+| A1 | A rigid, non-magnetic holder can hold the phone on the scope repeatably, so that remove-and-replace error is below the sensor noise. | Otherwise the holder dominates every measurement. | Remove-and-replace on the scope, measured with still windows before and after (ADR 0009). |
+| A2 | ~~The available turntable or indexed fixture has a known angle uncertainty.~~ | Dropped: no bench fixture (ADR 0009). | |
 
 ## Results log
 

@@ -12,3 +12,4 @@ Each ADR records one decision, why it was made, and what it costs. To change a d
 | [0006](0006-phone-owns-session.md) | The phone starts and owns a recording session | Accepted |
 | [0007](0007-step-and-settle-measurement.md) | Mount characterization uses step-and-settle and hold tests | Accepted |
 | [0008](0008-bench-analysis.md) | Bench analysis is deterministic, configured in TOML, and starts with stationary metrics | Accepted |
+| [0009](0009-characterize-on-the-scope.md) | The phone is characterized on the scope, not on a bench fixture | Accepted |
