@@ -84,7 +84,8 @@ fn recovers_offset_and_drift_through_wifi_like_delays() {
             model.uncertainty_ns
         );
     }
-    // The stalled exchanges were left out.
+    // The stalled exchanges were left out, and the bound comes from the kept ones.
+    assert!(model.uncertainty_ns >= model.round_trip_median_ns / 2);
     assert!(model.used <= 150);
     assert!(model.round_trip_median_ns < 10 * MS);
 }

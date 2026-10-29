@@ -10,8 +10,9 @@
 //!
 //! Uncertainty: no exchange can see a constant difference between the outbound
 //! and return delays, so the true offset lies within half the round trip of
-//! the measured one. A model reports half its shortest kept round trip plus
-//! twice the RMS residual of the fit.
+//! the measured one. The fit averages every kept exchange, so its bound is
+//! half the longest kept round trip (the median), plus twice the RMS
+//! residual of the fit.
 
 use cwb_protocol::Nanos;
 use rusqlite::{Connection, params};
@@ -131,7 +132,6 @@ pub fn fit(
         .collect();
     let residual_rms = (residuals.iter().map(|r| r * r).sum::<f64>() / n).sqrt();
     let residual_max = residuals.iter().map(|r| r.abs()).fold(0.0, f64::max);
-    let min_kept = kept.iter().map(|e| e.round_trip_ns()).min().unwrap_or(0);
 
     Some(ClockModel {
         mac_clock_boot_id: mac_clock_boot_id.to_owned(),
@@ -141,7 +141,7 @@ pub fn fit(
         offset_ns: intercept.round() as Nanos,
         drift_ppb: slope * 1e9,
         drift_fitted,
-        uncertainty_ns: (min_kept.max(0) as f64 / 2.0 + 2.0 * residual_rms).ceil() as Nanos,
+        uncertainty_ns: (median.max(0) as f64 / 2.0 + 2.0 * residual_rms).ceil() as Nanos,
         exchanges: exchanges.len(),
         used: kept.len(),
         round_trip_min_ns: round_trips[0],

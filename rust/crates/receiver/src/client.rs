@@ -400,7 +400,9 @@ pub async fn run(
                     phone_send_ns: clock.phone_now_ns(),
                 });
                 exchange_index += 1;
-                sleep(clock.outbound_delay).await;
+                if !clock.outbound_delay.is_zero() {
+                    sleep(clock.outbound_delay).await;
+                }
                 if connection.send(&ping).await.is_err() {
                     continue 'connect;
                 }

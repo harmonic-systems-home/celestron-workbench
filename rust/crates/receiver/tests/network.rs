@@ -441,7 +441,7 @@ async fn clock_exchanges_give_a_model_that_brackets_the_true_offset() {
         "offset error {error} ns, uncertainty {} ns",
         model.uncertainty_ns
     );
-    assert!(model.uncertainty_ns < 5_000_000, "loopback should be fast");
+    assert!(model.uncertainty_ns < 20_000_000, "loopback should be fast");
 
     let models = clockfit::fit_session(&conn, &slow_phone.hello.session_id).unwrap();
     let model = &models[0].1;
