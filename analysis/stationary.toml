@@ -1,0 +1,29 @@
+# Stationary bench analysis (plan Prompt 5, ADR 0007).
+# Bump `version` only when the format changes; change `name` when the
+# values change, so every report names exactly what produced it.
+version = 1
+name = "stationary-v1"
+description = "Timing, still windows, stationary noise and drift, angle resolution versus window length, moves between still windows."
+
+[exclusions]
+warm_up_s = 0.0          # set to 600 for the 10-minute warm-up in the bench protocol
+
+[still]
+smoothing_s = 0.3
+max_rate_deg_s = 1.0
+min_duration_s = 1.5
+trim_s = 0.5
+max_gap_intervals = 1.5
+
+[resolution]
+tau_s = [0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500]
+# Shortest settle window worth using; the best-resolution search starts here.
+# Fused channels are filtered, so very short averages understate their noise.
+min_window_s = 0.5
+coverage_k = 2.0
+
+[acceptance]
+max_rate_shortfall = 0.02
+max_missing_samples = 0
+max_clock_uncertainty_ms = 50.0
+min_steady_state_s = 60.0

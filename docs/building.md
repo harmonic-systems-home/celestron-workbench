@@ -70,6 +70,15 @@ cwb session clock 20009d52 [--save]    # fit phone-to-Mac clock models; --save s
 - **export** writes protocol NDJSON (`hello`, batches, markers, phone events, clock results, `bye`) and prints its SHA-256. The output passes `cwb validate`, imports back to an identical session, and replays. Mac-side ingest events are reported by `validate`, not exported.
 - **import** creates a session from the phone's log, or completes one received live: samples already stored are skipped, so it fills in whatever the network missed. Importing the same file twice changes nothing.
 
+### Analysing a session
+
+```sh
+cwb analyze 20009d52                               # report in reports/20009d52/ (git-ignored)
+cwb analyze 20009d52 --config analysis/my.toml -o /path/outside/repo/report
+```
+
+It prints the decision and the smallest resolvable step for 1, 2 and 5 s settle windows, and writes `report.html` (and the same as `report.md`), `metrics.json`, CSV tables and SVG plots. The config is [analysis/stationary.toml](../analysis/stationary.toml) unless you pass one; copy it and change `name` when you change values, since every report records the config's name and SHA-256. For the bench protocol's 30-minute stationary trials, set `warm_up_s = 600`. See [ADR 0008](adr/0008-bench-analysis.md) for what each metric means.
+
 ### Without a phone
 
 `cwb replay` acts as the phone, with the same handshake, acknowledgements, reconnects and resends:

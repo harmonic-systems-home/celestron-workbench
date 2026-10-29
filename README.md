@@ -4,7 +4,7 @@ Diagnostics for Celestron computerized telescope mounts, using an iPhone's motio
 
 Developed on a NexStar Evolution 8 EdgeHD with StarSense, an iPhone 17 Pro Max and a MacBook. The mount-specific code sits behind an adapter, so the rest of the system doesn't depend on one particular mount.
 
-> **Status:** M2 receiver with basic clock estimation. The iPhone app records and streams motion data, the Mac receiver stores it in SQLite, and clock exchanges give each session a phone-to-Mac time model with an uncertainty. Bench analysis is next. No mount code yet. See [docs/plan.md](docs/plan.md).
+> **Status:** M3 in progress. The iPhone app records and streams motion data, the Mac receiver stores it in SQLite with a phone-to-Mac clock model, and `cwb analyze` reports timing, still windows, noise, drift and angle resolution for a session. Fixture-based metrics (indexed rotations, attachment) come next. No mount code yet. See [docs/plan.md](docs/plan.md).
 
 ## What it does
 
@@ -21,7 +21,8 @@ Developed on a NexStar Evolution 8 EdgeHD with StarSense, an iPhone 17 Pro Max a
 | [docs/building.md](docs/building.md) | Build and test instructions |
 | [docs/assumptions.md](docs/assumptions.md) | What still has to be verified on real hardware |
 | [schemas/](schemas/) | JSON Schema for the phone–Mac protocol, shared examples, SQL migrations |
-| [rust/](rust/) | Mac side: `protocol`, `storage`, `receiver`, `mount-core` (state machine only), `cli` (`cwb`) |
+| [rust/](rust/) | Mac side: `protocol`, `storage`, `receiver`, `analysis`, `mount-core` (state machine only), `cli` (`cwb`) |
+| [analysis/](analysis/) | Versioned analysis configs for `cwb analyze` |
 | [ios/ImuLogger/](ios/ImuLogger/) | Phone side: the IMU Logger iPhone app (`App/`) and its tested core library (`Core/`) |
 
 ## Safety

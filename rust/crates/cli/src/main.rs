@@ -1,6 +1,6 @@
 //! `cwb`: Celestron Workbench command-line tools.
 //!
-//! Report commands arrive in later milestones. Nothing here can move a mount.
+//! Nothing here can move a mount.
 
 use std::{
     fs::{self, File},
@@ -100,6 +100,24 @@ enum Command {
         /// only: a recorded log's phone clock can't be reproduced).
         #[arg(long, value_name = "SECONDS", requires = "synthetic")]
         clock_interval: Option<f64>,
+    },
+    /// Analyse a stored session (plan Prompt 5): timing, still windows, noise
+    /// and drift, resolution versus window length, moves. Writes a report
+    /// folder (Markdown, HTML, JSON, CSV, SVG).
+    Analyze {
+        #[command(flatten)]
+        db: Db,
+        /// Session ID or a unique prefix of it.
+        session: String,
+        /// Analysis config (TOML). Defaults to the committed analysis/stationary.toml.
+        #[arg(long)]
+        config: Option<PathBuf>,
+        /// Output folder. Defaults to reports/<session prefix>/ (git-ignored).
+        #[arg(long, short)]
+        out: Option<PathBuf>,
+        /// Device ID prefix, for sessions with more than one device.
+        #[arg(long)]
+        device: Option<String>,
     },
     /// Print the software, protocol and database schema versions.
     Versions,
@@ -237,6 +255,13 @@ fn main() -> Result<ExitCode> {
             );
             Ok(ExitCode::SUCCESS)
         }
+        Command::Analyze {
+            db,
+            session,
+            config,
+            out,
+            device,
+        } => analyze(&db.db, &session, config.as_deref(), out, device.as_deref()),
         Command::Versions => {
             println!("cwb {}", env!("CARGO_PKG_VERSION"));
             println!("protocol {}", cwb_protocol::PROTOCOL_VERSION);
@@ -244,6 +269,79 @@ fn main() -> Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
     }
+}
+
+fn analyze(
+    db: &Path,
+    session: &str,
+    config: Option<&Path>,
+    out: Option<PathBuf>,
+    device: Option<&str>,
+) -> Result<ExitCode> {
+    let text = match config {
+        Some(path) => {
+            fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?
+        }
+        None => cwb_analysis::config::STATIONARY.to_owned(),
+    };
+    let config = cwb_analysis::Config::parse(&text)?;
+    let conn =
+        cwb_storage::open_read_only(db).with_context(|| format!("opening {}", db.display()))?;
+    let id = sessions::resolve(&conn, session)?;
+    let data = cwb_analysis::load(&conn, &id, device)?;
+    let analysis = cwb_analysis::analyze(&data, &config, &cwb_analysis::config::sha256(&text));
+    let out = out.unwrap_or_else(|| PathBuf::from("reports").join(&id[..8]));
+    fs::create_dir_all(&out).with_context(|| format!("creating {}", out.display()))?;
+    for (name, contents) in cwb_analysis::report::render(&analysis, &data) {
+        fs::write(out.join(name), contents)?;
+    }
+    println!("session {id}: {}", analysis.decision);
+    println!(
+        "  {:.1} s, {} still window(s), {:.1} s steady state, {} move(s)",
+        analysis.duration_s,
+        analysis.windows.len(),
+        analysis.steady_state_s,
+        analysis.moves.len()
+    );
+    if let Some(r) = &analysis.resolution {
+        // Smallest resolvable step between two settle windows of a few lengths.
+        let step = |v: Option<f64>| {
+            v.map_or("    -   ".into(), |v| {
+                format!("{:.4}°", r.coverage_k * std::f64::consts::SQRT_2 * v)
+            })
+        };
+        println!(
+            "  smallest step (k = {}), by settle-window length:",
+            r.coverage_k
+        );
+        println!(
+            "    {:<13} {:>9} {:>9} {:>9}   best (window)",
+            "channel", "1 s", "2 s", "5 s"
+        );
+        for (i, (name, unit)) in r.channels.iter().enumerate() {
+            if *unit != "deg" {
+                continue;
+            }
+            let at = |tau: f64| {
+                r.rows
+                    .iter()
+                    .find(|row| row.tau_s == tau)
+                    .and_then(|row| row.adev[i])
+            };
+            println!(
+                "    {name:<13} {:>9} {:>9} {:>9}   {}",
+                step(at(1.0)),
+                step(at(2.0)),
+                step(at(5.0)),
+                r.minimum[i].map_or("-".into(), |(tau, v)| format!(
+                    "{} ({tau:.1} s)",
+                    step(Some(v))
+                ))
+            );
+        }
+    }
+    println!("report: {}", out.join("report.html").display());
+    Ok(ExitCode::SUCCESS)
 }
 
 fn open(db: &Path) -> Result<(Connection, Vec<u32>)> {
