@@ -9,6 +9,17 @@
 //! Any interlock failure sends `StopAll` and latches a fault; only an
 //! operator reset, once the IMU shows the mount still, clears it, and
 //! re-arming after that is a separate operator action.
+//!
+//! A single move need not be visible to the IMU: small or slow steps are
+//! allowed. Instead the controller keeps a running tally per axis of net
+//! commanded travel and the travel the IMU integrated during each command.
+//! Once the commanded travel reaches `verify_travel_deg`, the observed
+//! travel must have kept up, or the session latches a stall (or opposite
+//! motion, if it went the other way). Wrong-axis, wrong-way, too-fast and
+//! not-stopping motion are still caught from the rates during each move.
+//! Observed travel is integrated continuously while armed or latched, so
+//! motion too slow for the rate checks (a slow move whose stop was ignored)
+//! is caught once it exceeds the commanded travel by `travel_tolerance_deg`.
 
 use std::collections::{HashSet, VecDeque};
 
@@ -59,7 +70,16 @@ struct Active {
     stop_sent: Option<Nanos>,
     /// Stopped by the operator rather than at the end of its lease.
     cancelled: bool,
-    motion_seen: bool,
+    /// The axis tally's observed travel when the command was transmitted.
+    observed_at_start: f64,
+}
+
+/// Net signed travel on one axis since the IMU last confirmed it: commanded
+/// by completed commands, and integrated from IMU rates continuously.
+#[derive(Debug, Clone, Copy, Default)]
+struct Tally {
+    commanded_deg: f64,
+    observed_deg: f64,
 }
 
 pub struct Controller {
@@ -76,6 +96,10 @@ pub struct Controller {
     still_since: Option<Nanos>,
     /// After a fault: the IMU has confirmed both axes still.
     confirmed_still: bool,
+    /// Indexed by [`Axis::index`].
+    tally: [Tally; 2],
+    /// Time of the last observation integrated into the tallies.
+    integrated_to: Option<Nanos>,
 }
 
 impl Controller {
@@ -98,6 +122,8 @@ impl Controller {
             last_stop: None,
             still_since: None,
             confirmed_still: false,
+            tally: [Tally::default(); 2],
+            integrated_to: None,
         })
     }
 
@@ -115,6 +141,11 @@ impl Controller {
 
     pub fn faults(&self) -> &[FaultRecord] {
         &self.faults
+    }
+
+    /// Net commanded travel per axis not yet confirmed by the IMU.
+    pub fn unconfirmed_travel_deg(&self) -> [f64; 2] {
+        [self.tally[0].commanded_deg, self.tally[1].commanded_deg]
     }
 
     /// The ID of the command currently leased, if any.
@@ -168,6 +199,7 @@ impl Controller {
         if !self.in_envelope() {
             return Err(Refused("altitude is outside the envelope".into()));
         }
+        self.tally = [Tally::default(); 2];
         self.go(MountEvent::OperatorArm);
         Ok(Vec::new())
     }
@@ -190,6 +222,7 @@ impl Controller {
         if !self.still(self.config.still_deg_s) {
             return Err(Refused("the mount is still moving".into()));
         }
+        self.tally = [Tally::default(); 2];
         self.go(MountEvent::OperatorReset);
         if !self.transport_up {
             self.go(MountEvent::TransportClosed);
@@ -236,6 +269,8 @@ impl Controller {
             stages: vec![(Stage::Requested, now)],
             reason: None,
             fault: None,
+            commanded_deg: None,
+            observed_deg: None,
         };
         let c = &self.config;
         let refusal = if !self.request_ids.insert(request.request_id.clone()) {
@@ -289,7 +324,7 @@ impl Controller {
             lease_end: now + request.duration_ms as Nanos * MS,
             stop_sent: None,
             cancelled: false,
-            motion_seen: false,
+            observed_at_start: self.tally[request.axis.index()].observed_deg,
         });
         self.still_since = None;
         self.go(MountEvent::MotionCommandSent);
@@ -326,6 +361,26 @@ impl Controller {
         while self.window.front().is_some_and(|o| o.t_ns < horizon) {
             self.window.pop_front();
         }
+        // Integrate observed travel. Out-of-order samples are skipped.
+        if self.integrated_to.is_none_or(|t| observation.t_ns > t) {
+            let tracking = matches!(
+                self.state,
+                MountState::Armed
+                    | MountState::Moving
+                    | MountState::Stopping
+                    | MountState::FaultLatched
+            );
+            if let Some(t) = self.integrated_to
+                && tracking
+            {
+                let dt = (observation.t_ns - t).min(self.config.imu_max_age_ms as Nanos * MS);
+                for axis in Axis::BOTH {
+                    self.tally[axis.index()].observed_deg +=
+                        observation.rate_deg_s[axis.index()] * dt as f64 / 1e9;
+                }
+            }
+            self.integrated_to = Some(observation.t_ns);
+        }
         self.evaluate(now)
     }
 
@@ -347,7 +402,7 @@ impl Controller {
                         "motion while no command is active",
                     )
                 } else {
-                    Vec::new()
+                    self.check_overshoot(now)
                 }
             }
             MountState::Moving | MountState::Stopping => self.check_motion(now),
@@ -407,18 +462,13 @@ impl Controller {
         if !self.in_envelope() {
             return self.fault(FaultKind::LimitBreach, now, "altitude left the envelope");
         }
-        if signed > c.motion_deg_s
-            && let Some(active) = &mut self.active
-        {
-            active.motion_seen = true;
+        let overshoot = self.check_overshoot(now);
+        if !overshoot.is_empty() {
+            return overshoot;
         }
-        let motion_seen = self.active.as_ref().is_some_and(|a| a.motion_seen);
 
         match self.state {
             MountState::Moving => {
-                if !motion_seen && now - a.transmitted > c.start_deadline_ms as Nanos * MS {
-                    return self.fault(FaultKind::Stall, now, "commanded motion was not observed");
-                }
                 if now >= a.lease_end {
                     return self.begin_stop(now, false);
                 }
@@ -429,7 +479,7 @@ impl Controller {
                 if self.still(c.still_deg_s) {
                     let since = *self.still_since.get_or_insert(now);
                     if now - since >= c.still_hold_ms as Nanos * MS {
-                        return self.complete(now, motion_seen);
+                        return self.complete(now);
                     }
                 } else {
                     self.still_since = None;
@@ -447,18 +497,31 @@ impl Controller {
     }
 
     fn while_latched(&mut self, now: Nanos) -> Vec<Action> {
+        let fresh = self.fresh(now);
+        let rate_still = fresh && self.still(self.config.still_deg_s);
+        if rate_still {
+            if self.still_since.is_none() {
+                // Coasting after the stop is over: measure creep from here.
+                self.still_since = Some(now);
+                self.tally = [Tally::default(); 2];
+            }
+        } else {
+            self.still_since = None;
+        }
+        let creeping = self.beyond_commanded(now).is_some();
+        if creeping {
+            self.confirmed_still = false;
+        }
         if self.confirmed_still {
             return Vec::new();
         }
-        let moving = self.fresh(now) && !self.still(self.config.still_deg_s);
-        if self.fresh(now) && !moving {
-            let since = *self.still_since.get_or_insert(now);
+        if rate_still && !creeping {
+            let since = self.still_since.unwrap_or(now);
             if now - since >= self.config.still_hold_ms as Nanos * MS {
                 self.confirmed_still = true;
             }
             return Vec::new();
         }
-        self.still_since = None;
         let due = self
             .last_stop
             .is_none_or(|t| now - t >= self.config.stop_resend_ms as Nanos * MS);
@@ -468,7 +531,7 @@ impl Controller {
         self.last_stop = Some(now);
         // Until the IMU confirms the mount is still, the operator is told:
         // a silent IMU is no evidence that motion has ended.
-        let alert = if moving {
+        let alert = if fresh {
             "motion continues after stop: cut mount power"
         } else {
             "IMU silent, so the stop can't be confirmed: check the mount and cut mount power if it is moving"
@@ -495,11 +558,17 @@ impl Controller {
         vec![Action::Send(MountCommand::Stop { axis })]
     }
 
-    fn complete(&mut self, now: Nanos, motion_seen: bool) -> Vec<Action> {
+    fn complete(&mut self, now: Nanos) -> Vec<Action> {
         let Some(a) = self.active.take() else {
             return Vec::new();
         };
+        let stop_sent = a.stop_sent.unwrap_or(now);
+        let commanded =
+            a.rate_deg_s * a.direction.sign() * (stop_sent - a.transmitted) as f64 / 1e9;
+        let observed = self.tally[a.axis.index()].observed_deg - a.observed_at_start;
         let record = &mut self.records[a.record];
+        record.commanded_deg = Some(commanded);
+        record.observed_deg = Some(observed);
         record.stages.push((
             if a.cancelled {
                 Stage::Cancelled
@@ -509,11 +578,76 @@ impl Controller {
             now,
         ));
         self.go(MountEvent::MotionEndedObserved);
-        if !motion_seen {
-            // Never confirmed in the commanded direction: treat as a stall.
-            return self.fault(FaultKind::Stall, now, "commanded motion was never observed");
+        self.check_travel(a.axis, commanded, now)
+    }
+
+    /// Commanded travel on `axis` since the tally began, including the
+    /// active command so far.
+    fn commanded_travel(&self, axis: Axis, now: Nanos) -> f64 {
+        let active = self
+            .active
+            .as_ref()
+            .filter(|a| a.axis == axis)
+            .map_or(0.0, |a| {
+                let end = a.stop_sent.unwrap_or(now);
+                a.rate_deg_s * a.direction.sign() * (end - a.transmitted) as f64 / 1e9
+            });
+        self.tally[axis.index()].commanded_deg + active
+    }
+
+    /// An axis that has turned further than commanded by more than the
+    /// tolerance, with its observed and commanded travel.
+    fn beyond_commanded(&self, now: Nanos) -> Option<(Axis, f64, f64)> {
+        Axis::BOTH.into_iter().find_map(|axis| {
+            let observed = self.tally[axis.index()].observed_deg;
+            let commanded = self.commanded_travel(axis, now);
+            (observed.abs() > commanded.abs() + self.config.travel_tolerance_deg)
+                .then_some((axis, observed, commanded))
+        })
+    }
+
+    fn check_overshoot(&mut self, now: Nanos) -> Vec<Action> {
+        match self.beyond_commanded(now) {
+            Some((axis, observed, commanded)) => self.fault(
+                FaultKind::UnexpectedMotion,
+                now,
+                &format!(
+                    "{axis:?} turned {observed:+.3}° against {commanded:+.3}° commanded: \
+                     if it is still moving, cut mount power"
+                ),
+            ),
+            None => Vec::new(),
         }
-        Vec::new()
+    }
+
+    /// Adds a completed command to its axis tally; once enough travel has
+    /// been commanded, the IMU must confirm it.
+    fn check_travel(&mut self, axis: Axis, commanded: f64, now: Nanos) -> Vec<Action> {
+        let c = &self.config;
+        let tally = &mut self.tally[axis.index()];
+        tally.commanded_deg += commanded;
+        let Tally {
+            commanded_deg: want,
+            observed_deg: got,
+        } = *tally;
+        if want.abs() < c.verify_travel_deg {
+            return Vec::new();
+        }
+        let along = got * want.signum();
+        let needed = c.min_observed_fraction * want.abs();
+        if along >= needed {
+            *tally = Tally::default();
+            return Vec::new();
+        }
+        let detail = format!(
+            "{axis:?}: {want:+.3}° commanded since the last confirmation, {got:+.3}° observed"
+        );
+        let kind = if along <= -needed {
+            FaultKind::OppositeMotion
+        } else {
+            FaultKind::Stall
+        };
+        self.fault(kind, now, &detail)
     }
 
     fn fault(&mut self, kind: FaultKind, now: Nanos, detail: &str) -> Vec<Action> {
@@ -543,6 +677,8 @@ impl Controller {
         self.last_stop = Some(now);
         self.still_since = None;
         self.confirmed_still = false;
+        // Unconfirmed travel is meaningless after a fault: start afresh.
+        self.tally = [Tally::default(); 2];
         let mut actions = Vec::new();
         if was != MountState::Disconnected {
             actions.push(Action::Send(MountCommand::StopAll));

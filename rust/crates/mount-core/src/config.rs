@@ -9,15 +9,13 @@ use serde::{Deserialize, Serialize};
 pub struct SafetyConfig {
     /// Highest commandable axis rate.
     pub max_rate_deg_s: f64,
-    /// Lowest commandable rate: below this the IMU cannot confirm the
-    /// direction of motion, so the interlocks could not do their job.
+    /// Lowest commandable rate. A single slow or short move may be too small
+    /// for the IMU to see; the accumulated travel check covers it instead.
     pub min_rate_deg_s: f64,
     /// Longest lease for one command; the controller stops the axis when it ends.
     pub max_duration_ms: u64,
     /// The mount must acknowledge a command within this time.
     pub ack_deadline_ms: u64,
-    /// Commanded motion must be seen within this time of transmission.
-    pub start_deadline_ms: u64,
     /// After a stop, both axes must be still within this time.
     pub stop_deadline_ms: u64,
     /// Both axes must stay below `still_deg_s` this long to count as stopped.
@@ -37,17 +35,32 @@ pub struct SafetyConfig {
     pub max_altitude_deg: f64,
     /// While motion continues after a fault, stop is re-sent this often.
     pub stop_resend_ms: u64,
+    /// Accumulated travel check: once the net commanded travel on an axis
+    /// since its last confirmation reaches this, the IMU must confirm it.
+    /// No commanded position strays further than this unconfirmed. Keep it
+    /// well above the gear backlash, which absorbs motion after a reversal.
+    pub verify_travel_deg: f64,
+    /// Observed travel must reach this fraction of the commanded travel, in
+    /// the commanded direction, for the check to pass.
+    pub min_observed_fraction: f64,
+    /// An axis that has turned more than this beyond its commanded travel
+    /// (since the last confirmation, or since it was last seen still after
+    /// a fault) is moving on its own: this catches a creep too slow for the
+    /// rate checks, such as a slow move whose stop was ignored. Observed
+    /// travel is integrated from IMU rates, so gyro bias accumulates too:
+    /// disarm during long holds.
+    pub travel_tolerance_deg: f64,
 }
 
 impl Default for SafetyConfig {
-    /// Conservative indoor values: at most 1 °/s for 2 s (2° per command).
+    /// Conservative indoor values: at most 1 °/s for 2 s (2° per command),
+    /// and at most 1° commanded on an axis before the IMU must confirm it.
     fn default() -> Self {
         Self {
             max_rate_deg_s: 1.0,
-            min_rate_deg_s: 0.3,
+            min_rate_deg_s: 0.001,
             max_duration_ms: 2_000,
             ack_deadline_ms: 300,
-            start_deadline_ms: 1_000,
             stop_deadline_ms: 1_500,
             still_hold_ms: 300,
             imu_max_age_ms: 1_000,
@@ -58,6 +71,9 @@ impl Default for SafetyConfig {
             min_altitude_deg: 5.0,
             max_altitude_deg: 85.0,
             stop_resend_ms: 250,
+            verify_travel_deg: 1.0,
+            min_observed_fraction: 0.5,
+            travel_tolerance_deg: 0.25,
         }
     }
 }
@@ -71,6 +87,8 @@ impl SafetyConfig {
             ("min_rate_deg_s", self.min_rate_deg_s),
             ("motion_deg_s", self.motion_deg_s),
             ("still_deg_s", self.still_deg_s),
+            ("verify_travel_deg", self.verify_travel_deg),
+            ("travel_tolerance_deg", self.travel_tolerance_deg),
         ];
         for (name, v) in positive {
             if !(v.is_finite() && v > 0.0) {
@@ -80,7 +98,6 @@ impl SafetyConfig {
         for (name, v) in [
             ("max_duration_ms", self.max_duration_ms),
             ("ack_deadline_ms", self.ack_deadline_ms),
-            ("start_deadline_ms", self.start_deadline_ms),
             ("stop_deadline_ms", self.stop_deadline_ms),
             ("imu_max_age_ms", self.imu_max_age_ms),
             ("smoothing_ms", self.smoothing_ms),
@@ -93,14 +110,11 @@ impl SafetyConfig {
         if self.min_rate_deg_s > self.max_rate_deg_s {
             p.push("min_rate_deg_s exceeds max_rate_deg_s".into());
         }
-        if self.min_rate_deg_s < 2.0 * self.motion_deg_s {
-            p.push("min_rate_deg_s must be at least twice motion_deg_s, or direction can't be confirmed".into());
+        if !(self.min_observed_fraction > 0.0 && self.min_observed_fraction <= 1.0) {
+            p.push("min_observed_fraction must be above 0 and at most 1".into());
         }
         if self.still_deg_s >= self.motion_deg_s {
             p.push("still_deg_s must be below motion_deg_s".into());
-        }
-        if self.start_deadline_ms > self.max_duration_ms {
-            p.push("start_deadline_ms exceeds max_duration_ms: a stall could go unnoticed".into());
         }
         if self.min_altitude_deg >= self.max_altitude_deg {
             p.push("altitude envelope is empty".into());

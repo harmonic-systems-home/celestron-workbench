@@ -118,6 +118,11 @@ pub struct CommandRecord {
     /// Why it was refused or how it ended.
     pub reason: Option<String>,
     pub fault: Option<FaultKind>,
+    /// Signed travel on the commanded axis: rate × time from transmission
+    /// to stop, and the IMU's integrated rate over the same command. Set
+    /// when the command completes.
+    pub commanded_deg: Option<f64>,
+    pub observed_deg: Option<f64>,
 }
 
 impl CommandRecord {

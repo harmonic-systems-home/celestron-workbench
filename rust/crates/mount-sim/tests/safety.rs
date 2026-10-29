@@ -45,6 +45,30 @@ fn one_move(faults: SimFaults) -> Scenario {
     }
 }
 
+/// `n` azimuth steps of 0.08 °/s for 1.2 s (0.096° each), every 2 s from
+/// 500 ms. At 0.08 °/s each step is below the IMU's motion threshold.
+fn small_steps(faults: SimFaults, n: u64) -> Scenario {
+    let mut script = vec![(100, Op::Connect), (300, Op::Arm)];
+    for i in 0..n {
+        script.push((
+            500 + i * 2_000,
+            Op::Move(request(
+                &format!("s{i}"),
+                Axis::Azimuth,
+                Direction::Positive,
+                0.08,
+                1_200,
+            )),
+        ));
+    }
+    Scenario {
+        faults,
+        script,
+        run_ms: 1_000 + n * 2_000,
+        ..Scenario::default()
+    }
+}
+
 fn only_fault(trace: &Trace) -> FaultKind {
     assert!(!trace.faults.is_empty(), "expected a fault; none latched");
     trace.faults[0].kind
@@ -96,6 +120,8 @@ fn a_normal_move_completes_and_rearms() {
     );
     assert!(travel[1].abs() < 1e-9);
     assert!(trace.is_still_at_end());
+    assert!((record.commanded_deg.unwrap() - 0.5).abs() < 1e-9);
+    assert!((record.observed_deg.unwrap() - 0.5).abs() < 0.03);
     // The stop was sent when the 1 s lease ended.
     let stop_at = record
         .stages
@@ -137,7 +163,11 @@ fn an_ignored_stop_latches_and_keeps_telling_the_operator_to_cut_power() {
         ignore_stop: true,
         ..SimFaults::default()
     }));
-    assert_eq!(only_fault(&trace), FaultKind::StopNotObserved);
+    // Travel past the commanded 0.5° by the tolerance gives it away about
+    // 0.5 s after the stop, before the 1.5 s stop deadline.
+    assert_eq!(only_fault(&trace), FaultKind::UnexpectedMotion);
+    let after_stop = trace.first_fault_ns().unwrap() - 1_500 * MS;
+    assert!(after_stop < 700 * MS, "caught {after_stop} ns after the stop");
     assert_stopped_and_latched(&trace);
     // The software can't stop this mount: it keeps re-sending stops and alerting.
     assert!(!trace.is_still_at_end());
@@ -187,12 +217,120 @@ fn motion_opposite_to_the_command_stops_within_a_fraction_of_a_degree() {
 }
 
 #[test]
-fn a_stalled_axis_latches() {
-    let trace = run(&one_move(SimFaults {
+fn small_steps_the_imu_cant_see_one_by_one_add_up_and_are_confirmed() {
+    let trace = run(&small_steps(SimFaults::default(), 12));
+    assert!(trace.faults.is_empty(), "{:?}", trace.faults);
+    assert_eq!(trace.final_state, Some(MountState::Armed));
+    assert_eq!(trace.moves_sent(), 12);
+    for r in &trace.records {
+        assert_eq!(r.last_stage(), Stage::Completed, "{r:?}");
+        assert!((r.commanded_deg.unwrap() - 0.096).abs() < 1e-9);
+        assert!((r.observed_deg.unwrap() - 0.096).abs() < 0.01, "{r:?}");
+    }
+    let travel = trace.travel_after(0)[0];
+    assert!((travel - 1.152).abs() < 0.02, "azimuth travel {travel}");
+}
+
+#[test]
+fn a_stalled_axis_latches_once_commanded_travel_adds_up() {
+    let trace = run(&small_steps(
+        SimFaults {
+            stall: true,
+            ..SimFaults::default()
+        },
+        12,
+    ));
+    // Ten unseen steps are fine; the eleventh brings the tally past 1°.
+    assert_eq!(only_fault(&trace), FaultKind::Stall);
+    assert_eq!(trace.moves_sent(), 11);
+    assert!(trace.faults[0].detail.contains("+1.056° commanded"));
+    assert_stopped_and_latched(&trace);
+    assert!(trace.is_still_at_end());
+}
+
+#[test]
+fn slow_motion_the_wrong_way_latches_once_travel_adds_up() {
+    // Too slow for the rate check; the travel check catches it.
+    let trace = run(&small_steps(
+        SimFaults {
+            reverse: true,
+            ..SimFaults::default()
+        },
+        12,
+    ));
+    assert_eq!(only_fault(&trace), FaultKind::OppositeMotion);
+    assert_eq!(trace.moves_sent(), 11);
+    assert_stopped_and_latched(&trace);
+    let travel = trace.travel_after(0)[0];
+    assert!(travel < 0.0 && travel > -1.1, "wrong-way travel {travel}°");
+}
+
+#[test]
+fn a_slow_creep_after_an_ignored_stop_is_caught_by_travel() {
+    // 0.03 °/s is below the still threshold: the rates alone would call the
+    // mount stopped. Travel beyond the commanded 0.03° gives it away.
+    let mut scenario = small_steps(
+        SimFaults {
+            ignore_stop: true,
+            ..SimFaults::default()
+        },
+        0,
+    );
+    scenario.script.push((
+        500,
+        Op::Move(request(
+            "creep",
+            Axis::Azimuth,
+            Direction::Positive,
+            0.03,
+            1_000,
+        )),
+    ));
+    scenario.run_ms = 20_000;
+    let trace = run(&scenario);
+    assert_eq!(only_fault(&trace), FaultKind::UnexpectedMotion);
+    assert_eq!(trace.records[0].last_stage(), Stage::Completed);
+    let fault_at = trace.first_fault_ns().unwrap();
+    let at_fault = trace.motion.iter().find(|m| m.0 >= fault_at).unwrap().1[0];
+    assert!(
+        at_fault < 0.03 + 0.25 + 0.01,
+        "crept {at_fault}° before the fault"
+    );
+    assert!(
+        trace
+            .alerts
+            .iter()
+            .any(|(t, a)| *t == fault_at && a.contains("cut mount power"))
+    );
+    assert_eq!(trace.final_state, Some(MountState::FaultLatched));
+    // It keeps creeping, so the operator keeps being told.
+    assert!(
+        trace
+            .alerts
+            .iter()
+            .any(|(t, a)| *t > fault_at && a.contains("cut mount power"))
+    );
+}
+
+#[test]
+fn a_large_stalled_move_latches_when_it_completes() {
+    let mut scenario = one_move(SimFaults {
         stall: true,
         ..SimFaults::default()
-    }));
+    });
+    scenario.script[2] = (
+        500,
+        Op::Move(request(
+            "big",
+            Axis::Azimuth,
+            Direction::Positive,
+            0.6,
+            2_000,
+        )),
+    );
+    let trace = run(&scenario);
     assert_eq!(only_fault(&trace), FaultKind::Stall);
+    assert_eq!(trace.records[0].last_stage(), Stage::Completed);
     assert_stopped_and_latched(&trace);
     assert!(trace.is_still_at_end());
 }
@@ -400,7 +538,7 @@ fn requests_outside_the_rules_are_refused_and_recorded() {
                     "slow",
                     Axis::Azimuth,
                     Direction::Positive,
-                    0.01,
+                    0.0001,
                     500,
                 )),
             ),
@@ -585,7 +723,11 @@ fn safety_invariants_hold_across_random_fault_combinations() {
                     } else {
                         Direction::Negative
                     },
-                    0.3 + (rng.next() % 8) as f64 * 0.1,
+                    if rng.chance(40) {
+                        0.02 + (rng.next() % 4) as f64 * 0.02
+                    } else {
+                        0.3 + (rng.next() % 8) as f64 * 0.1
+                    },
                     200 + rng.next() % 1_800,
                 )),
             };

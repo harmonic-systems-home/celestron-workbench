@@ -12,16 +12,16 @@ fn the_default_configuration_is_sound() {
 fn unsound_configurations_are_refused() {
     let cases: Vec<(&str, SafetyConfig)> = vec![
         (
-            "direction can't be confirmed",
+            "min_observed_fraction must be above 0",
             SafetyConfig {
-                min_rate_deg_s: 0.1,
+                min_observed_fraction: 0.0,
                 ..SafetyConfig::default()
             },
         ),
         (
-            "a stall could go unnoticed",
+            "verify_travel_deg must be positive",
             SafetyConfig {
-                max_duration_ms: 500,
+                verify_travel_deg: -1.0,
                 ..SafetyConfig::default()
             },
         ),
