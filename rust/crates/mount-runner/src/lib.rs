@@ -35,8 +35,13 @@ const MS: Nanos = 1_000_000;
 pub const BIAS_WINDOW_MS: Nanos = 3_000;
 /// At 100 Hz, about 2.5 s of the window.
 const BIAS_MIN_SAMPLES: usize = 250;
-/// The mount's own positions must stay within this during the window.
-const BIAS_STILL_DEG: f64 = 0.002;
+/// The mount's own positions must stay within this during the window. A
+/// still mount reads exactly the same (one unit is 0.077″, 0.00002°); a
+/// creep of 0.2″/s seen on 2026-10-29 moves 0.00018° in 3 s.
+const BIAS_STILL_DEG: f64 = 0.0001;
+/// While armed and idle, the mount's own positions moving this far from
+/// where they settled is unexplained motion.
+const IDLE_CREEP_DEG: f64 = 0.0003;
 /// Arming and moving need a position read this recently: proof the hand
 /// controller link is alive (positions are read every 250 ms while idle).
 const POSITION_MAX_AGE_MS: Nanos = 1_000;
@@ -174,6 +179,9 @@ pub struct Runner<A: RunnerAdapter> {
     /// The last time a command was moving or stopping: the adapter reads no
     /// positions then, so silence doesn't count against the link.
     last_busy: Nanos,
+    /// Where the mount settled since it was last busy or armed; idle
+    /// positions are compared with it.
+    settled: Option<Position>,
 }
 
 impl<A: RunnerAdapter> Runner<A> {
@@ -216,6 +224,7 @@ impl<A: RunnerAdapter> Runner<A> {
             gyro: VecDeque::new(),
             bias: None,
             last_busy: now,
+            settled: None,
             config,
         };
         let mut out = vec![info("Mount-session checklist:")];
@@ -476,8 +485,12 @@ impl<A: RunnerAdapter> Runner<A> {
             out.push(alert(note));
         }
         match self.controller.state() {
-            MountState::Moving | MountState::Stopping => self.last_busy = now,
+            MountState::Moving | MountState::Stopping => {
+                self.last_busy = now;
+                self.settled = None;
+            }
             MountState::Armed if self.adapter.reports_positions() => {
+                out.extend(self.check_creep(now));
                 let heard = self
                     .last_position
                     .map_or(self.last_busy, |p| p.t_ns.max(self.last_busy));
@@ -491,11 +504,34 @@ impl<A: RunnerAdapter> Runner<A> {
                     self.carry_out(actions, now, &mut out);
                 }
             }
-            _ => {}
+            // Not armed: the next arming settles afresh.
+            _ => self.settled = None,
         }
         let actions = self.controller.tick(now);
         self.carry_out(actions, now, &mut out);
         out.extend(self.changes(now));
+        out
+    }
+
+    /// While armed and idle, the mount's own positions must stay where they
+    /// settled: this catches a creep far too slow for the gyroscope.
+    fn check_creep(&mut self, now: Nanos) -> Vec<Out> {
+        let mut out = Vec::new();
+        let Some(p) = self.last_position.filter(|p| p.t_ns > self.last_busy) else {
+            return out;
+        };
+        let settled = *self.settled.get_or_insert(p);
+        let moved = [0, 1].map(|i| wrap_deg(p.deg[i] - settled.deg[i]));
+        if moved.iter().any(|m| m.abs() > IDLE_CREEP_DEG) {
+            let detail = format!(
+                "the mount's own positions moved azimuth {:+.4}°, altitude {:+.4}° while idle: a creep the gyroscope can't see. Power-cycle the mount if it continues",
+                moved[0], moved[1]
+            );
+            self.log
+                .write(now, "mount_creep", json!({ "moved_deg": moved }));
+            let actions = self.controller.mount_moved(now, &detail);
+            self.carry_out(actions, now, &mut out);
+        }
         out
     }
 
@@ -668,8 +704,10 @@ impl<A: RunnerAdapter> Runner<A> {
         }
         let recent: Vec<&Position> = self.positions.iter().filter(|p| p.t_ns >= since).collect();
         for axis in 0..2 {
+            // Relative to the first reading, so a wrap through 0° is harmless.
             let (lo, hi) = recent.iter().fold((f64::MAX, f64::MIN), |(lo, hi), p| {
-                (lo.min(p.deg[axis]), hi.max(p.deg[axis]))
+                let d = wrap_deg(p.deg[axis] - recent[0].deg[axis]);
+                (lo.min(d), hi.max(d))
             });
             if recent.len() >= 2 && hi - lo > BIAS_STILL_DEG {
                 return Err(format!(
@@ -772,6 +810,12 @@ impl<A: RunnerAdapter> Runner<A> {
             duration_ms: (seconds * 1000.0).round() as u64,
         })
     }
+}
+
+/// An angle difference in (-180, 180].
+fn wrap_deg(d: f64) -> f64 {
+    let d = d.rem_euclid(360.0);
+    if d > 180.0 { d - 360.0 } else { d }
 }
 
 fn describe(request: &MoveRequest) -> String {

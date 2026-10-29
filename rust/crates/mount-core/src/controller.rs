@@ -242,6 +242,18 @@ impl Controller {
         }
     }
 
+    /// The mount's own position readings show motion that no command
+    /// explains (a creep too slow for the IMU). Latches unexpected motion
+    /// unless the session is disarmed or already latched.
+    pub fn mount_moved(&mut self, now: Nanos, detail: &str) -> Vec<Action> {
+        match self.state {
+            MountState::Armed | MountState::Moving | MountState::Stopping => {
+                self.fault(FaultKind::UnexpectedMotion, now, detail)
+            }
+            _ => Vec::new(),
+        }
+    }
+
     pub fn emergency_stop(&mut self, now: Nanos) -> Vec<Action> {
         self.fault(FaultKind::EmergencyStop, now, "emergency stop")
     }

@@ -543,3 +543,158 @@ fn arming_needs_a_recent_position_read_and_a_silent_link_is_dropped() {
     );
     assert!(out.iter().any(|o| o.text.contains("FAULT TransportLost")));
 }
+
+/// Feeds observations, ticks, and a position every 10 ms from `at(t)`.
+fn feed(
+    runner: &mut Runner<Reporting>,
+    now: &mut Nanos,
+    ms: u64,
+    at: impl Fn(Nanos) -> [f64; 2],
+    out: &mut Vec<Out>,
+) {
+    for _ in 0..ms / 10 {
+        *now += 10 * MS;
+        let t = *now;
+        runner.adapter_mut().positions.push(Position {
+            t_ns: t,
+            deg: at(t),
+        });
+        let o = runner.adapter_mut().mount.observation(t).unwrap();
+        out.extend(runner.observation(o, t));
+        out.extend(runner.tick(t));
+    }
+}
+
+fn reporting_runner(phone: bool) -> (Runner<Reporting>, Vec<Out>) {
+    let (mut runner, mut out) = Runner::new(
+        config(),
+        Reporting {
+            mount: SimMount::new(SimFaults::default(), 30.0, 1),
+            positions: Vec::new(),
+        },
+        RunLog::discard(),
+        false,
+        MAC_BOOT,
+        0,
+    )
+    .unwrap();
+    out.extend(runner.line("yes", 0));
+    if phone {
+        out.extend(runner.tapped(
+            &Tapped {
+                message: hello(),
+                receive_mac_ns: 0,
+            },
+            0,
+        ));
+    }
+    (runner, out)
+}
+
+#[test]
+fn positions_either_side_of_zero_count_as_still() {
+    let (mut runner, mut out) = reporting_runner(false);
+    let mut now = 0;
+    // Just after power-on, azimuth reads 359.99998° or 0.00002°.
+    feed(
+        &mut runner,
+        &mut now,
+        1_000,
+        |t| {
+            [
+                if (t / MS / 10) % 2 == 0 {
+                    359.99998
+                } else {
+                    0.00002
+                },
+                0.00002,
+            ]
+        },
+        &mut out,
+    );
+    out.extend(runner.line("arm", now));
+    assert_eq!(runner.state(), MountState::Armed, "{out:#?}");
+    feed(
+        &mut runner,
+        &mut now,
+        2_000,
+        |t| {
+            [
+                if (t / MS / 10) % 2 == 0 {
+                    359.99998
+                } else {
+                    0.00002
+                },
+                0.00002,
+            ]
+        },
+        &mut out,
+    );
+    assert_eq!(runner.state(), MountState::Armed, "{out:#?}");
+}
+
+#[test]
+fn a_creep_while_armed_and_idle_latches_unexpected_motion() {
+    let (mut runner, mut out) = reporting_runner(false);
+    let mut now = 0;
+    feed(&mut runner, &mut now, 500, |_| [0.25, 0.03], &mut out);
+    out.extend(runner.line("arm", now));
+    assert_eq!(runner.state(), MountState::Armed);
+    // 0.2″/s on both axes, as seen on 2026-10-29: 0.0003° takes about 5.4 s.
+    let start = now;
+    let creep = move |t: Nanos| {
+        let d = (t - start) as f64 / 1e9 * 0.2 / 3600.0;
+        [0.25 + d, 0.03 + d]
+    };
+    feed(&mut runner, &mut now, 4_000, creep, &mut out);
+    assert_eq!(
+        runner.state(),
+        MountState::Armed,
+        "below the threshold so far"
+    );
+    feed(&mut runner, &mut now, 3_000, creep, &mut out);
+    assert_eq!(runner.state(), MountState::FaultLatched);
+    assert!(
+        out.iter()
+            .any(|o| o.text.contains("FAULT UnexpectedMotion") && o.text.contains("while idle")),
+        "{out:#?}"
+    );
+}
+
+#[test]
+fn a_creep_during_the_offset_window_refuses_arming() {
+    let (mut runner, mut out) = reporting_runner(true);
+    let now = 10_000 * MS;
+    out.extend(runner.tapped(
+        &Tapped {
+            message: clock_result(0, now),
+            receive_mac_ns: now,
+        },
+        now,
+    ));
+    let mut t = now;
+    for _ in 0..35 {
+        t += 100 * MS;
+        out.extend(runner.tapped(
+            &Tapped {
+                message: batch(t, 0.0, 0.0),
+                receive_mac_ns: t,
+            },
+            t,
+        ));
+        let d = (t - now) as f64 / 1e9 * 0.2 / 3600.0;
+        runner.adapter_mut().positions.push(Position {
+            t_ns: t,
+            deg: [0.25 + d, 0.03 + d],
+        });
+        out.extend(runner.tick(t));
+    }
+    out.extend(runner.line("arm", t));
+    assert_eq!(runner.state(), MountState::ConnectedReadOnly);
+    assert!(
+        out.iter().any(|o| o
+            .text
+            .contains("must be still while the gyroscope offset is measured")),
+        "{out:#?}"
+    );
+}

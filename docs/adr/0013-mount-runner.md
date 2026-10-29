@@ -82,3 +82,12 @@ A runner whose port has reset must be restarted; it doesn't reopen the port itse
 Same move, now on the raw gyroscope and with serial timing. Acknowledged in 35 ms; the mount's own positions show motion from about 0.1 s. The controller asked for the stop at 1002 ms, but it reached the serial port only at 1209 ms: it had queued behind a position read, which the hand controller answers slowly while a motor slews. Once sent, the mount stopped within about 0.1 s. Travel: 0.121° by the mount's positions, 0.130° by the raw gyroscope, 0.100° commanded. The first trial's long overrun was most likely the same queueing.
 
 - **No position reads between a move and its stop.** The worker resumes them once a stop has gone out.
+
+## The creep, and the hand controller's USB after a restart (2026-10-29)
+
+Both axes crept at about 0.2″/s (0.8° an hour), the same on each, the altitude motor stepping audibly every second or two. Tracking read off, no goto, anti-backlash 0. Discovery traces show no creep at 19:22–19:28 and the creep already present at 21:40, in position reads taken before this software's first-ever motion command; in between, the operator raised the tube with the hand controller's arrow keys. The stops sent on quitting didn't end it; a mount power cycle did. The cause is still to be confirmed (a short arrow press, then discovery).
+
+- **Stillness is exact.** A still mount's own positions don't change at all (one unit is 0.077″). Measuring the gyroscope's offset now needs the positions within 0.0001° over the 3 s window (was 0.002°, which the creep passed). The comparison is wrap-aware, since azimuth reads 359.99998° just after power-on.
+- **While armed and idle, the mount's positions must stay where they settled** after the last move: more than 0.0003° on either axis latches unexpected motion (`Controller::mount_moved`), with a hint to power-cycle the mount. This catches a creep far too slow for the gyroscope.
+- **Anti-backlash persists:** still 0 after a full power cycle, so values written over USB stick.
+- **After the hand controller restarts, macOS can't open its USB serial device** ("Invalid argument") until the cable is unplugged at the hand controller and plugged back in. The 15:03 link loss earlier was most likely such a restart. The open error now says so.

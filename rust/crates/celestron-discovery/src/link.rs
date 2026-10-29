@@ -93,7 +93,16 @@ impl SerialLink {
             .flow_control(serialport::FlowControl::None)
             .timeout(Duration::from_millis(100))
             .open()
-            .map_err(io::Error::from)?;
+            .map_err(|e| {
+                // After the hand controller restarts (a mount power cycle),
+                // macOS keeps a device that can't be opened.
+                io::Error::new(
+                    io::Error::from(e.clone()).kind(),
+                    format!(
+                        "{e}. If the mount or hand controller was just power-cycled, unplug the USB cable at the hand controller, wait 5 s, and plug it back in"
+                    ),
+                )
+            })?;
         Ok(Self { port })
     }
 }
