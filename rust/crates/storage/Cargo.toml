@@ -1,6 +1,6 @@
 [package]
 name = "cwb-storage"
-description = "SQLite schema migrations and connection setup (ADR 0003)"
+description = "SQLite schema, migrations, ingest and session export (ADR 0003)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,8 +9,14 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+cwb-protocol.workspace = true
 rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
 thiserror.workspace = true
+time.workspace = true
+uuid.workspace = true
 
 [lints]
 workspace = true
