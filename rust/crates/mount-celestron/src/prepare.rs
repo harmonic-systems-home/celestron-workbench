@@ -1,0 +1,74 @@
+//! Checks before the adapter starts: the hand controller answers, both
+//! motors answer, no goto is running, and tracking is off (slews conflict
+//! with it, so it is turned off here if needed). Nothing here moves the
+//! mount.
+
+use cwb_celestron_discovery::{
+    HandController, Link, Outcome, Query,
+    query::{Device, Value},
+    transact,
+};
+use cwb_mount_core::{MountIdentity, MountQueries};
+
+use crate::encode::TRACKING_OFF;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Prepared {
+    pub identity: MountIdentity,
+    /// The mount's own axis angles before any motion.
+    pub positions_deg: [f64; 2],
+    /// Things done or noticed on the way, for the run log.
+    pub notes: Vec<String>,
+}
+
+pub fn prepare<L: Link>(link: L) -> (L, Result<Prepared, String>) {
+    let mut hc = HandController::new(link);
+    let result = checks(&mut hc);
+    (hc.into_parts().0, result)
+}
+
+fn checks<L: Link>(hc: &mut HandController<L>) -> Result<Prepared, String> {
+    let mut notes = Vec::new();
+    if !matches!(hc.query(Query::Echo(b'x')).value, Some(Value::Echo(b'x'))) {
+        return Err(
+            "the hand controller didn't echo: check the port, cable and that it has finished starting up"
+                .into(),
+        );
+    }
+    let identity = hc.identify().map_err(|e| e.0)?;
+    for d in [Device::AzmMotor, Device::AltMotor] {
+        if hc.query(Query::DeviceVersion(d)).value.is_none() {
+            return Err(format!("the {d:?} motor controller didn't answer"));
+        }
+    }
+    match hc.query(Query::GotoInProgress).value {
+        Some(Value::Flag(false)) => {}
+        Some(_) => return Err("a goto is in progress: wait for it to finish".into()),
+        None => return Err("the goto status query went unanswered".into()),
+    }
+    match hc.query(Query::TrackingMode).value {
+        Some(Value::TrackingMode(0)) => {}
+        Some(Value::TrackingMode(mode)) => {
+            let (outcome, _) = transact(hc.link_mut(), &TRACKING_OFF, 0, false);
+            if outcome != Outcome::Ok {
+                return Err(format!(
+                    "tracking is on (mode {mode}) and turning it off failed ({outcome:?})"
+                ));
+            }
+            if !matches!(
+                hc.query(Query::TrackingMode).value,
+                Some(Value::TrackingMode(0))
+            ) {
+                return Err(format!("tracking is on (mode {mode}) and stayed on"));
+            }
+            notes.push(format!("tracking was on (mode {mode}); turned it off"));
+        }
+        _ => return Err("the tracking mode query went unanswered".into()),
+    }
+    let positions_deg = hc.axis_positions_deg().map_err(|e| e.0)?;
+    Ok(Prepared {
+        identity,
+        positions_deg,
+        notes,
+    })
+}

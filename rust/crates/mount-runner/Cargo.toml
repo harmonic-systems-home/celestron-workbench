@@ -1,0 +1,23 @@
+[package]
+name = "cwb-mount-runner"
+description = "The interactive mount test runner's core: operator commands, live IMU, interlocks, run log"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+cwb-mount-celestron.workspace = true
+cwb-mount-core.workspace = true
+cwb-mount-sim.workspace = true
+cwb-protocol.workspace = true
+cwb-receiver.workspace = true
+cwb-storage.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+
+[lints]
+workspace = true

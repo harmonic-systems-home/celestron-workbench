@@ -15,7 +15,7 @@ use cwb_protocol::{
     framing::{self, Decoder},
 };
 use cwb_receiver::{
-    Server,
+    Server, Tapped,
     client::{self, ClientError, ClientOptions, ClockSim, Faults, PhoneSession},
     writer::{self, WriterHandle},
 };
@@ -24,7 +24,7 @@ use serde_json::json;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
-    sync::oneshot,
+    sync::{mpsc, oneshot},
     task::JoinHandle as TaskHandle,
     time::timeout,
 };
@@ -39,6 +39,10 @@ struct Receiver {
 }
 
 async fn start(db: &Path, queue: usize) -> Receiver {
+    start_tapped(db, queue, None).await
+}
+
+async fn start_tapped(db: &Path, queue: usize, tap: Option<mpsc::Sender<Tapped>>) -> Receiver {
     let clock = Arc::new(MacClock::new());
     let (conn, _) = cwb_storage::open(db).unwrap();
     let store = Store::new(
@@ -52,6 +56,10 @@ async fn start(db: &Path, queue: usize) -> Receiver {
     let server = Server::bind(([127, 0, 0, 1], 0).into(), writer.clone(), clock.clone())
         .await
         .unwrap();
+    let server = match tap {
+        Some(tap) => server.with_tap(tap),
+        None => server,
+    };
     let addr = server.local_addr().unwrap();
     let (stop, stopped) = oneshot::channel();
     let server = tokio::spawn(server.run(async {
@@ -153,6 +161,49 @@ async fn a_synthetic_session_is_stored_completely() {
     client::run(second.addr, &replayed, &fast()).await.unwrap();
     second.stop().await;
     assert_complete(&db2, &phone);
+}
+
+#[tokio::test]
+async fn the_tap_gets_hello_batches_and_clock_results_as_they_arrive() {
+    let (_dir, db) = temp_db();
+    let (tx, mut rx) = mpsc::channel(10_000);
+    let receiver = start_tapped(&db, 64, Some(tx)).await;
+    let phone = PhoneSession::synthetic(2.0, 100.0);
+    let options = ClientOptions {
+        clock: Some(ClockSim {
+            interval: Duration::from_millis(50),
+            epoch: Instant::now(),
+            epoch_phone_ns: phone.batches().next().unwrap().samples[0].t_ns(),
+            drift_ppm: 0.0,
+            outbound_delay: Duration::ZERO,
+        }),
+        speed: Some(1.0),
+        ..fast()
+    };
+    client::run(receiver.addr, &phone, &options).await.unwrap();
+    receiver.stop().await;
+
+    let mut kinds = Vec::new();
+    let mut samples = 0;
+    while let Ok(t) = rx.try_recv() {
+        assert!(t.receive_mac_ns > 0);
+        match &t.message {
+            Message::SampleBatch(b) => samples += b.samples.len(),
+            Message::Hello(_) | Message::ClockResult(_) => {}
+            other => panic!("tapped {other:?}"),
+        }
+        kinds.push(std::mem::discriminant(&t.message));
+    }
+    assert!(matches!(
+        kinds.first(),
+        Some(k) if *k == std::mem::discriminant(&Message::Hello(phone.hello.clone()))
+    ));
+    let expected: usize = phone.batches().map(|b| b.samples.len()).sum();
+    assert_eq!(samples, expected);
+    assert!(
+        kinds.len() > phone.batches().count() + 1,
+        "clock results too"
+    );
 }
 
 #[tokio::test]

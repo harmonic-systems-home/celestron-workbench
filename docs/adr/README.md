@@ -16,3 +16,4 @@ Each ADR records one decision, why it was made, and what it costs. To change a d
 | [0010](0010-celestron-discovery.md) | Read-only Celestron discovery through the hand controller's serial port | Accepted |
 | [0011](0011-hand-controller-time-and-location.md) | Setting the hand controller's time and location | Accepted |
 | [0012](0012-session-site.md) | Each session records where it took place | Accepted |
+| [0013](0013-mount-runner.md) | The Celestron motion adapter and the interactive mount runner | Accepted |

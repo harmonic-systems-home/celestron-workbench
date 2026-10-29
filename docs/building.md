@@ -35,6 +35,7 @@ cargo test
 - **Celestron discovery** (`crates/celestron-discovery/tests/`): every sendable command is a documented read-only query (no motion, setters, location or time), replies decode as the protocol document's examples, and discovery against the simulated hand controller passes when healthy and fails or warns on a missing motor, silence, tracking on, another model or a moving mount (ADR 0010).
 - **Hand controller time and location** (`crates/celestron-setup/tests/`): set time and set location bytes match the documented layout, local time and daylight saving come from the time zone, coordinates round to whole arcseconds, read-back confirms or reports a drifting clock, a forgotten setting or silence, only `H`, `W`, `h` and `w` can be sent, and coordinates never appear in `Debug` or error text (ADR 0011).
 - **Session sites** (`crates/storage/tests/ingest.rs`, shared examples): a site is stored once, an inconsistent one is refused, it survives export and import, the session list shows the latest environment, and `Debug` hides coordinates (ADR 0012).
+- **Mount motion** (`crates/mount-celestron/tests/`, `crates/mount-core/tests/imu.rs`, `crates/mount-runner/tests/`): every transaction the adapter can produce is a documented slew or stop; a move is acknowledged, runs and stops on the simulated hand controller; a dropped link is reported and stops still go out; dropping the adapter stops both axes; preparation turns tracking off; the phone-to-mount axis conversion holds at any roll; and the runner gates moves behind the checklist, asks before each first move, stops on Enter, faults a reversed axis, quits cleanly, logs the session and takes live phone samples through the clock model (ADR 0013).
 - **Framing**, **mount state machine** and **safety configuration** unit tests.
 
 ### The `cwb` command
@@ -124,6 +125,22 @@ cwb celestron setup --port /dev/cu.usbserial-XXXX --location-from site-file
 ```
 
 It checks the hand controller answers, shows what it will send (the site's name and hemispheres, never its coordinates), asks for confirmation, then sets each value and reads it back (ADR 0011). It exits non-zero unless every value is confirmed. `--site FILE` or `CWB_SITE` points at another site file; `--simulate` runs without hardware.
+
+### Moving the mount
+
+`cwb mount run` is the only command that moves the mount (ADR 0013). Rehearse first; it needs no hardware:
+
+```sh
+cwb mount run --simulate
+```
+
+On the mount: review `config/mount.toml` (axis signs, tube axis, safety limits), strap the phone to the tube with its top toward the sky end, power the mount, connect the hand controller's USB, then:
+
+```sh
+cwb mount run --port /dev/cu.usbserial-XXXX --db ~/path/outside/repo/workbench.sqlite
+```
+
+It checks the hand controller (turning tracking off if needed), starts receiving from the phone (start a recording on the phone and choose this Mac), and shows the mount-session checklist. Type `yes` once every item holds. Then `status` until the IMU shows fresh with a clock model, `arm`, and a move such as `az+ 0.1 1` (0.1 °/s for 1 s). The first move each way asks for `yes`. **An empty line (Enter) is always Stop.** `help` lists the commands. The run log goes to `reports/mount/<time>/run.ndjson` (git-ignored).
 
 ## Swift (phone side)
 

@@ -1,7 +1,10 @@
 //! `cwb`: Celestron Workbench command-line tools.
 //!
-//! Nothing here can move a mount: `cwb celestron` sends only read-only
-//! queries, plus the hand controller's time and location with `setup`.
+//! Only `cwb mount run` can move a mount (plan Prompt 8, ADR 0013): `cwb
+//! celestron` sends read-only queries, plus the hand controller's time and
+//! location with `setup`.
+
+mod mount;
 
 use std::{
     fs::{self, File},
@@ -126,6 +129,12 @@ enum Command {
         #[command(subcommand)]
         command: CelestronCommand,
     },
+    /// The interactive mount test runner (plan Prompt 8). Starts disarmed;
+    /// moves one axis at a time, slowly and briefly, under the interlocks.
+    Mount {
+        #[command(subcommand)]
+        command: MountCmd,
+    },
     /// Print the software, protocol and database schema versions.
     Versions,
 }
@@ -197,6 +206,37 @@ enum CelestronCommand {
         /// Don't ask for confirmation.
         #[arg(long)]
         yes: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum MountCmd {
+    /// Check the hand controller, receive the phone's data, and run moves
+    /// the operator types. An empty line is always Stop.
+    Run {
+        /// Serial device, e.g. /dev/cu.usbserial-… (see `cwb celestron ports`).
+        #[arg(long, required_unless_present = "simulate")]
+        port: Option<String>,
+        /// Simulated hand controller and mount, no phone: to rehearse.
+        #[arg(long, conflicts_with_all = ["port", "db"])]
+        simulate: bool,
+        /// Runner and safety settings.
+        #[arg(long, default_value = "config/mount.toml")]
+        config: PathBuf,
+        /// Path to the SQLite database for the phone's samples (keep it outside this repo).
+        #[arg(long, env = "CWB_DB")]
+        db: Option<PathBuf>,
+        /// TCP port for the phone.
+        #[arg(long, default_value_t = DEFAULT_PORT)]
+        listen_port: u16,
+        /// Bonjour service name the phone sees.
+        #[arg(long, default_value = "Celestron Workbench")]
+        name: String,
+        #[arg(long)]
+        no_advertise: bool,
+        /// Parent folder for the run log; it goes in a timestamped folder inside.
+        #[arg(long, short, default_value = "reports/mount")]
+        out: PathBuf,
     },
 }
 
@@ -350,6 +390,31 @@ fn main() -> Result<ExitCode> {
             device,
         } => analyze(&db.db, &session, config.as_deref(), out, device.as_deref()),
         Command::Celestron { command } => celestron(command),
+        Command::Mount {
+            command:
+                MountCmd::Run {
+                    port,
+                    simulate,
+                    config,
+                    db,
+                    listen_port,
+                    name,
+                    no_advertise,
+                    out,
+                },
+        } => {
+            init_logging_at("warn");
+            mount::run(mount::Options {
+                port,
+                simulate,
+                config,
+                db,
+                listen: SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), listen_port),
+                name,
+                advertise: !no_advertise,
+                out,
+            })
+        }
         Command::Versions => {
             println!("cwb {}", env!("CARGO_PKG_VERSION"));
             println!("protocol {}", cwb_protocol::PROTOCOL_VERSION);
@@ -771,10 +836,14 @@ fn runtime() -> Result<tokio::runtime::Runtime> {
 }
 
 fn init_logging() {
+    init_logging_at("info");
+}
+
+fn init_logging_at(default: &str) {
     use tracing_subscriber::EnvFilter;
     tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default)),
         )
         .with_writer(std::io::stderr)
         .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stderr()))

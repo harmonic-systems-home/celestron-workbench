@@ -49,6 +49,12 @@ impl<L: Link> HandController<L> {
         &self.exchanges
     }
 
+    /// The link, for crates that send their own commands between queries
+    /// (setup, motion). Discovery itself never uses it.
+    pub fn link_mut(&mut self) -> &mut L {
+        &mut self.link
+    }
+
     pub fn into_parts(self) -> (L, Vec<Exchange>) {
         (self.link, self.exchanges)
     }

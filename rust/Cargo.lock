@@ -305,6 +305,10 @@ dependencies = [
  "cwb-analysis",
  "cwb-celestron-discovery",
  "cwb-celestron-setup",
+ "cwb-mount-celestron",
+ "cwb-mount-core",
+ "cwb-mount-runner",
+ "cwb-mount-sim",
  "cwb-protocol",
  "cwb-receiver",
  "cwb-storage",
@@ -316,11 +320,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "cwb-mount-celestron"
+version = "0.1.0"
+dependencies = [
+ "cwb-celestron-discovery",
+ "cwb-mount-core",
+ "cwb-mount-sim",
+ "serde",
+]
+
+[[package]]
 name = "cwb-mount-core"
 version = "0.1.0"
 dependencies = [
  "serde",
  "thiserror",
+]
+
+[[package]]
+name = "cwb-mount-runner"
+version = "0.1.0"
+dependencies = [
+ "cwb-mount-celestron",
+ "cwb-mount-core",
+ "cwb-mount-sim",
+ "cwb-protocol",
+ "cwb-receiver",
+ "cwb-storage",
+ "serde",
+ "serde_json",
+ "toml",
 ]
 
 [[package]]

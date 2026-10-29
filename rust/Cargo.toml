@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/protocol", "crates/storage", "crates/receiver", "crates/analysis", "crates/mount-core", "crates/mount-sim", "crates/celestron-discovery", "crates/celestron-setup", "crates/cli"]
+members = ["crates/protocol", "crates/storage", "crates/receiver", "crates/analysis", "crates/mount-core", "crates/mount-sim", "crates/mount-celestron", "crates/mount-runner", "crates/celestron-discovery", "crates/celestron-setup", "crates/cli"]
 
 [workspace.package]
 version = "0.1.0"
@@ -36,6 +36,8 @@ cwb-receiver = { path = "crates/receiver" }
 cwb-analysis = { path = "crates/analysis" }
 cwb-mount-core = { path = "crates/mount-core" }
 cwb-mount-sim = { path = "crates/mount-sim" }
+cwb-mount-celestron = { path = "crates/mount-celestron" }
+cwb-mount-runner = { path = "crates/mount-runner" }
 cwb-celestron-discovery = { path = "crates/celestron-discovery" }
 cwb-celestron-setup = { path = "crates/celestron-setup" }
 

@@ -1,0 +1,41 @@
+# Mount runner settings for `cwb mount run` (plan Prompt 8, ADR 0013).
+# Nothing here is private. The [safety] section is the session's safety
+# configuration (ADR 0005): review it before every session; the run log
+# records it.
+
+[phone]
+# The phone body axis that points toward the tube's sky end. "+y" when the
+# top of the phone points that way. Roll about the tube doesn't matter.
+tube_axis = "+y"
+
+[celestron]
+# Set by the axis-sign trial: true when the hand controller's "positive"
+# slew turns that axis the other way from the IMU's convention (azimuth
+# clockwise from above, altitude up). A wrong value faults at once as
+# opposite motion.
+reverse_azimuth = false
+reverse_altitude = false
+
+[moves]
+# Used when a move command gives no rate or duration.
+rate_deg_s = 0.1
+seconds = 1.0
+
+[safety]
+max_rate_deg_s = 1.0
+min_rate_deg_s = 0.001
+max_duration_ms = 2000
+ack_deadline_ms = 300
+stop_deadline_ms = 1500
+still_hold_ms = 300
+imu_max_age_ms = 1000
+smoothing_ms = 200
+motion_deg_s = 0.1
+still_deg_s = 0.05
+overspeed_fraction = 0.5
+min_altitude_deg = 5.0
+max_altitude_deg = 85.0
+stop_resend_ms = 250
+verify_travel_deg = 1.0
+min_observed_fraction = 0.5
+travel_tolerance_deg = 0.25

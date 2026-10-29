@@ -21,6 +21,7 @@ use serde_json::json;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream, tcp::OwnedWriteHalf},
+    sync::mpsc,
     task::JoinSet,
 };
 
@@ -32,10 +33,20 @@ pub const DEFAULT_PORT: u16 = 47800;
 /// How often a connection logs its progress.
 const PROGRESS_INTERVAL: Duration = Duration::from_secs(10);
 
+/// A copy of a phone message for a live consumer (the mount runner), with
+/// the Mac time it arrived. Only `hello`, sample batches and clock results
+/// are copied.
+#[derive(Debug, Clone)]
+pub struct Tapped {
+    pub message: Message,
+    pub receive_mac_ns: i64,
+}
+
 pub struct Server {
     listener: TcpListener,
     writer: WriterHandle,
     clock: Arc<MacClock>,
+    tap: Option<mpsc::Sender<Tapped>>,
 }
 
 impl Server {
@@ -48,7 +59,15 @@ impl Server {
             listener: TcpListener::bind(addr).await?,
             writer,
             clock,
+            tap: None,
         })
+    }
+
+    /// Also sends a copy of each valid phone message to `tap`. A full tap
+    /// drops the copy rather than slowing storage: the consumer sees a gap.
+    pub fn with_tap(mut self, tap: mpsc::Sender<Tapped>) -> Self {
+        self.tap = Some(tap);
+        self
     }
 
     pub fn local_addr(&self) -> std::io::Result<SocketAddr> {
@@ -65,7 +84,11 @@ impl Server {
                 accepted = self.listener.accept() => match accepted {
                     Ok((stream, _)) => {
                         let _ = stream.set_nodelay(true);
-                        let connection = Connection::new(self.writer.clone(), self.clock.clone());
+                        let connection = Connection::new(
+                            self.writer.clone(),
+                            self.clock.clone(),
+                            self.tap.clone(),
+                        );
                         connections.spawn(connection.run(stream));
                     }
                     Err(e) => tracing::warn!("accept failed: {e}"),
@@ -90,6 +113,7 @@ enum Close {
 struct Connection {
     writer: WriterHandle,
     clock: Arc<MacClock>,
+    tap: Option<mpsc::Sender<Tapped>>,
     /// Session and device after an accepted `hello`.
     session: Option<(String, String)>,
     stored: u64,
@@ -99,10 +123,11 @@ struct Connection {
 }
 
 impl Connection {
-    fn new(writer: WriterHandle, clock: Arc<MacClock>) -> Self {
+    fn new(writer: WriterHandle, clock: Arc<MacClock>, tap: Option<mpsc::Sender<Tapped>>) -> Self {
         Self {
             writer,
             clock,
+            tap,
             session: None,
             stored: 0,
             acknowledged: None,
@@ -176,6 +201,17 @@ impl Connection {
             Ok(m) => m,
             Err(e) => return Ok(Some(refuse(ErrorCode::InvalidMessage, e.to_string()))),
         };
+        if let Some(tap) = &self.tap
+            && matches!(
+                message,
+                Message::Hello(_) | Message::SampleBatch(_) | Message::ClockResult(_)
+            )
+        {
+            let _ = tap.try_send(Tapped {
+                message: message.clone(),
+                receive_mac_ns,
+            });
+        }
 
         match message {
             Message::Hello(hello) => {

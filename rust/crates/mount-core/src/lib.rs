@@ -15,6 +15,7 @@
 pub mod command;
 pub mod config;
 pub mod controller;
+pub mod imu;
 pub mod state;
 
 pub use command::{

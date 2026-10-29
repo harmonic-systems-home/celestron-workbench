@@ -37,7 +37,7 @@ DISCONNECTED → CONNECTED_READ_ONLY → ARMED → MOVING → STOPPING → ARMED
 
 ### Hardware gate
 
-Code that can move real hardware lives only in `mount-celestron`, which does not exist yet. It is created after:
+Code that can move real hardware lives only in `mount-celestron` (ADR 0013). It was created after:
 
 1. the simulator (`mount-sim`) passes the fault-injection suite (stop, timeout, stale data, duplicate command, opposite motion, connection loss, ignored stop, process shutdown), and
 2. a read-only discovery tool has produced a protocol compatibility report for the exact mount and firmware, reviewed by the operator.
