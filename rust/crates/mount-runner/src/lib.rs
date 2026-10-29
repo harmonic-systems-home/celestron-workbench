@@ -66,6 +66,12 @@ pub trait RunnerAdapter: MountAdapter {
     fn reports_positions(&self) -> bool {
         false
     }
+    /// The link to the mount is gone and the adapter can't recover it.
+    fn link_lost(&self) -> bool {
+        false
+    }
+    /// Lets go of the link (closing the serial port) so it can be reopened.
+    fn close_link(&mut self) {}
 }
 
 impl RunnerAdapter for CelestronAdapter {
@@ -80,6 +86,12 @@ impl RunnerAdapter for CelestronAdapter {
     }
     fn reports_positions(&self) -> bool {
         true
+    }
+    fn link_lost(&self) -> bool {
+        self.is_lost()
+    }
+    fn close_link(&mut self) {
+        self.close();
     }
 }
 
@@ -130,6 +142,7 @@ pub const CHECKLIST: &[&str] = &[
     "You are within reach of the mount's power switch, and it stops the mount with this program dead.",
     "The hand controller is at its top-level screen; hands stay off its arrow keys during runs.",
     "The phone is recording to this Mac (the runner will show the IMU as fresh).",
+    "If the mount was power-cycled, the hand controller's USB cable was unplugged and plugged back in (the runner beeps and waits if it can't open the port).",
 ];
 
 pub const HELP: &str = "\
@@ -137,6 +150,7 @@ Enter (empty line)  STOP: ends any move at once
 arm | disarm        allow moves | refuse them
 az+ az- alt+ alt-   move one axis: [rate °/s] [seconds], e.g. `az+ 0.1 1`
 status              state, IMU, travel and mount positions
+note <text>         put a timestamped remark in the run log (e.g. `note chatter`)
 reset               clear a fault once the mount is still
 e                   emergency stop (latches a fault)
 quit                stop everything and exit";
@@ -273,6 +287,11 @@ impl<A: RunnerAdapter> Runner<A> {
             (Stage::Done, _) => {}
             (_, "quit" | "q") => out.extend(self.quit(now)),
             (_, "help" | "h" | "?") => out.push(info(HELP)),
+            (_, "note" | "n") => {
+                let remark = text[words[0].len()..].trim();
+                self.log.write(now, "note", json!({ "text": remark }));
+                out.push(info("noted"));
+            }
             (_, "e" | "estop") => {
                 let actions = self.controller.emergency_stop(now);
                 self.carry_out(actions, now, &mut out);
@@ -346,6 +365,37 @@ impl<A: RunnerAdapter> Runner<A> {
                 Err(e) => out.push(info(e)),
             },
         }
+        out
+    }
+
+    /// The mount link is lost for good: the caller should close it, reopen
+    /// the port and hand over a fresh adapter with [`Runner::replace_adapter`].
+    pub fn link_lost(&self) -> bool {
+        self.adapter.link_lost()
+    }
+
+    /// Closes the lost link's port so it can be reopened.
+    pub fn close_link(&mut self, now: Nanos) {
+        self.log.write(now, "link_closed", json!({}));
+        self.adapter.close_link();
+    }
+
+    /// A fresh adapter on a reopened port, already prepared (anti-backlash
+    /// 0, tracking off). The session stays latched: the operator resets once
+    /// the mount is still, then arms, as after any fault.
+    pub fn replace_adapter(&mut self, adapter: A, now: Nanos) -> Vec<Out> {
+        self.adapter = adapter;
+        self.last_position = None;
+        self.positions.clear();
+        self.settled = None;
+        self.log.write(now, "link_restored", json!({}));
+        let actions = self.controller.transport_restored(now);
+        let mut out = Vec::new();
+        self.carry_out(actions, now, &mut out);
+        out.extend(self.changes(now));
+        out.push(alert(
+            "hand controller link restored: type status, then reset once the mount is still, then arm",
+        ));
         out
     }
 

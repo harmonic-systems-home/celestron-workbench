@@ -101,6 +101,21 @@ impl CelestronAdapter {
         std::mem::take(&mut self.positions)
     }
 
+    /// Whether the link has been reported lost.
+    pub fn is_lost(&self) -> bool {
+        self.lost
+    }
+
+    /// Stops both axes if it still can, then closes the serial port so it
+    /// can be reopened. The adapter is inert afterwards.
+    pub fn close(&mut self) {
+        self.jobs = None;
+        self.lost = true;
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+
     /// Motion commands' serial exchanges since the last call.
     pub fn take_transactions(&mut self) -> Vec<Transaction> {
         std::mem::take(&mut self.transactions)
@@ -153,10 +168,7 @@ impl MountAdapter for CelestronAdapter {
 impl Drop for CelestronAdapter {
     /// Closing the queue makes the worker stop both axes, then exit.
     fn drop(&mut self) {
-        self.jobs = None;
-        if let Some(worker) = self.worker.take() {
-            let _ = worker.join();
-        }
+        self.close();
     }
 }
 

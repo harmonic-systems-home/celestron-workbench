@@ -91,3 +91,12 @@ Both axes crept at about 0.2″/s (0.8° an hour), the same on each, the altitud
 - **While armed and idle, the mount's positions must stay where they settled** after the last move: more than 0.0003° on either axis latches unexpected motion (`Controller::mount_moved`), with a hint to power-cycle the mount. This catches a creep far too slow for the gyroscope.
 - **Anti-backlash persists:** still 0 after a full power cycle, so values written over USB stick.
 - **After the hand controller restarts, macOS can't open its USB serial device** ("Invalid argument") until the cable is unplugged at the hand controller and plugged back in. The 15:03 link loss earlier was most likely such a restart. The open error now says so.
+
+## Reconnecting the hand controller (2026-10-29)
+
+Night sessions run on a laptop in the dark, where a silent port failure is easy to miss (docs/observations.md, O2).
+
+- **Every command that opens the hand controller's port waits instead of failing:** it beeps, says to unplug the cable at the hand controller and plug it back in, and retries every second, beeping every 10 s, until the port opens. Ctrl-C gives up.
+- **The runner reconnects mid-session.** When the link is lost it closes the port, beeps, waits for it as above, and re-runs the preparation checks (anti-backlash 0, tracking off, positions readable; retried every 2 s while the hand controller starts up). The session stays latched: `reset` once the mount is still now returns to read-only, then `arm` as usual. The run log continues.
+- **`note <text>`** puts a timestamped remark in the run log, so what the operator hears or does sits on the same timeline as the mount's positions.
+- **The checklist** asks for a re-plug after any mount power cycle.

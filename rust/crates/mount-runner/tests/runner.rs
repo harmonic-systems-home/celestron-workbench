@@ -698,3 +698,42 @@ fn a_creep_during_the_offset_window_refuses_arming() {
         "{out:#?}"
     );
 }
+
+#[test]
+fn a_replaced_adapter_restores_the_link_and_reset_then_arm_works() {
+    let (mut runner, mut out) = reporting_runner(false);
+    let mut now = 0;
+    feed(&mut runner, &mut now, 500, |_| [0.25, 0.03], &mut out);
+    out.extend(runner.line("arm", now));
+    assert_eq!(runner.state(), MountState::Armed);
+    // Position reads stop: the link is treated as lost and latched.
+    for _ in 0..200 {
+        now += 10 * MS;
+        let o = runner.adapter_mut().mount.observation(now).unwrap();
+        out.extend(runner.observation(o, now));
+        out.extend(runner.tick(now));
+    }
+    assert_eq!(runner.state(), MountState::FaultLatched);
+    // Without the link, reset would leave the session disconnected.
+    out.extend(runner.replace_adapter(
+        Reporting {
+            mount: SimMount::new(SimFaults::default(), 30.0, 1),
+            positions: Vec::new(),
+        },
+        now,
+    ));
+    assert!(out.iter().any(|o| o.text.contains("link restored")));
+    feed(&mut runner, &mut now, 500, |_| [0.25, 0.03], &mut out);
+    out.extend(runner.line("reset", now));
+    assert_eq!(runner.state(), MountState::ConnectedReadOnly, "{out:#?}");
+    out.extend(runner.line("arm", now));
+    assert_eq!(runner.state(), MountState::Armed, "{out:#?}");
+}
+
+#[test]
+fn a_note_goes_into_the_run_log() {
+    let mut sim = Sim::new(true, SimFaults::default());
+    sim.line("note heard chatter from the altitude motor");
+    assert!(sim.said(Kind::Info, "noted"));
+    assert!(sim.log.events().iter().any(|e| e == "note"));
+}

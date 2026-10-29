@@ -445,7 +445,7 @@ fn main() -> Result<ExitCode> {
 
 fn celestron(command: CelestronCommand) -> Result<ExitCode> {
     use cwb_celestron_discovery::{
-        HandController, SerialLink,
+        HandController,
         discover::{Connection, OperatorInfo},
         fake::{FakeHandController, FakeSetup},
         list_ports, query, redact_path, report, summarize,
@@ -521,7 +521,7 @@ fn celestron(command: CelestronCommand) -> Result<ExitCode> {
                     .ok()
                     .and_then(|ports| ports.into_iter().find(|p| p.path == path))
                     .and_then(|p| p.usb);
-                let link = SerialLink::open(&path).with_context(|| format!("opening {path}"))?;
+                let link = open_serial(&path);
                 eprintln!("querying {path} (read-only)…");
                 let mut hc = HandController::new(link);
                 cwb_celestron_discovery::discover(&mut hc, repeats);
@@ -581,7 +581,7 @@ fn celestron(command: CelestronCommand) -> Result<ExitCode> {
                 backlash(fake, &changes, yes)
             } else {
                 let path = port.expect("clap requires --port without --simulate");
-                let link = SerialLink::open(&path).with_context(|| format!("opening {path}"))?;
+                let link = open_serial(&path);
                 backlash(link, &changes, yes)
             }
         }
@@ -606,8 +606,43 @@ fn celestron(command: CelestronCommand) -> Result<ExitCode> {
                 setup(cwb_celestron_setup::fake::FakeSetter::default(), &plan, yes)
             } else {
                 let path = port.expect("clap requires --port without --simulate");
-                let link = SerialLink::open(&path).with_context(|| format!("opening {path}"))?;
+                let link = open_serial(&path);
                 setup(link, &plan, yes)
+            }
+        }
+    }
+}
+
+/// Opens the hand controller's serial port. If it can't be opened (most
+/// often after the hand controller restarts, when macOS keeps a device it
+/// can't open), it beeps, says to re-plug the cable, and retries every
+/// second until the port opens. Ctrl-C gives up.
+fn open_serial(path: &str) -> cwb_celestron_discovery::SerialLink {
+    use std::io::Write;
+    let shown = cwb_celestron_discovery::redact_path(path);
+    let mut waited = 0u32;
+    loop {
+        match cwb_celestron_discovery::SerialLink::open(path) {
+            Ok(link) => {
+                if waited > 0 {
+                    println!("{shown} is open again");
+                }
+                return link;
+            }
+            Err(e) => {
+                if waited.is_multiple_of(10) {
+                    // The bell, every 10 s while waiting: easy to miss in the dark otherwise.
+                    print!("\x07");
+                    if waited == 0 {
+                        println!(
+                            "!! can't open {shown} ({}).\n!! Unplug the USB cable at the hand controller, wait 5 s, and plug it back in. Waiting for it… (Ctrl-C to give up; `cwb celestron ports` lists ports if its name changed)",
+                            e.to_string().split(". ").next().unwrap_or_default()
+                        );
+                    }
+                    let _ = std::io::stdout().flush();
+                }
+                waited += 1;
+                std::thread::sleep(std::time::Duration::from_secs(1));
             }
         }
     }

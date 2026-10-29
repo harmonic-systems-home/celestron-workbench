@@ -187,6 +187,18 @@ impl Controller {
         }
     }
 
+    /// The link is back (the adapter reconnected). Nothing else changes: a
+    /// latched session still needs an operator reset, which now returns to
+    /// read-only, and arming is separate as always. A disconnected session
+    /// connects.
+    pub fn transport_restored(&mut self, _now: Nanos) -> Vec<Action> {
+        self.transport_up = true;
+        if self.state == MountState::Disconnected {
+            self.go(MountEvent::TransportConnected);
+        }
+        Vec::new()
+    }
+
     /// Explicit operator action; nothing else arms the session.
     pub fn arm(&mut self, now: Nanos) -> Result<Vec<Action>, Refused> {
         self.require(MountState::ConnectedReadOnly, "arm")?;

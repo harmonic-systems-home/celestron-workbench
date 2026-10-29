@@ -18,9 +18,9 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use cwb_celestron_discovery::{Link, SerialLink, redact_path};
+use cwb_celestron_discovery::{Link, redact_path};
 use cwb_mount_celestron::{
-    CelestronAdapter, adapter::Clock, fake::SimHandController, prepare::prepare,
+    CelestronAdapter, CelestronSettings, adapter::Clock, fake::SimHandController, prepare::prepare,
 };
 use cwb_mount_core::Nanos;
 use cwb_mount_runner::{Kind, Out, RunLog, Runner, RunnerConfig};
@@ -68,12 +68,17 @@ pub fn run(options: Options) -> Result<ExitCode> {
     if options.simulate {
         let mount = Arc::new(Mutex::new(SimMount::new(SimFaults::default(), 30.0, 1)));
         let link = SimHandController::new(mount.clone(), now.clone());
-        let adapter = start_adapter(link, &config, now.clone(), "simulated hand controller")?;
+        let adapter = start_adapter(
+            link,
+            config.celestron,
+            now.clone(),
+            "simulated hand controller",
+        )?;
         println!("SIMULATED: no hardware, no phone. The simulated mount supplies the IMU.");
         let (runner, out) = Runner::new(config, adapter, log, true, clock.boot_id(), now())
             .map_err(anyhow::Error::msg)?;
         print(&out);
-        let result = super::runtime()?.block_on(drive(runner, now, None, Some(mount)));
+        let result = super::runtime()?.block_on(drive(runner, now, None, Some(mount), None));
         println!("run log: {}", log_path.display());
         return result;
     }
@@ -109,8 +114,9 @@ pub fn run(options: Options) -> Result<ExitCode> {
                 String::new()
             }
         );
-        let link = SerialLink::open(&path).with_context(|| format!("opening {path}"))?;
-        let adapter = start_adapter(link, &config, now.clone(), &redact_path(&path))?;
+        let link = super::open_serial(&path);
+        let settings = config.celestron;
+        let adapter = start_adapter(link, settings, now.clone(), &redact_path(&path))?;
         let (runner, out) = Runner::new(config, adapter, log, true, clock.boot_id(), now())
             .map_err(anyhow::Error::msg)?;
         print(&out);
@@ -118,7 +124,8 @@ pub fn run(options: Options) -> Result<ExitCode> {
         let server = tokio::spawn(server.run(async {
             let _ = stopped.await;
         }));
-        let result = drive(runner, now, Some(taps), None).await;
+        let reconnect = Reconnect { path, settings };
+        let result = drive(runner, now, Some(taps), None, Some(reconnect)).await;
         let _ = stop_server.send(());
         let _ = server.await;
         writer
@@ -135,9 +142,36 @@ pub fn run(options: Options) -> Result<ExitCode> {
     result
 }
 
+/// How to reopen the hand controller's port after the link is lost.
+struct Reconnect {
+    path: String,
+    settings: CelestronSettings,
+}
+
+/// Waits for the port (beeping and asking for a re-plug if it can't be
+/// opened), then checks the hand controller again. Retries while the hand
+/// controller is still starting up; gives up only if a check can't pass by
+/// waiting (anti-backlash not 0).
+fn reconnect(r: &Reconnect, now: Clock) -> Option<CelestronAdapter> {
+    loop {
+        let link = super::open_serial(&r.path);
+        match start_adapter(link, r.settings, now.clone(), &redact_path(&r.path)) {
+            Ok(adapter) => return Some(adapter),
+            Err(e) if e.to_string().contains("anti-backlash") => {
+                println!("!! {e:#}\n!! Not reconnecting: fix that and restart the runner.");
+                return None;
+            }
+            Err(e) => {
+                println!("!! {e:#}; trying again in 2 s");
+                std::thread::sleep(Duration::from_secs(2));
+            }
+        }
+    }
+}
+
 fn start_adapter<L: Link + Send + 'static>(
     link: L,
-    config: &RunnerConfig,
+    settings: CelestronSettings,
     now: Clock,
     name: &str,
 ) -> Result<CelestronAdapter> {
@@ -171,7 +205,7 @@ fn start_adapter<L: Link + Send + 'static>(
     println!("anti-backlash 0 on both axes");
     Ok(CelestronAdapter::spawn(
         link,
-        config.celestron,
+        settings,
         now,
         Some(POSITION_EVERY),
     ))
@@ -182,7 +216,11 @@ async fn drive(
     now: Clock,
     mut taps: Option<mpsc::Receiver<Tapped>>,
     sim: Option<Arc<Mutex<SimMount>>>,
+    reconnect_with: Option<Reconnect>,
 ) -> Result<ExitCode> {
+    let reconnect_with = reconnect_with.map(Arc::new);
+    // A reconnection in progress delivers its adapter here.
+    let mut reconnecting: Option<tokio::sync::oneshot::Receiver<Option<CelestronAdapter>>> = None;
     let (line_tx, mut lines) = mpsc::channel::<String>(16);
     std::thread::spawn(move || {
         for line in std::io::stdin().lock().lines() {
@@ -203,6 +241,12 @@ async fn drive(
             Some(line) = lines.recv() => print(&runner.line(&line, now())),
             Some(t) = recv(&mut taps) => print(&runner.tapped(&t, now())),
             _ = tokio::signal::ctrl_c() => print(&runner.quit(now())),
+            Some(result) = recv_adapter(&mut reconnecting) => {
+                reconnecting = None;
+                if let Some(adapter) = result {
+                    print(&runner.replace_adapter(adapter, now()));
+                }
+            }
             _ = tick.tick() => {
                 let t = now();
                 if let Some(mount) = &sim {
@@ -220,6 +264,23 @@ async fn drive(
                     }
                 }
                 print(&runner.tick(t));
+                if let Some(r) = &reconnect_with
+                    && reconnecting.is_none()
+                    && runner.link_lost()
+                    && !runner.finished()
+                {
+                    runner.close_link(t);
+                    print!("\x07");
+                    println!("!! the hand controller link is down; reconnecting (moves stay disabled until it's back and you reset and arm)");
+                    let (tx, rx) = tokio::sync::oneshot::channel();
+                    let (r, now) = (r.clone(), now.clone());
+                    // A plain thread: waiting for a re-plug can take any time,
+                    // and quitting mustn't wait for it.
+                    std::thread::spawn(move || {
+                        let _ = tx.send(reconnect(&r, now));
+                    });
+                    reconnecting = Some(rx);
+                }
             }
         }
         if runner.finished() {
@@ -230,6 +291,15 @@ async fn drive(
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+async fn recv_adapter(
+    pending: &mut Option<tokio::sync::oneshot::Receiver<Option<CelestronAdapter>>>,
+) -> Option<Option<CelestronAdapter>> {
+    match pending {
+        Some(rx) => rx.await.ok(),
+        None => std::future::pending().await,
+    }
 }
 
 async fn recv(taps: &mut Option<mpsc::Receiver<Tapped>>) -> Option<Tapped> {
