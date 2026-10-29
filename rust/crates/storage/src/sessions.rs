@@ -3,9 +3,9 @@
 use std::io::{BufRead, Write};
 
 use cwb_protocol::{
-    AccelSample, Bye, ByeReason, DeviceInfo, DeviceMotionSample, Event, GyroSample, Hello,
-    MagnetometerSample, Marker, Message, Nanos, PROTOCOL_VERSION, Quaternion, Sample, SampleBatch,
-    Seq,
+    AccelSample, Bye, ByeReason, ClockResult, DeviceInfo, DeviceMotionSample, Event, GyroSample,
+    Hello, MagnetometerSample, Marker, Message, Nanos, PROTOCOL_VERSION, Quaternion, Sample,
+    SampleBatch, Seq,
 };
 use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde::Serialize;
@@ -13,6 +13,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     StorageError,
+    clockfit::{self, ClockModel},
     ingest::{HelloOutcome, Store},
 };
 
@@ -100,6 +101,8 @@ pub struct SessionReport {
     pub devices: Vec<DeviceReport>,
     /// Count of events by `source:kind`.
     pub events: Vec<(String, u64)>,
+    /// A fresh clock fit per device and Mac clock domain (not stored).
+    pub clock: Vec<(String, ClockModel)>,
     /// Anything that makes the session's data incomplete or suspect.
     pub problems: Vec<String>,
 }
@@ -167,10 +170,12 @@ pub fn validate(conn: &Connection, session_id: &str) -> Result<SessionReport, St
             ));
         }
     }
+    let clock = clockfit::fit_session(conn, session_id)?;
     Ok(SessionReport {
         session,
         devices,
         events,
+        clock,
         problems,
     })
 }
@@ -266,8 +271,8 @@ pub struct ExportSummary {
     pub sha256: String,
 }
 
-/// Writes a session as protocol NDJSON: `hello`, then batches, markers and
-/// phone events in phone-time order, then `bye` if one arrived. The output
+/// Writes a session as protocol NDJSON: `hello`, then batches, markers,
+/// phone events and clock results in phone-time order, then `bye` if one arrived. The output
 /// validates with `cwb validate` and can be replayed or imported. Mac-side
 /// ingest events are not protocol messages; `validate` reports them.
 pub fn export(
@@ -339,6 +344,30 @@ pub fn export(
                 detail: serde_json::from_str(&detail)?,
             };
             timeline.push((t_ns, 2, Message::Event(event)));
+        }
+        let mut stmt = conn.prepare(
+            "SELECT exchange_index, phone_send_ns, mac_receive_ns, mac_send_ns, phone_receive_ns,
+                    mac_clock_boot_id
+             FROM clock_sync
+             WHERE session_id = ?1 AND device_id = ?2 AND mac_clock_boot_id IS NOT NULL
+             ORDER BY exchange_index",
+        )?;
+        for result in stmt.query_map([session_id, &device_id], |r| {
+            Ok(ClockResult {
+                protocol_version: PROTOCOL_VERSION,
+                session_id: session_id.to_owned(),
+                device_id: device_id.clone(),
+                exchange_index: r.get::<_, i64>(0)? as u64,
+                phone_send_ns: r.get(1)?,
+                mac_receive_ns: r.get(2)?,
+                mac_send_ns: r.get(3)?,
+                phone_receive_ns: r.get(4)?,
+                mac_clock_boot_id: r.get(5)?,
+            })
+        })? {
+            let result = result?;
+            // The phone logs a result when the pong arrives.
+            timeline.push((result.phone_receive_ns, 3, Message::ClockResult(result)));
         }
         timeline.sort_by_key(|(t, tie, _)| (*t, *tie));
         for (_, _, message) in &timeline {
@@ -545,6 +574,7 @@ pub struct ImportSummary {
     pub conflicting_samples: u64,
     pub markers: u64,
     pub events: u64,
+    pub clock_exchanges: u64,
     /// Lines skipped: not protocol messages, or a truncated last line.
     pub skipped: Vec<String>,
     pub sha256: String,
@@ -613,6 +643,9 @@ pub fn import(
             }
             Message::Marker(marker) => summary.markers += u64::from(store.marker(&marker)?),
             Message::Event(event) => summary.events += u64::from(store.phone_event(&event, now)?),
+            Message::ClockResult(result) => {
+                summary.clock_exchanges += u64::from(store.clock_result(&result)?);
+            }
             Message::Bye(bye) => {
                 store.bye(&bye, now)?;
             }

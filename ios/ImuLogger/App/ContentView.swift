@@ -10,7 +10,6 @@ struct ContentView: View {
                 ReceiverSection()
                 SessionSection()
                 if recorder.isRecording {
-                    MarkerSection()
                     LiveSection()
                 }
                 SettingsSection()
@@ -20,6 +19,11 @@ struct ContentView: View {
                 }
             }
             .navigationTitle("IMU Logger")
+            // Pinned rather than in the list, so it sits just above the
+            // keyboard and doesn't move when rows above it change.
+            .safeAreaInset(edge: .bottom) {
+                if recorder.isRecording { MarkerBar() }
+            }
         }
     }
 }
@@ -67,19 +71,27 @@ private struct ConnectionStatusRow: View {
     let status: Uplink.Status?
     let hasReceiver: Bool
 
+    // One value per row, single line, fixed-width digits: rows that change
+    // height while numbers tick make the whole form re-lay out (and stutter).
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Label(title, systemImage: "circle.fill")
-                .foregroundStyle(color)
-            if let status {
-                Text(
-                    "Acknowledged to seq \(status.acknowledged.map(String.init) ?? "–") · \(status.unacknowledgedSamples) unacknowledged · \(status.reconnects) reconnects"
-                )
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                if let error = status.lastError {
-                    Text(error).font(.caption).foregroundStyle(.secondary).lineLimit(2)
-                }
+        Label(title, systemImage: "circle.fill")
+            .foregroundStyle(color)
+            .lineLimit(1)
+        if let status {
+            LabeledContent("Acknowledged to seq") {
+                Text(status.acknowledged.map(String.init) ?? "–").monospacedDigit()
+            }
+            LabeledContent("Awaiting acknowledgement") {
+                Text("\(status.unacknowledgedSamples)").monospacedDigit()
+            }
+            LabeledContent("Reconnects") {
+                Text("\(status.reconnects)").monospacedDigit()
+            }
+            if let error = status.lastError {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2, reservesSpace: true)
             }
         }
     }
@@ -148,26 +160,41 @@ private struct SessionSection: View {
     }
 }
 
-private struct MarkerSection: View {
+private struct MarkerBar: View {
     @Environment(Recorder.self) private var recorder
     @State private var label = ""
+    @FocusState private var editing: Bool
 
     var body: some View {
-        Section {
-            TextField("Marker label (optional)", text: $label)
-                .autocorrectionDisabled()
-            Button {
-                recorder.addMarker(label: label)
-                label = ""
-            } label: {
-                Label("Add marker", systemImage: "flag.fill").frame(maxWidth: .infinity)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                TextField("Marker label (optional)", text: $label)
+                    .textFieldStyle(.roundedBorder)
+                    .autocorrectionDisabled()
+                    .submitLabel(.done)
+                    .focused($editing)
+                    .onSubmit(place)
+                Button(action: place) {
+                    Label("Mark", systemImage: "flag.fill")
+                }
+                .buttonStyle(.borderedProminent)
             }
-            .buttonStyle(.borderedProminent)
-        } header: {
-            Text("Markers")
-        } footer: {
-            Text("\(recorder.markerCount) placed. Markers are timestamped on the phone clock.")
+            Text(
+                "\(recorder.markerCount) placed, timestamped on the phone clock when you tap Mark."
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .monospacedDigit()
         }
+        .padding(.horizontal)
+        .padding(.vertical, 8)
+        .background(.bar)
+    }
+
+    private func place() {
+        recorder.addMarker(label: label)
+        label = ""
+        editing = false
     }
 }
 
@@ -215,6 +242,7 @@ private struct LiveSection: View {
         } footer: {
             Text("Rates are what the phone actually delivered, measured from sensor timestamps.")
         }
+        .monospacedDigit()
     }
 }
 

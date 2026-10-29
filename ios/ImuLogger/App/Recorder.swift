@@ -42,7 +42,36 @@ final class Recorder {
     {
         didSet { UserDefaults.standard.set(recordRawMagnetometer, forKey: "recordRawMagnetometer") }
     }
-    var receiverChoice: ReceiverChoice = .none
+    /// Remembered across launches: a discovered receiver by its Bonjour name,
+    /// reselected whenever it is advertised again (see `receiversFound`).
+    var receiverChoice: ReceiverChoice = Recorder.savedChoice {
+        didSet {
+            let saved: String
+            switch receiverChoice {
+            case .none: saved = "none"
+            case .manual: saved = "manual"
+            case .discovered(let endpoint):
+                guard case .service(let name, _, _, _) = endpoint else { return }
+                saved = "service:" + name
+            }
+            UserDefaults.standard.set(saved, forKey: "receiverChoice")
+        }
+    }
+
+    private static var savedChoice: ReceiverChoice {
+        UserDefaults.standard.string(forKey: "receiverChoice") == "manual" ? .manual : .none
+    }
+
+    /// Selects the remembered receiver when the browser finds it, unless the
+    /// operator has since chosen something else or is recording.
+    func receiversFound(_ receivers: [ReceiverBrowser.Receiver]) {
+        guard !isRecording, receiverChoice == .none,
+            let saved = UserDefaults.standard.string(forKey: "receiverChoice"),
+            saved.hasPrefix("service:"),
+            let match = receivers.first(where: { "service:" + $0.name == saved })
+        else { return }
+        receiverChoice = .discovered(match.endpoint)
+    }
     var manualHost = UserDefaults.standard.string(forKey: "manualHost") ?? "" {
         didSet { UserDefaults.standard.set(manualHost, forKey: "manualHost") }
     }
@@ -139,7 +168,10 @@ final class Recorder {
             sessionId: id, deviceId: deviceInfo.deviceId, bufferCapacity: capacity, log: log
         ) { pipeline in
             endpoint.map { endpoint in
-                Uplink(endpoint: endpoint, hello: hello, logURL: url) { [weak pipeline] status in
+                Uplink(
+                    endpoint: endpoint, hello: hello, logURL: url,
+                    onClockResult: { [weak pipeline] result in pipeline?.clockResult(result) }
+                ) { [weak pipeline] status in
                     pipeline?.uplinkStatusChanged(status)
                 }
             }

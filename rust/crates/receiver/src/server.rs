@@ -13,7 +13,7 @@ use std::{
 };
 
 use cwb_protocol::{
-    BatchAck, ErrorCode, ErrorMessage, HelloAck, Message, PROTOCOL_VERSION, Seq,
+    BatchAck, ClockPong, ErrorCode, ErrorMessage, HelloAck, Message, PROTOCOL_VERSION, Seq,
     framing::{self, Decoder},
 };
 use cwb_storage::{HelloOutcome, MacClock, StorageError};
@@ -121,6 +121,9 @@ impl Connection {
                 Ok(n) => n,
                 Err(e) => break Close::Lost(e.to_string()),
             };
+            // Everything in this read arrived now, even if it waits behind
+            // a database commit before it is handled.
+            let receive_mac_ns = self.clock.now_ns();
             decoder.push(&buf[..n]);
             loop {
                 let payload = match decoder.next_payload() {
@@ -130,7 +133,6 @@ impl Connection {
                         break 'connection Close::Refused(ErrorCode::InvalidMessage, e.to_string());
                     }
                 };
-                let receive_mac_ns = self.clock.now_ns();
                 match self.handle(&payload, receive_mac_ns, &mut write).await {
                     Ok(None) => {}
                     Ok(Some(close)) => break 'connection close,
@@ -301,9 +303,37 @@ impl Connection {
                     Err(e) => return Ok(Some(self.writer_failed(e))),
                 }
             }
-            // Clock exchanges arrive with plan Prompt 4.
-            Message::ClockPing(_) | Message::ClockResult(_) => {
-                tracing::debug!("ignoring clock message until clock estimation is implemented");
+            // Answered straight away, before anything else is read, so the
+            // Mac turnaround stays short; it is excluded from the round trip.
+            Message::ClockPing(ping) => {
+                if let Some(close) = self.check_session(&ping.session_id, &ping.device_id) {
+                    return Ok(Some(close));
+                }
+                send(
+                    write,
+                    &Message::ClockPong(ClockPong {
+                        protocol_version: PROTOCOL_VERSION,
+                        session_id: ping.session_id,
+                        exchange_index: ping.exchange_index,
+                        phone_send_ns: ping.phone_send_ns,
+                        mac_receive_ns: receive_mac_ns,
+                        mac_send_ns: self.clock.now_ns(),
+                        mac_clock_boot_id: self.clock.boot_id().to_owned(),
+                    }),
+                )
+                .await?;
+            }
+            Message::ClockResult(result) => {
+                if let Some(close) = self.check_session(&result.session_id, &result.device_id) {
+                    return Ok(Some(close));
+                }
+                match self.writer.clock_result(result).await {
+                    Ok(_) => {}
+                    Err(WriterError::Storage(StorageError::InvalidMessage(reason))) => {
+                        return Ok(Some(refuse(ErrorCode::InvalidMessage, reason)));
+                    }
+                    Err(e) => return Ok(Some(self.writer_failed(e))),
+                }
             }
             Message::HelloAck(_)
             | Message::BatchAck(_)

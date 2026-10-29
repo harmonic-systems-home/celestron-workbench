@@ -235,9 +235,10 @@
         "exchange_index": { "type": "integer", "minimum": 0 },
         "phone_send_ns": { "$ref": "#/$defs/ns" },
         "mac_receive_ns": { "$ref": "#/$defs/ns" },
-        "mac_send_ns": { "$ref": "#/$defs/ns" }
+        "mac_send_ns": { "$ref": "#/$defs/ns" },
+        "mac_clock_boot_id": { "$ref": "#/$defs/uuid", "description": "The receiver run whose clock produced the Mac times (ADR 0001)." }
       },
-      "required": ["type", "protocol_version", "session_id", "exchange_index", "phone_send_ns", "mac_receive_ns", "mac_send_ns"],
+      "required": ["type", "protocol_version", "session_id", "exchange_index", "phone_send_ns", "mac_receive_ns", "mac_send_ns", "mac_clock_boot_id"],
       "additionalProperties": false
     },
     "clock_result": {
@@ -252,9 +253,10 @@
         "phone_send_ns": { "$ref": "#/$defs/ns" },
         "mac_receive_ns": { "$ref": "#/$defs/ns" },
         "mac_send_ns": { "$ref": "#/$defs/ns" },
-        "phone_receive_ns": { "$ref": "#/$defs/ns" }
+        "phone_receive_ns": { "$ref": "#/$defs/ns" },
+        "mac_clock_boot_id": { "$ref": "#/$defs/uuid", "description": "Copied from the clock_pong." }
       },
-      "required": ["type", "protocol_version", "session_id", "device_id", "exchange_index", "phone_send_ns", "mac_receive_ns", "mac_send_ns", "phone_receive_ns"],
+      "required": ["type", "protocol_version", "session_id", "device_id", "exchange_index", "phone_send_ns", "mac_receive_ns", "mac_send_ns", "phone_receive_ns", "mac_clock_boot_id"],
       "additionalProperties": false
     },
 

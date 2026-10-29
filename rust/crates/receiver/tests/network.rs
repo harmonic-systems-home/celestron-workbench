@@ -7,7 +7,7 @@ use std::{
     path::{Path, PathBuf},
     sync::Arc,
     thread::JoinHandle,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use cwb_protocol::{
@@ -16,10 +16,10 @@ use cwb_protocol::{
 };
 use cwb_receiver::{
     Server,
-    client::{self, ClientError, ClientOptions, Faults, PhoneSession},
+    client::{self, ClientError, ClientOptions, ClockSim, Faults, PhoneSession},
     writer::{self, WriterHandle},
 };
-use cwb_storage::{Connection, MacClock, Store, StoreConfig, sessions};
+use cwb_storage::{Connection, MacClock, Store, StoreConfig, clockfit, sessions};
 use serde_json::json;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -31,6 +31,7 @@ use tokio::{
 
 struct Receiver {
     addr: SocketAddr,
+    clock: Arc<MacClock>,
     writer: WriterHandle,
     stop: oneshot::Sender<()>,
     server: TaskHandle<()>,
@@ -48,7 +49,7 @@ async fn start(db: &Path, queue: usize) -> Receiver {
         },
     );
     let (writer, thread) = writer::spawn(store, queue);
-    let server = Server::bind(([127, 0, 0, 1], 0).into(), writer.clone(), clock)
+    let server = Server::bind(([127, 0, 0, 1], 0).into(), writer.clone(), clock.clone())
         .await
         .unwrap();
     let addr = server.local_addr().unwrap();
@@ -58,6 +59,7 @@ async fn start(db: &Path, queue: usize) -> Receiver {
     }));
     Receiver {
         addr,
+        clock,
         writer,
         stop,
         server,
@@ -385,4 +387,68 @@ impl Peer {
             .expect("receiver closed the connection")
             .unwrap();
     }
+}
+
+#[tokio::test]
+async fn clock_exchanges_give_a_model_that_brackets_the_true_offset() {
+    let (_dir, db) = temp_db();
+    let receiver = start(&db, 64).await;
+    let phone = PhoneSession::synthetic(2.0, 100.0);
+    // The phone clock reads 500 s at `epoch`, so the true offset (Mac minus
+    // phone) is the Mac reading at that instant minus 500 s.
+    let epoch = Instant::now();
+    let mac_at_epoch = receiver.clock.now_ns();
+    let true_offset = mac_at_epoch - 500_000_000_000;
+    let run = |outbound_delay| ClientOptions {
+        speed: Some(1.0),
+        clock: Some(ClockSim {
+            interval: Duration::from_millis(100),
+            epoch,
+            epoch_phone_ns: 500_000_000_000,
+            drift_ppm: 0.0,
+            outbound_delay,
+        }),
+        ..fast()
+    };
+    let report = client::run(receiver.addr, &phone, &run(Duration::ZERO))
+        .await
+        .unwrap();
+    assert!(report.clock_pings >= 15, "{} pings", report.clock_pings);
+
+    // A second phone session whose outbound path is 20 ms slower: the offset
+    // is biased by about half of that, and the uncertainty must cover it.
+    let slow_phone = PhoneSession::synthetic(1.0, 100.0);
+    let slow = client::run(receiver.addr, &slow_phone, &run(Duration::from_millis(20)))
+        .await
+        .unwrap();
+    receiver.stop().await;
+
+    let conn = read(&db);
+    let stored: i64 = conn
+        .query_row("SELECT COUNT(*) FROM clock_sync", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(stored as u64, report.clock_results + slow.clock_results);
+    assert_complete(&db, &phone);
+
+    let models = clockfit::fit_session(&conn, &phone.hello.session_id).unwrap();
+    assert_eq!(models.len(), 1);
+    let model = &models[0].1;
+    // Mac clock ticks during the instant between the two readings above.
+    let slack = 200_000;
+    let error = model.offset_ns - true_offset;
+    assert!(
+        error.abs() <= model.uncertainty_ns + slack,
+        "offset error {error} ns, uncertainty {} ns",
+        model.uncertainty_ns
+    );
+    assert!(model.uncertainty_ns < 5_000_000, "loopback should be fast");
+
+    let models = clockfit::fit_session(&conn, &slow_phone.hello.session_id).unwrap();
+    let model = &models[0].1;
+    let error = model.offset_ns - true_offset;
+    assert!(
+        error > 5_000_000,
+        "a slow outbound path biases the offset late: {error}"
+    );
+    assert!(error <= model.uncertainty_ns + slack);
 }

@@ -2,9 +2,11 @@
 //!
 //! Migrations are the SQL files in `schemas/sql/`, embedded at build time and
 //! applied in order. `PRAGMA user_version` records how many have been applied.
-//! [`ingest::Store`] writes protocol messages; [`sessions`] reads them back.
+//! [`ingest::Store`] writes protocol messages; [`sessions`] reads them back;
+//! [`clockfit`] fits clock models from stored exchanges.
 
 pub mod clock;
+pub mod clockfit;
 pub mod ingest;
 pub mod sessions;
 
@@ -35,6 +37,11 @@ pub const MIGRATIONS: &[Migration] = &[
         version: 2,
         name: "0002_receiver",
         sql: include_str!("../../../../schemas/sql/0002_receiver.sql"),
+    },
+    Migration {
+        version: 3,
+        name: "0003_clock_domains",
+        sql: include_str!("../../../../schemas/sql/0003_clock_domains.sql"),
     },
 ];
 

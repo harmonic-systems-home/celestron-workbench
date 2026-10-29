@@ -3,12 +3,13 @@
 use std::io::Cursor;
 
 use cwb_protocol::{
-    AccelSample, AttitudeReferenceFrame, Bye, ByeReason, DeviceInfo, DeviceMotionSample, ErrorCode,
-    Event, EventKind, GyroSample, Hello, MagnetometerSample, Marker, Message, PROTOCOL_VERSION,
-    Quaternion, Sample, SampleBatch, SensorAvailability, Seq, Severity, Stream,
+    AccelSample, AttitudeReferenceFrame, Bye, ByeReason, ClockResult, DeviceInfo,
+    DeviceMotionSample, ErrorCode, Event, EventKind, GyroSample, Hello, MagnetometerSample, Marker,
+    Message, PROTOCOL_VERSION, Quaternion, Sample, SampleBatch, SensorAvailability, Seq, Severity,
+    Stream,
 };
 use cwb_storage::{
-    Connection, HelloOutcome, StorageError, Store, StoreConfig, open_in_memory, sessions,
+    Connection, HelloOutcome, StorageError, Store, StoreConfig, clockfit, open_in_memory, sessions,
 };
 use serde_json::json;
 
@@ -146,6 +147,27 @@ fn event() -> Event {
         severity: Severity::Warning,
         detail: serde_json::from_value(json!({ "stream": "gyro", "count": 3, "total": 3 }))
             .unwrap(),
+    }
+}
+
+const MAC_RUN_A: &str = "66666666-6666-4666-8666-666666666666";
+const MAC_RUN_B: &str = "77777777-7777-4777-8777-777777777777";
+
+/// An exchange every 2 s from phone time 512 s; the Mac clock reads
+/// 3 s ahead with 1 ms each way and 20 µs turnaround.
+fn clock_result(index: u64, mac_run: &str) -> ClockResult {
+    let t1 = 512_000_000_000 + index as i64 * 2_000_000_000;
+    let t2 = t1 + 3_000_000_000 + 1_000_000;
+    ClockResult {
+        protocol_version: PROTOCOL_VERSION,
+        session_id: SESSION.into(),
+        device_id: DEVICE.into(),
+        exchange_index: index,
+        phone_send_ns: t1,
+        mac_receive_ns: t2,
+        mac_send_ns: t2 + 20_000,
+        phone_receive_ns: t1 + 2_020_000,
+        mac_clock_boot_id: mac_run.into(),
     }
 }
 
@@ -515,7 +537,19 @@ fn full_session(store: &mut Store) {
     store
         .marker(&marker("55555555-5555-4555-8555-555555555555"))
         .unwrap();
+    store.clock_result(&clock_result(0, MAC_RUN_A)).unwrap();
+    store.clock_result(&clock_result(1, MAC_RUN_A)).unwrap();
     store.bye(&bye(Some(599)), 4).unwrap();
+}
+
+fn clock_rows(conn: &Connection) -> Vec<Vec<rusqlite::types::Value>> {
+    let mut stmt = conn
+        .prepare("SELECT * FROM clock_sync ORDER BY session_id, device_id, exchange_index")
+        .unwrap();
+    stmt.query_map([], |r| (0..8).map(|i| r.get(i)).collect())
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
 }
 
 fn export_to_vec(conn: &Connection) -> (Vec<u8>, sessions::ExportSummary) {
@@ -568,7 +602,12 @@ fn export_is_valid_protocol_and_imports_back_identically() {
     assert!(imported.created);
     assert_eq!(imported.stored_samples, 600);
     assert!(imported.skipped.is_empty(), "{:?}", imported.skipped);
+    assert_eq!(imported.clock_exchanges, 2);
     assert_eq!(raw_rows(original.connection()), raw_rows(copy.connection()));
+    assert_eq!(
+        clock_rows(original.connection()),
+        clock_rows(copy.connection())
+    );
     assert_eq!(status(copy.connection()), "ended");
 
     // Exporting the copy gives byte-identical output.
@@ -580,7 +619,82 @@ fn export_is_valid_protocol_and_imports_back_identically() {
     let twice = sessions::import(&mut copy, &mut Cursor::new(&bytes), &|| 8).unwrap();
     assert!(!twice.created);
     assert_eq!((twice.stored_samples, twice.duplicate_samples), (0, 600));
-    assert_eq!((twice.markers, twice.events), (0, 0));
+    assert_eq!(
+        (twice.markers, twice.events, twice.clock_exchanges),
+        (0, 0, 0)
+    );
+}
+
+#[test]
+fn clock_exchanges_are_stored_once_and_checked() {
+    let mut store = store();
+    assert!(matches!(
+        store.clock_result(&clock_result(0, MAC_RUN_A)),
+        Err(StorageError::UnknownSession(_))
+    ));
+    accepted(store.hello(&hello(), 1).unwrap());
+    assert!(store.clock_result(&clock_result(0, MAC_RUN_A)).unwrap());
+    assert!(!store.clock_result(&clock_result(0, MAC_RUN_A)).unwrap());
+
+    // The same index with different times, or from another receiver run, conflicts.
+    let mut changed = clock_result(0, MAC_RUN_A);
+    changed.phone_receive_ns += 1;
+    assert!(matches!(
+        store.clock_result(&changed),
+        Err(StorageError::InvalidMessage(_))
+    ));
+    assert!(matches!(
+        store.clock_result(&clock_result(0, MAC_RUN_B)),
+        Err(StorageError::InvalidMessage(_))
+    ));
+
+    // Time can't run backwards within one clock.
+    let mut backwards = clock_result(1, MAC_RUN_A);
+    backwards.phone_receive_ns = backwards.phone_send_ns - 1;
+    assert!(matches!(
+        store.clock_result(&backwards),
+        Err(StorageError::InvalidMessage(_))
+    ));
+    assert_eq!(
+        count(store.connection(), "SELECT COUNT(*) FROM clock_sync"),
+        1
+    );
+}
+
+#[test]
+fn clock_models_are_fitted_per_receiver_run_and_stored() {
+    let mut store = store();
+    accepted(store.hello(&hello(), 1).unwrap());
+    for i in 0..20 {
+        store.clock_result(&clock_result(i, MAC_RUN_A)).unwrap();
+    }
+    for i in 20..25 {
+        store.clock_result(&clock_result(i, MAC_RUN_B)).unwrap();
+    }
+    let models = clockfit::fit_session(store.connection(), SESSION).unwrap();
+    assert_eq!(models.len(), 2);
+    let (device, a) = &models[0];
+    assert_eq!(device, DEVICE);
+    assert_eq!(a.mac_clock_boot_id, MAC_RUN_A);
+    assert_eq!(a.phone_boot_id.as_deref(), Some(BOOT));
+    assert_eq!((a.exchanges, a.offset_ns), (20, 3_000_000_000));
+    assert!(a.drift_fitted);
+    assert!(a.drift_ppb.abs() < 1e-3);
+    assert_eq!(a.uncertainty_ns, 1_000_000);
+    let b = &models[1].1;
+    assert_eq!((b.mac_clock_boot_id.as_str(), b.exchanges), (MAC_RUN_B, 5));
+    assert!(!b.drift_fitted, "8 s is too short to fit drift");
+
+    // validate reports a fresh fit; saving adds rows and keeps earlier ones.
+    let report = sessions::validate(store.connection(), SESSION).unwrap();
+    assert_eq!(report.clock, models);
+    clockfit::store(store.connection(), SESSION, &models).unwrap();
+    let ids = clockfit::store(store.connection(), SESSION, &models).unwrap();
+    assert_eq!(ids.len(), 2);
+    assert_eq!(
+        count(store.connection(), "SELECT COUNT(*) FROM clock_models"),
+        4
+    );
 }
 
 #[test]

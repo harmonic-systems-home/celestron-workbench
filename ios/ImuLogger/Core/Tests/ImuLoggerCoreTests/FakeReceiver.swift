@@ -5,14 +5,16 @@ import Synchronization
 @testable import ImuLoggerCore
 
 /// A minimal stand-in for the Mac receiver, listening on loopback. Stores
-/// sequence numbers, acknowledges the highest contiguous one, and can drop the
-/// connection or forget data to simulate interruptions.
+/// sequence numbers, acknowledges the highest contiguous one, answers clock
+/// pings, and can drop the connection or forget data to simulate interruptions.
 final class FakeReceiver: @unchecked Sendable {
     struct State {
         var stored: Set<Seq> = []
         var duplicates = 0
         var hellos = 0
         var byes = 0
+        var pings = 0
+        var clockResults: [ClockResult] = []
         var others: [Message] = []
         var acceptSessions = true
         var connection: NWConnection?
@@ -28,6 +30,9 @@ final class FakeReceiver: @unchecked Sendable {
     private let ready = Mutex(false)
     private let listener: NWListener
     private let queue = DispatchQueue(label: "fake-receiver")
+    /// This fake's clock: nanoseconds since it started.
+    private let started = DispatchTime.now().uptimeNanoseconds
+    static let clockBootId = "55555555-5555-4555-8555-555555555555"
 
     init() throws {
         let parameters = NWParameters.tcp
@@ -109,6 +114,18 @@ final class FakeReceiver: @unchecked Sendable {
                         deviceId: batch.deviceId, highestContiguousSeq: highest))
             case .bye:
                 state.byes += 1
+                return nil
+            case .clockPing(let ping):
+                state.pings += 1
+                let macNs = Nanos(DispatchTime.now().uptimeNanoseconds - started)
+                return .clockPong(
+                    ClockPong(
+                        protocolVersion: protocolVersion, sessionId: ping.sessionId,
+                        exchangeIndex: ping.exchangeIndex, phoneSendNs: ping.phoneSendNs,
+                        macReceiveNs: macNs, macSendNs: macNs,
+                        macClockBootId: Self.clockBootId))
+            case .clockResult(let result):
+                state.clockResults.append(result)
                 return nil
             default:
                 state.others.append(message)

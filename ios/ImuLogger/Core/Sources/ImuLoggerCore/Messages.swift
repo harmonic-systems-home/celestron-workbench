@@ -539,6 +539,8 @@ public struct ClockPong: Equatable, Sendable, Codable {
     public var phoneSendNs: Nanos
     public var macReceiveNs: Nanos
     public var macSendNs: Nanos
+    /// The receiver run whose clock produced the Mac times (ADR 0001).
+    public var macClockBootId: String
 
     enum CodingKeys: String, CodingKey {
         case protocolVersion = "protocol_version"
@@ -547,11 +549,12 @@ public struct ClockPong: Equatable, Sendable, Codable {
         case phoneSendNs = "phone_send_ns"
         case macReceiveNs = "mac_receive_ns"
         case macSendNs = "mac_send_ns"
+        case macClockBootId = "mac_clock_boot_id"
     }
 
     public init(
         protocolVersion: Int, sessionId: String, exchangeIndex: UInt64, phoneSendNs: Nanos,
-        macReceiveNs: Nanos, macSendNs: Nanos
+        macReceiveNs: Nanos, macSendNs: Nanos, macClockBootId: String
     ) {
         self.protocolVersion = protocolVersion
         self.sessionId = sessionId
@@ -559,6 +562,7 @@ public struct ClockPong: Equatable, Sendable, Codable {
         self.phoneSendNs = phoneSendNs
         self.macReceiveNs = macReceiveNs
         self.macSendNs = macSendNs
+        self.macClockBootId = macClockBootId
     }
 }
 
@@ -571,6 +575,7 @@ public struct ClockResult: Equatable, Sendable, Codable {
     public var macReceiveNs: Nanos
     public var macSendNs: Nanos
     public var phoneReceiveNs: Nanos
+    public var macClockBootId: String
 
     enum CodingKeys: String, CodingKey {
         case protocolVersion = "protocol_version"
@@ -581,11 +586,13 @@ public struct ClockResult: Equatable, Sendable, Codable {
         case macReceiveNs = "mac_receive_ns"
         case macSendNs = "mac_send_ns"
         case phoneReceiveNs = "phone_receive_ns"
+        case macClockBootId = "mac_clock_boot_id"
     }
 
     public init(
         protocolVersion: Int, sessionId: String, deviceId: String, exchangeIndex: UInt64,
-        phoneSendNs: Nanos, macReceiveNs: Nanos, macSendNs: Nanos, phoneReceiveNs: Nanos
+        phoneSendNs: Nanos, macReceiveNs: Nanos, macSendNs: Nanos, phoneReceiveNs: Nanos,
+        macClockBootId: String
     ) {
         self.protocolVersion = protocolVersion
         self.sessionId = sessionId
@@ -595,6 +602,7 @@ public struct ClockResult: Equatable, Sendable, Codable {
         self.macReceiveNs = macReceiveNs
         self.macSendNs = macSendNs
         self.phoneReceiveNs = phoneReceiveNs
+        self.macClockBootId = macClockBootId
     }
 }
 

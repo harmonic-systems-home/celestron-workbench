@@ -15,7 +15,7 @@ use std::{
     thread,
 };
 
-use cwb_protocol::{Bye, Event, Hello, Marker, Nanos, SampleBatch};
+use cwb_protocol::{Bye, ClockResult, Event, Hello, Marker, Nanos, SampleBatch};
 use cwb_storage::{BatchOutcome, ByeOutcome, HelloOutcome, StorageError, Store};
 use thiserror::Error;
 use tokio::sync::{mpsc, oneshot};
@@ -43,6 +43,7 @@ enum Request {
     Batch(SampleBatch, Nanos, Reply<BatchOutcome>),
     Marker(Marker, Reply<bool>),
     Event(Event, Nanos, Reply<bool>),
+    ClockResult(ClockResult, Reply<bool>),
     Bye(Bye, Nanos, Reply<ByeOutcome>),
     MacEvent {
         session_id: String,
@@ -92,6 +93,9 @@ fn run(mut store: Store, mut rx: mpsc::Receiver<Request>) -> Store {
             }
             Request::Event(event, ns, reply) => {
                 let _ = reply.send(store.phone_event(&event, ns));
+            }
+            Request::ClockResult(result, reply) => {
+                let _ = reply.send(store.clock_result(&result));
             }
             Request::Bye(bye, ns, reply) => {
                 let result = store.bye(&bye, ns);
@@ -165,6 +169,10 @@ impl WriterHandle {
 
     pub async fn event(&self, event: Event, ns: Nanos) -> Result<bool, WriterError> {
         self.call(|reply| Request::Event(event, ns, reply)).await
+    }
+
+    pub async fn clock_result(&self, result: ClockResult) -> Result<bool, WriterError> {
+        self.call(|reply| Request::ClockResult(result, reply)).await
     }
 
     pub async fn bye(&self, bye: Bye, ns: Nanos) -> Result<ByeOutcome, WriterError> {

@@ -8,7 +8,8 @@
 use std::collections::{HashMap, HashSet};
 
 use cwb_protocol::{
-    Bye, ErrorCode, Event, Hello, Marker, Nanos, PROTOCOL_VERSION, Sample, SampleBatch, Seq,
+    Bye, ClockResult, ErrorCode, Event, Hello, Marker, Nanos, PROTOCOL_VERSION, Sample,
+    SampleBatch, Seq,
 };
 use rusqlite::{
     Connection, OptionalExtension, Transaction, params, params_from_iter, types::Value,
@@ -374,6 +375,63 @@ impl Store {
                 event.t_ns,
                 receive_mac_ns,
                 detail
+            ],
+        )?;
+        Ok(true)
+    }
+
+    /// Stores a completed clock exchange. Returns false if this exchange is
+    /// already stored; a different exchange with the same index is a conflict.
+    pub fn clock_result(&mut self, result: &ClockResult) -> Result<bool, StorageError> {
+        self.require_device(&result.session_id, &result.device_id)?;
+        if result.phone_receive_ns < result.phone_send_ns
+            || result.mac_send_ns < result.mac_receive_ns
+        {
+            return Err(StorageError::InvalidMessage(format!(
+                "clock exchange {} has a negative interval",
+                result.exchange_index
+            )));
+        }
+        let times = [
+            result.phone_send_ns,
+            result.mac_receive_ns,
+            result.mac_send_ns,
+            result.phone_receive_ns,
+        ];
+        let stored: Option<([Nanos; 4], Option<String>)> = self
+            .conn
+            .query_row(
+                "SELECT phone_send_ns, mac_receive_ns, mac_send_ns, phone_receive_ns, mac_clock_boot_id
+                 FROM clock_sync WHERE session_id = ?1 AND device_id = ?2 AND exchange_index = ?3",
+                params![result.session_id, result.device_id, result.exchange_index as i64],
+                |r| Ok(([r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?], r.get(4)?)),
+            )
+            .optional()?;
+        match stored {
+            None => {}
+            Some((t, boot)) if t == times && boot.as_deref() == Some(&result.mac_clock_boot_id) => {
+                return Ok(false);
+            }
+            Some(_) => {
+                return Err(StorageError::InvalidMessage(format!(
+                    "clock exchange {} differs from the one already stored",
+                    result.exchange_index
+                )));
+            }
+        }
+        self.conn.execute(
+            "INSERT INTO clock_sync (session_id, device_id, exchange_index, phone_send_ns,
+                 mac_receive_ns, mac_send_ns, phone_receive_ns, mac_clock_boot_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                result.session_id,
+                result.device_id,
+                result.exchange_index as i64,
+                result.phone_send_ns,
+                result.mac_receive_ns,
+                result.mac_send_ns,
+                result.phone_receive_ns,
+                result.mac_clock_boot_id
             ],
         )?;
         Ok(true)

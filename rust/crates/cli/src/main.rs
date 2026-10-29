@@ -16,10 +16,14 @@ use clap::{Args, Parser, Subcommand};
 use cwb_receiver::{
     DEFAULT_PORT, Server,
     advertise::Advertisement,
-    client::{self, ClientOptions, PhoneSession},
+    client::{self, ClientOptions, ClockSim, PhoneSession},
     writer,
 };
-use cwb_storage::{Connection, MacClock, Store, StoreConfig, sessions};
+use cwb_storage::{
+    Connection, MacClock, Store, StoreConfig,
+    clockfit::{self, ClockModel},
+    sessions,
+};
 use serde_json::{Value, json};
 
 #[derive(Parser)]
@@ -92,6 +96,10 @@ enum Command {
         /// Replay speed relative to the recording; 0 sends as fast as possible.
         #[arg(long, default_value_t = 1.0)]
         speed: f64,
+        /// Run a clock exchange this often while sending (synthetic sessions
+        /// only: a recorded log's phone clock can't be reproduced).
+        #[arg(long, value_name = "SECONDS", requires = "synthetic")]
+        clock_interval: Option<f64>,
     },
     /// Print the software, protocol and database schema versions.
     Versions,
@@ -112,6 +120,19 @@ enum SessionCommand {
         /// Session ID or a unique prefix of it.
         session: String,
         /// Print the full report as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Fit phone-to-Mac clock models from the session's clock exchanges, one
+    /// per device and receiver run, and print them.
+    Clock {
+        #[command(flatten)]
+        db: Db,
+        session: String,
+        /// Store the models in the database (earlier models are kept).
+        #[arg(long)]
+        save: bool,
+        /// Print the models as JSON.
         #[arg(long)]
         json: bool,
     },
@@ -179,6 +200,7 @@ fn main() -> Result<ExitCode> {
             rate,
             to,
             speed,
+            clock_interval,
         } => {
             init_logging();
             let session = match (file, synthetic) {
@@ -190,6 +212,13 @@ fn main() -> Result<ExitCode> {
             };
             let options = ClientOptions {
                 speed: (speed > 0.0).then_some(speed),
+                clock: clock_interval.map(|seconds| ClockSim {
+                    interval: std::time::Duration::from_secs_f64(seconds),
+                    epoch: std::time::Instant::now(),
+                    epoch_phone_ns: session.batches().next().map_or(0, |b| b.samples[0].t_ns()),
+                    drift_ppm: 0.0,
+                    outbound_delay: std::time::Duration::ZERO,
+                }),
                 ..ClientOptions::default()
             };
             println!(
@@ -199,8 +228,12 @@ fn main() -> Result<ExitCode> {
             );
             let report = runtime()?.block_on(client::run(to, &session, &options))?;
             println!(
-                "done: {} batches sent, {} resent, {} connection(s), acknowledged to seq {:?}",
-                report.batches_sent, report.batches_resent, report.connections, report.acknowledged
+                "done: {} batches sent, {} resent, {} connection(s), acknowledged to seq {:?}, {} clock exchanges",
+                report.batches_sent,
+                report.batches_resent,
+                report.connections,
+                report.acknowledged,
+                report.clock_results
             );
             Ok(ExitCode::SUCCESS)
         }
@@ -347,6 +380,47 @@ fn session(command: SessionCommand) -> Result<ExitCode> {
                 ExitCode::FAILURE
             })
         }
+        SessionCommand::Clock {
+            db,
+            session,
+            save,
+            json,
+        } => {
+            let (conn, _) = open(&db.db)?;
+            let id = sessions::resolve(&conn, &session)?;
+            let models = clockfit::fit_session(&conn, &id)?;
+            let ids = if save {
+                clockfit::store(&conn, &id, &models)?
+            } else {
+                Vec::new()
+            };
+            if json {
+                let out: Vec<Value> = models
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (device_id, model))| {
+                        json!({
+                            "device_id": device_id,
+                            "clock_model_id": ids.get(i),
+                            "model": model,
+                        })
+                    })
+                    .collect();
+                println!("{}", serde_json::to_string_pretty(&out)?);
+            } else {
+                println!("session {id}");
+                if models.is_empty() {
+                    println!("  no clock exchanges");
+                }
+                for (i, (device_id, model)) in models.iter().enumerate() {
+                    print_clock(device_id, model);
+                    if let Some(model_id) = ids.get(i) {
+                        println!("    saved as clock model {model_id}");
+                    }
+                }
+            }
+            Ok(ExitCode::SUCCESS)
+        }
         SessionCommand::Stop { db, session } => {
             let clock = MacClock::new();
             let mut store = store(&db.db, &clock)?;
@@ -385,14 +459,15 @@ fn session(command: SessionCommand) -> Result<ExitCode> {
             let summary = sessions::import(&mut store, &mut input, &|| clock.now_ns())?;
             store.checkpoint()?;
             println!(
-                "session {} ({}): {} samples stored, {} already present, {} conflicting, {} markers, {} events",
+                "session {} ({}): {} samples stored, {} already present, {} conflicting, {} markers, {} events, {} clock exchanges",
                 summary.session_id.as_deref().unwrap_or("?"),
                 if summary.created { "new" } else { "existing" },
                 summary.stored_samples,
                 summary.duplicate_samples,
                 summary.conflicting_samples,
                 summary.markers,
-                summary.events
+                summary.events,
+                summary.clock_exchanges
             );
             for skipped in &summary.skipped {
                 println!("  skipped {skipped}");
@@ -450,6 +525,12 @@ fn print_report(report: &sessions::SessionReport) {
     for (kind, count) in &report.events {
         println!("    {kind:<32} {count}");
     }
+    if report.clock.is_empty() {
+        println!("  clock: no exchanges");
+    }
+    for (device_id, model) in &report.clock {
+        print_clock(device_id, model);
+    }
     if report.problems.is_empty() {
         println!("OK: no problems found");
     } else {
@@ -458,6 +539,34 @@ fn print_report(report: &sessions::SessionReport) {
             println!("  - {p}");
         }
     }
+}
+
+fn print_clock(device_id: &str, model: &ClockModel) {
+    let ms = |ns: f64| format!("{:.3} ms", ns / 1e6);
+    println!(
+        "  clock: device {} receiver run {}",
+        &device_id[..8.min(device_id.len())],
+        &model.mac_clock_boot_id[..8.min(model.mac_clock_boot_id.len())]
+    );
+    println!(
+        "    {} exchanges over {:.1} s, {} used; round trip min {}, median {}",
+        model.exchanges,
+        (model.valid_to_phone_ns - model.valid_from_phone_ns) as f64 / 1e9,
+        model.used,
+        ms(model.round_trip_min_ns as f64),
+        ms(model.round_trip_median_ns as f64)
+    );
+    println!(
+        "    offset {} s, drift {}, uncertainty ±{} (residual rms {})",
+        format_args!("{:+.6}", model.offset_ns as f64 / 1e9),
+        if model.drift_fitted {
+            format!("{:+.2} ppm", model.drift_ppb / 1e3)
+        } else {
+            "not fitted (needs 30 s and 3 exchanges)".into()
+        },
+        ms(model.uncertainty_ns as f64),
+        ms(model.residual_rms_ns)
+    );
 }
 
 fn validate(files: &[PathBuf]) -> Result<ExitCode> {

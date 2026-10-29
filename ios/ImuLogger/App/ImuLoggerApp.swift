@@ -12,6 +12,9 @@ struct ImuLoggerApp: App {
                 .environment(recorder)
                 .environment(browser)
                 .onAppear { browser.start() }
+                .onChange(of: browser.receivers, initial: true) { _, receivers in
+                    recorder.receiversFound(receivers)
+                }
         }
         .onChange(of: scenePhase) { _, phase in
             recorder.scenePhaseChanged(to: phase)

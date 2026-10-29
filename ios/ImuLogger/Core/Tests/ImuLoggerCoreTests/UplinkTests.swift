@@ -106,6 +106,34 @@ import Testing
         uplink.cancel()
     }
 
+    @Test func runsClockExchangesWhileConnected() async throws {
+        let receiver = try FakeReceiver()
+        defer { receiver.stop() }
+        let results = Mutex<[ClockResult]>([])
+        let uplink = Uplink(
+            endpoint: await receiver.endpoint, hello: testHello(), logURL: nil,
+            clockInterval: 0.05, onClockResult: { result in results.withLock { $0.append(result) } }
+        ) { _ in }
+        uplink.start()
+        // The burst is never slower than the interval, so this is all 50 ms apart.
+        #expect(await eventually(timeout: 10) { results.withLock { $0.count } >= 8 })
+        let completed = results.withLock { $0 }
+        #expect(completed.map(\.exchangeIndex) == Array(0..<UInt64(completed.count)))
+        for result in completed {
+            #expect(result.sessionId == testSession && result.deviceId == testDevice)
+            #expect(result.macClockBootId == FakeReceiver.clockBootId)
+            #expect(result.phoneReceiveNs >= result.phoneSendNs)
+        }
+
+        // Exchanges start again after a reconnect, with new indexes.
+        let before = completed.count
+        receiver.dropConnection()
+        #expect(await eventually(timeout: 10) { results.withLock { $0.count } >= before + 2 })
+        let indexes = results.withLock { $0.map(\.exchangeIndex) }
+        #expect(Set(indexes).count == indexes.count)
+        uplink.cancel()
+    }
+
     @Test func stopsWhenTheReceiverRejectsTheSession() async throws {
         let receiver = try FakeReceiver()
         defer { receiver.stop() }

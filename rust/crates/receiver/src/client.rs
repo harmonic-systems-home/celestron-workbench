@@ -9,9 +9,10 @@ use std::{
 };
 
 use cwb_protocol::{
-    AccelSample, AttitudeReferenceFrame, Bye, ByeReason, DeviceInfo, DeviceMotionSample, ErrorCode,
-    Event, EventKind, GyroSample, Hello, Marker, Message, Nanos, PROTOCOL_VERSION, Quaternion,
-    STANDARD_GRAVITY_M_S2, Sample, SampleBatch, SensorAvailability, Seq, Severity, Stream,
+    AccelSample, AttitudeReferenceFrame, Bye, ByeReason, ClockPing, ClockResult, DeviceInfo,
+    DeviceMotionSample, ErrorCode, Event, EventKind, GyroSample, Hello, Marker, Message, Nanos,
+    PROTOCOL_VERSION, Quaternion, STANDARD_GRAVITY_M_S2, Sample, SampleBatch, SensorAvailability,
+    Seq, Severity, Stream,
     framing::{self, Decoder},
 };
 use thiserror::Error;
@@ -36,7 +37,8 @@ pub enum ClientError {
 #[derive(Debug, Clone)]
 pub struct PhoneSession {
     pub hello: Hello,
-    /// Sample batches, markers and events in the order the phone sent them.
+    /// Sample batches, markers, events and clock results in the order the
+    /// phone sent them.
     pub items: Vec<Message>,
     pub bye: Option<Bye>,
 }
@@ -67,9 +69,10 @@ impl PhoneSession {
                 Message::Hello(_) => {
                     return Err(ClientError::Log("more than one hello".into()));
                 }
-                m @ (Message::SampleBatch(_) | Message::Marker(_) | Message::Event(_)) => {
-                    items.push(m)
-                }
+                m @ (Message::SampleBatch(_)
+                | Message::Marker(_)
+                | Message::Event(_)
+                | Message::ClockResult(_)) => items.push(m),
                 Message::Bye(b) => bye = Some(b),
                 _ => {}
             }
@@ -216,6 +219,31 @@ pub struct Faults {
     pub invalid: Vec<usize>,
 }
 
+/// Clock exchanges the synthetic phone runs while it sends, against a
+/// simulated phone clock: `epoch_phone_ns` at `epoch`, running fast by
+/// `drift_ppm`.
+#[derive(Debug, Clone)]
+pub struct ClockSim {
+    pub interval: Duration,
+    pub epoch: Instant,
+    pub epoch_phone_ns: Nanos,
+    pub drift_ppm: f64,
+    /// Held back after stamping each ping, as if the phone-to-Mac path were
+    /// this much slower than the return path.
+    pub outbound_delay: Duration,
+}
+
+impl ClockSim {
+    pub fn phone_now_ns(&self) -> Nanos {
+        self.phone_ns_at(Instant::now())
+    }
+
+    pub fn phone_ns_at(&self, instant: Instant) -> Nanos {
+        let elapsed = instant.saturating_duration_since(self.epoch).as_nanos() as f64;
+        self.epoch_phone_ns + (elapsed * (1.0 + self.drift_ppm / 1e6)).round() as Nanos
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ClientOptions {
     /// Replay speed relative to the phone timestamps; `None` sends as fast as possible.
@@ -225,6 +253,7 @@ pub struct ClientOptions {
     pub ack_timeout: Duration,
     pub retry_delay: Duration,
     pub max_connections: usize,
+    pub clock: Option<ClockSim>,
 }
 
 impl Default for ClientOptions {
@@ -235,6 +264,7 @@ impl Default for ClientOptions {
             ack_timeout: Duration::from_secs(10),
             retry_delay: Duration::from_millis(250),
             max_connections: 20,
+            clock: None,
         }
     }
 }
@@ -249,11 +279,14 @@ pub struct ClientReport {
     pub resumed_after: Vec<Option<Seq>>,
     /// Errors from the receiver that led to reconnecting.
     pub receiver_errors: Vec<String>,
+    pub clock_pings: u64,
+    pub clock_results: u64,
 }
 
 /// What to do after a message from the receiver.
 enum Next {
     Continue,
+    Reply(Message),
     Reconnect(String),
 }
 
@@ -272,6 +305,8 @@ pub async fn run(
     let mut next_item = 0usize;
     let mut next_batch = 0usize;
     let mut attempts = 0usize;
+    let mut exchange_index = 0u64;
+    let mut next_ping = Instant::now();
 
     'connect: loop {
         if attempts > 0 {
@@ -302,8 +337,8 @@ pub async fn run(
             continue 'connect;
         }
         let ack = match timeout(options.ack_timeout, incoming.recv()).await {
-            Ok(Some(Message::HelloAck(ack))) => ack,
-            Ok(Some(Message::Error(e))) => {
+            Ok(Some((Message::HelloAck(ack), _))) => ack,
+            Ok(Some((Message::Error(e), _))) => {
                 on_error(&e.code, &e.message)?;
                 report.receiver_errors.push(e.message);
                 continue 'connect;
@@ -333,11 +368,43 @@ pub async fn run(
         }
 
         while next_item < session.items.len() {
-            while let Ok(message) = incoming.try_recv() {
-                if let Next::Reconnect(reason) = on_message(message, &mut report)? {
-                    report.receiver_errors.push(reason);
+            while let Ok((message, arrived)) = incoming.try_recv() {
+                match on_message(
+                    message,
+                    arrived,
+                    &mut report,
+                    session,
+                    options.clock.as_ref(),
+                )? {
+                    Next::Continue => {}
+                    Next::Reply(reply) => {
+                        if connection.send(&reply).await.is_err() {
+                            continue 'connect;
+                        }
+                    }
+                    Next::Reconnect(reason) => {
+                        report.receiver_errors.push(reason);
+                        continue 'connect;
+                    }
+                }
+            }
+            if let Some(clock) = &options.clock
+                && Instant::now() >= next_ping
+            {
+                next_ping += clock.interval;
+                let ping = Message::ClockPing(ClockPing {
+                    protocol_version: PROTOCOL_VERSION,
+                    session_id: session.hello.session_id.clone(),
+                    device_id: session.hello.device.device_id.clone(),
+                    exchange_index,
+                    phone_send_ns: clock.phone_now_ns(),
+                });
+                exchange_index += 1;
+                sleep(clock.outbound_delay).await;
+                if connection.send(&ping).await.is_err() {
                     continue 'connect;
                 }
+                report.clock_pings += 1;
             }
             let item = &session.items[next_item];
             let Message::SampleBatch(batch) = item else {
@@ -385,10 +452,24 @@ pub async fn run(
         // Wait for everything to be acknowledged, then say goodbye.
         while last_seq.is_some() && report.acknowledged < last_seq {
             match timeout(options.ack_timeout, incoming.recv()).await {
-                Ok(Some(message)) => {
-                    if let Next::Reconnect(reason) = on_message(message, &mut report)? {
-                        report.receiver_errors.push(reason);
-                        continue 'connect;
+                Ok(Some((message, arrived))) => {
+                    match on_message(
+                        message,
+                        arrived,
+                        &mut report,
+                        session,
+                        options.clock.as_ref(),
+                    )? {
+                        Next::Continue => {}
+                        Next::Reply(reply) => {
+                            if connection.send(&reply).await.is_err() {
+                                continue 'connect;
+                            }
+                        }
+                        Next::Reconnect(reason) => {
+                            report.receiver_errors.push(reason);
+                            continue 'connect;
+                        }
                     }
                 }
                 _ => continue 'connect,
@@ -437,11 +518,34 @@ fn take(list: &mut Vec<usize>, index: usize) -> bool {
     }
 }
 
-fn on_message(message: Message, report: &mut ClientReport) -> Result<Next, ClientError> {
+fn on_message(
+    message: Message,
+    arrived: Instant,
+    report: &mut ClientReport,
+    session: &PhoneSession,
+    clock: Option<&ClockSim>,
+) -> Result<Next, ClientError> {
     match message {
         Message::BatchAck(ack) => {
             report.acknowledged = report.acknowledged.max(Some(ack.highest_contiguous_seq));
             Ok(Next::Continue)
+        }
+        Message::ClockPong(pong) => {
+            let Some(clock) = clock else {
+                return Ok(Next::Continue);
+            };
+            report.clock_results += 1;
+            Ok(Next::Reply(Message::ClockResult(ClockResult {
+                protocol_version: PROTOCOL_VERSION,
+                session_id: pong.session_id,
+                device_id: session.hello.device.device_id.clone(),
+                exchange_index: pong.exchange_index,
+                phone_send_ns: pong.phone_send_ns,
+                mac_receive_ns: pong.mac_receive_ns,
+                mac_send_ns: pong.mac_send_ns,
+                phone_receive_ns: clock.phone_ns_at(arrived),
+                mac_clock_boot_id: pong.mac_clock_boot_id,
+            })))
         }
         Message::Error(e) => on_error(&e.code, &e.message),
         _ => Ok(Next::Continue),
@@ -461,7 +565,7 @@ fn on_error(code: &ErrorCode, message: &str) -> Result<Next, ClientError> {
 /// Reads until the receiver closes the connection, so a refused message
 /// is seen to be refused before reconnecting. Returns any error messages.
 async fn drain_until_closed(
-    incoming: &mut mpsc::UnboundedReceiver<Message>,
+    incoming: &mut mpsc::UnboundedReceiver<(Message, Instant)>,
     limit: Duration,
 ) -> Vec<String> {
     let deadline = Instant::now() + limit;
@@ -472,14 +576,16 @@ async fn drain_until_closed(
     )
     .await
     {
-        if let Message::Error(e) = message {
+        if let (Message::Error(e), _) = message {
             errors.push(e.message);
         }
     }
     errors
 }
 
-async fn read_messages(mut read: OwnedReadHalf, tx: mpsc::UnboundedSender<Message>) {
+/// Forwards each message with the time it was read, so clock exchanges are
+/// stamped on arrival rather than when the send loop gets to them.
+async fn read_messages(mut read: OwnedReadHalf, tx: mpsc::UnboundedSender<(Message, Instant)>) {
     let mut decoder = Decoder::new();
     let mut buf = vec![0u8; 16 * 1024];
     loop {
@@ -487,10 +593,11 @@ async fn read_messages(mut read: OwnedReadHalf, tx: mpsc::UnboundedSender<Messag
             Ok(0) | Err(_) => return,
             Ok(n) => decoder.push(&buf[..n]),
         }
+        let arrived = Instant::now();
         loop {
             match decoder.next_message() {
                 Ok(Some(message)) => {
-                    if tx.send(message).is_err() {
+                    if tx.send((message, arrived)).is_err() {
                         return;
                     }
                 }

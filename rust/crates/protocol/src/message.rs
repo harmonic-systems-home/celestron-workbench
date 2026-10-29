@@ -273,6 +273,8 @@ pub struct ClockPong {
     pub phone_send_ns: Nanos,
     pub mac_receive_ns: Nanos,
     pub mac_send_ns: Nanos,
+    /// The receiver run whose clock produced the Mac times (ADR 0001).
+    pub mac_clock_boot_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -286,6 +288,7 @@ pub struct ClockResult {
     pub mac_receive_ns: Nanos,
     pub mac_send_ns: Nanos,
     pub phone_receive_ns: Nanos,
+    pub mac_clock_boot_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

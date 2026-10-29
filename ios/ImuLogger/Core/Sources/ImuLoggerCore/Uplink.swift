@@ -3,6 +3,8 @@ import Network
 
 /// Streams a session to the Mac receiver over TCP (ADR 0004): handshake,
 /// acknowledgements, reconnect with backoff, and resend after interruptions.
+/// While connected it runs four-timestamp clock exchanges (ADR 0001): a
+/// burst after each connect, then one every `clockInterval`.
 ///
 /// All state is confined to a private serial queue. Callers may use it from
 /// any thread; status updates arrive on that queue.
@@ -30,6 +32,9 @@ public final class Uplink: @unchecked Sendable {
     private let endpoint: NWEndpoint
     private let hello: Hello
     private let logURL: URL?
+    private let clockInterval: TimeInterval
+    private let now: @Sendable () -> Nanos
+    private let onClockResult: @Sendable (ClockResult) -> Void
     private let onStatus: @Sendable (Status) -> Void
 
     private var connection: NWConnection?
@@ -44,17 +49,32 @@ public final class Uplink: @unchecked Sendable {
     private var everStreamed = false
     private var lastError: String?
     private var pendingBye: Bye?
+    private var nextExchange: UInt64 = 0
+    private var pingsThisConnection = 0
+    /// Pings awaiting a pong on this connection: exchange index -> send time.
+    private var outstandingPings: [UInt64: Nanos] = [:]
+
+    /// Pings 1 s apart right after connecting, so a model exists quickly.
+    static let clockBurst = 5
 
     /// - Parameters:
     ///   - logURL: the session log, reread when more is unacknowledged than fits in memory.
     ///   - maxPendingBatches: unacknowledged batches kept in memory for resending.
+    ///   - clockInterval: seconds between clock exchanges after the first burst.
+    ///   - now: the phone clock; the same one that stamps samples.
+    ///   - onClockResult: a completed exchange, to be logged and sent back.
     public init(
         endpoint: NWEndpoint, hello: Hello, logURL: URL?, maxPendingBatches: Int = 600,
+        clockInterval: TimeInterval = 5, now: @escaping @Sendable () -> Nanos = PhoneClock.nowNs,
+        onClockResult: @escaping @Sendable (ClockResult) -> Void = { _ in },
         onStatus: @escaping @Sendable (Status) -> Void
     ) {
         self.endpoint = endpoint
         self.hello = hello
         self.logURL = logURL
+        self.clockInterval = clockInterval
+        self.now = now
+        self.onClockResult = onClockResult
         self.tracker = DeliveryTracker(maxPendingBatches: maxPendingBatches)
         self.onStatus = onStatus
     }
@@ -151,11 +171,13 @@ public final class Uplink: @unchecked Sendable {
         connection?.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) {
             [weak self] data, _, isComplete, error in
             guard let self, current == self.generation else { return }
+            // Stamped before anything is handled, for clock exchanges.
+            let arrived = self.now()
             if let data, !data.isEmpty {
                 self.decoder.push(data)
                 do {
                     while let message = try self.decoder.nextMessage() {
-                        self.handle(message)
+                        self.handle(message, arrived: arrived)
                         guard current == self.generation else { return }
                     }
                 } catch {
@@ -172,7 +194,7 @@ public final class Uplink: @unchecked Sendable {
         }
     }
 
-    private func handle(_ message: Message) {
+    private func handle(_ message: Message, arrived: Nanos) {
         switch message {
         case .helloAck(let ack):
             guard ack.sessionId == hello.sessionId else {
@@ -190,6 +212,9 @@ public final class Uplink: @unchecked Sendable {
             let backlog = queued
             queued.removeAll()
             backlog.forEach(transmit)
+            pingsThisConnection = 0
+            outstandingPings.removeAll()
+            ping(generation: generation)
             sendByeIfReady()
         case .batchAck(let ack):
             tracker.acknowledge(ack.highestContiguousSeq)
@@ -201,10 +226,46 @@ public final class Uplink: @unchecked Sendable {
             case .invalidMessage, .internal:
                 retry(after: "receiver error: \(error.message)")
             }
+        case .clockPong(let pong):
+            guard pong.sessionId == hello.sessionId,
+                let sent = outstandingPings.removeValue(forKey: pong.exchangeIndex),
+                sent == pong.phoneSendNs
+            else { break }
+            onClockResult(
+                ClockResult(
+                    protocolVersion: protocolVersion, sessionId: hello.sessionId,
+                    deviceId: hello.device.deviceId, exchangeIndex: pong.exchangeIndex,
+                    phoneSendNs: pong.phoneSendNs, macReceiveNs: pong.macReceiveNs,
+                    macSendNs: pong.macSendNs, phoneReceiveNs: arrived,
+                    macClockBootId: pong.macClockBootId))
         default:
-            break  // clock_pong is handled from plan Prompt 4.
+            break
         }
         publish()
+    }
+
+    /// Sends a clock ping and schedules the next, for as long as this
+    /// connection is streaming.
+    private func ping(generation current: Int) {
+        guard current == generation, state == .streaming else { return }
+        let index = nextExchange
+        nextExchange += 1
+        pingsThisConnection += 1
+        let sent = now()
+        outstandingPings[index] = sent
+        // A pong that never comes (lost with a connection) is forgotten.
+        if outstandingPings.count > 20, let oldest = outstandingPings.keys.min() {
+            outstandingPings.removeValue(forKey: oldest)
+        }
+        transmit(
+            .clockPing(
+                ClockPing(
+                    protocolVersion: protocolVersion, sessionId: hello.sessionId,
+                    deviceId: hello.device.deviceId, exchangeIndex: index, phoneSendNs: sent)))
+        let delay = pingsThisConnection < Self.clockBurst ? min(1, clockInterval) : clockInterval
+        queue.asyncAfter(deadline: .now() + delay) { [weak self] in
+            self?.ping(generation: current)
+        }
     }
 
     private func resend(_ plan: DeliveryTracker.Resend) {

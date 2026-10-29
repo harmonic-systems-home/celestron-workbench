@@ -4,7 +4,7 @@ Diagnostics for Celestron computerized telescope mounts, using an iPhone's motio
 
 Developed on a NexStar Evolution 8 EdgeHD with StarSense, an iPhone 17 Pro Max and a MacBook. The mount-specific code sits behind an adapter, so the rest of the system doesn't depend on one particular mount.
 
-> **Status:** M2 receiver. The iPhone app records and streams motion data, and the Mac receiver stores it in SQLite. Clock estimation is next. No mount code yet. See [docs/plan.md](docs/plan.md).
+> **Status:** M2 receiver with basic clock estimation. The iPhone app records and streams motion data, the Mac receiver stores it in SQLite, and clock exchanges give each session a phone-to-Mac time model with an uncertainty. Bench analysis is next. No mount code yet. See [docs/plan.md](docs/plan.md).
 
 ## What it does
 

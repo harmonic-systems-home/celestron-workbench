@@ -62,10 +62,12 @@ cwb session validate 20009d52 --json
 cwb session export 20009d52 -o /path/outside/repo/session.ndjson
 cwb session import /path/to/phone-log.ndjson
 cwb session stop 20009d52              # phone vanished without bye: mark incomplete
+cwb session clock 20009d52 [--save]    # fit phone-to-Mac clock models; --save stores them
 ```
 
-- **validate** reports per-stream sample counts, delivered rates and interval ranges, missing seq ranges, timestamps that did not increase, samples dropped on the phone, whether `bye` arrived and matches, and counts of every event kind.
-- **export** writes protocol NDJSON (`hello`, batches, markers, phone events, `bye`) and prints its SHA-256. The output passes `cwb validate`, imports back to an identical session, and replays. Mac-side ingest events are reported by `validate`, not exported.
+- **validate** reports per-stream sample counts, delivered rates and interval ranges, missing seq ranges, timestamps that did not increase, samples dropped on the phone, whether `bye` arrived and matches, counts of every event kind, and a fresh clock fit.
+- **clock** fits one model per device and receiver run from the session's clock exchanges: offset, drift (once there are at least 30 s and 3 good exchanges), and an uncertainty that later timing claims must exceed. `--save` adds the models to `clock_models`; earlier ones are kept.
+- **export** writes protocol NDJSON (`hello`, batches, markers, phone events, clock results, `bye`) and prints its SHA-256. The output passes `cwb validate`, imports back to an identical session, and replays. Mac-side ingest events are reported by `validate`, not exported.
 - **import** creates a session from the phone's log, or completes one received live: samples already stored are skipped, so it fills in whatever the network missed. Importing the same file twice changes nothing.
 
 ### Without a phone
@@ -77,7 +79,10 @@ cwb receive --db /tmp/scratch.sqlite &
 cwb replay path/to/phone-log.ndjson --to 127.0.0.1:47800          # real time
 cwb replay path/to/phone-log.ndjson --speed 0                      # as fast as possible
 cwb replay --synthetic 60 --rate 100 --speed 0                     # generated session
+cwb replay --synthetic 60 --clock-interval 1                       # with clock exchanges
 ```
+
+A recorded log's clock results replay as recorded; only synthetic sessions run new exchanges, since a recording's phone clock can't be reproduced.
 
 ## Swift (phone side)
 

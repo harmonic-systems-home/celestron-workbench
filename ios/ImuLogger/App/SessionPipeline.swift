@@ -1,5 +1,6 @@
 import Foundation
 import ImuLoggerCore
+import Synchronization
 
 /// Drains the acquisition buffer on its own queue: builds batches, writes the
 /// session log, sends to the Mac, and measures rates, drops and continuity.
@@ -39,6 +40,7 @@ final class SessionPipeline: @unchecked Sendable {
     private var discontinuities = 0
     private var logError: String?
     private var uplinkStatus: Uplink.Status?
+    private let published = Mutex(Snapshot())
 
     init(
         sessionId: String, deviceId: String, bufferCapacity: Int, log: SessionLog,
@@ -85,8 +87,16 @@ final class SessionPipeline: @unchecked Sendable {
         emit(message)
     }
 
+    /// Logs a completed clock exchange and sends it back to the Mac.
+    func clockResult(_ result: ClockResult) {
+        emit(.clockResult(result))
+    }
+
     func uplinkStatusChanged(_ status: Uplink.Status) {
-        queue.async { self.uplinkStatus = status }
+        queue.async {
+            self.uplinkStatus = status
+            self.publishSnapshot()
+        }
     }
 
     /// Stops draining after a final drain, then sends `bye` and closes the log.
@@ -103,27 +113,33 @@ final class SessionPipeline: @unchecked Sendable {
             write(.bye(bye))
             activeUplink?.finish(with: bye)
             do { try log.close() } catch { logError = "closing log: \(error)" }
+            publishSnapshot()
         }
     }
 
+    /// The state as of the last drain. Never waits for the pipeline queue,
+    /// which may be busy syncing the log to storage, so the UI stays smooth.
     func snapshot() -> Snapshot {
-        queue.sync {
-            let counters = buffer.counters
-            return Snapshot(
-                samples: counters.nextSeq, dropped: counters.dropped,
-                bufferHighWater: counters.highWater,
-                rates: Dictionary(
-                    uniqueKeysWithValues: sessionMeter.activeStreams.map {
-                        ($0, sessionMeter.summary(for: $0))
-                    }),
-                rotationFromStartRad: firstAttitude.flatMap { first in
-                    lastAttitude.flatMap { first.angle(to: $0) }
-                },
-                discontinuities: discontinuities, uplink: uplinkStatus, logError: logError)
-        }
+        published.withLock { $0 }
     }
 
     // MARK: - On queue
+
+    private func publishSnapshot() {
+        let counters = buffer.counters
+        let snapshot = Snapshot(
+            samples: counters.nextSeq, dropped: counters.dropped,
+            bufferHighWater: counters.highWater,
+            rates: Dictionary(
+                uniqueKeysWithValues: sessionMeter.activeStreams.map {
+                    ($0, sessionMeter.summary(for: $0))
+                }),
+            rotationFromStartRad: firstAttitude.flatMap { first in
+                lastAttitude.flatMap { first.angle(to: $0) }
+            },
+            discontinuities: discontinuities, uplink: uplinkStatus, logError: logError)
+        published.withLock { $0 = snapshot }
+    }
 
     private func drain() {
         let pressure = buffer.count
@@ -171,6 +187,7 @@ final class SessionPipeline: @unchecked Sendable {
         if Date().timeIntervalSince(lastRateReport) >= Self.rateReportInterval {
             reportRates()
         }
+        publishSnapshot()
     }
 
     private func reportDrops() {
