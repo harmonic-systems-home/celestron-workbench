@@ -372,9 +372,8 @@ fn document(a: &Analysis) -> Vec<Block> {
     d.push(List(vec![
         "Power spectral density.".into(),
         "Bootstrap confidence intervals across repeated trials.".into(),
-        "Indexed rotations against a fixture reference (scale, endpoint and cross-axis error)."
-            .into(),
-        "Attachment remove-and-replace and environment comparisons.".into(),
+        "Mount step sequences against commanded angles (with the test runner, ADR 0009).".into(),
+        "Attachment remove-and-replace on the scope.".into(),
     ]));
     d
 }

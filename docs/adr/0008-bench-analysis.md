@@ -1,6 +1,6 @@
 # ADR 0008: Bench analysis is deterministic, configured in TOML, and starts with stationary metrics
 
-**Status:** Accepted
+**Status:** Accepted. The fixture-based metrics it defers are dropped by [ADR 0009](0009-characterize-on-the-scope.md).
 
 ## Context
 
