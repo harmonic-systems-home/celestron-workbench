@@ -32,9 +32,24 @@ final class ReceiverBrowser {
             default:
                 problem = nil
             }
-            Task { @MainActor in self?.problem = problem }
+            Task { @MainActor in
+                self?.problem = problem
+                // A failed browser never recovers; start a new one shortly.
+                if case .failed = state {
+                    try? await Task.sleep(for: .seconds(2))
+                    self?.restart()
+                }
+            }
         }
         browser.start(queue: .main)
         self.browser = browser
+    }
+
+    /// Replaces the browser with a fresh one, keeping the current results
+    /// until the new browser reports.
+    func restart() {
+        browser?.cancel()
+        browser = nil
+        start()
     }
 }

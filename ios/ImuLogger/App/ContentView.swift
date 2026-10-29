@@ -155,6 +155,7 @@ private struct MarkerSection: View {
     var body: some View {
         Section {
             TextField("Marker label (optional)", text: $label)
+                .autocorrectionDisabled()
             Button {
                 recorder.addMarker(label: label)
                 label = ""

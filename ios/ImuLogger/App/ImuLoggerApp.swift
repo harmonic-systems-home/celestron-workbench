@@ -15,6 +15,8 @@ struct ImuLoggerApp: App {
         }
         .onChange(of: scenePhase) { _, phase in
             recorder.scenePhaseChanged(to: phase)
+            // A browser left running while suspended can stop reporting results.
+            if phase == .active { browser.restart() }
         }
     }
 }
