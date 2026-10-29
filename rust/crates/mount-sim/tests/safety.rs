@@ -167,7 +167,10 @@ fn an_ignored_stop_latches_and_keeps_telling_the_operator_to_cut_power() {
     // 0.5 s after the stop, before the 1.5 s stop deadline.
     assert_eq!(only_fault(&trace), FaultKind::UnexpectedMotion);
     let after_stop = trace.first_fault_ns().unwrap() - 1_500 * MS;
-    assert!(after_stop < 700 * MS, "caught {after_stop} ns after the stop");
+    assert!(
+        after_stop < 700 * MS,
+        "caught {after_stop} ns after the stop"
+    );
     assert_stopped_and_latched(&trace);
     // The software can't stop this mount: it keeps re-sending stops and alerting.
     assert!(!trace.is_still_at_end());
