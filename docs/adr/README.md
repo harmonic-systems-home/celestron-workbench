@@ -14,3 +14,4 @@ Each ADR records one decision, why it was made, and what it costs. To change a d
 | [0008](0008-bench-analysis.md) | Bench analysis is deterministic, configured in TOML, and starts with stationary metrics | Accepted |
 | [0009](0009-characterize-on-the-scope.md) | The phone is characterized on the scope, not on a bench fixture | Accepted |
 | [0010](0010-celestron-discovery.md) | Read-only Celestron discovery through the hand controller's serial port | Accepted |
+| [0011](0011-hand-controller-time-and-location.md) | Setting the hand controller's time and location | Accepted |

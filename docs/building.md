@@ -33,6 +33,7 @@ cargo test
 - **Analysis golden tests** (`crates/analysis/tests/golden.rs`): synthetic sessions with known answers (zero motion, bias and drift, known rotations, missing data, heading wrap, quaternion sign) and byte-identical reports.
 - **Mount safety suite** (`crates/mount-sim/tests/safety.rs`): every injected fault stops the simulated mount or latches with a cut-power alert, plus a randomized search over 1,000 fault combinations (ADR 0005). Run it alone with `cargo test -p cwb-mount-sim`.
 - **Celestron discovery** (`crates/celestron-discovery/tests/`): every sendable command is a documented read-only query (no motion, setters, location or time), replies decode as the protocol document's examples, and discovery against the simulated hand controller passes when healthy and fails or warns on a missing motor, silence, tracking on, another model or a moving mount (ADR 0010).
+- **Hand controller time and location** (`crates/celestron-setup/tests/`): set time and set location bytes match the documented layout, local time and daylight saving come from the time zone, coordinates round to whole arcseconds, read-back confirms or reports a drifting clock, a forgotten setting or silence, only `H`, `W`, `h` and `w` can be sent, and coordinates never appear in `Debug` or error text (ADR 0011).
 - **Framing**, **mount state machine** and **safety configuration** unit tests.
 
 ### The `cwb` command
@@ -99,17 +100,28 @@ A recorded log's clock results replay as recorded; only synthetic sessions run n
 
 ### Celestron discovery (read-only)
 
-Connect the NexStar+ hand controller's USB port to the Mac, power the mount, and let the hand controller finish starting up. Then:
+Connect the hand controller's USB port to the Mac, power the mount, and let the hand controller finish starting up. Then:
 
 ```sh
 cwb celestron ports                 # find the hand controller's /dev/cu.* device
 cwb celestron queries               # every byte discovery will send, with references; sends nothing
 cwb celestron discover --port /dev/cu.usbserial-XXXX \
-    --mount "NexStar Evolution" --hand-controller "NexStar+" \
+    --mount "NexStar Evolution" --hand-controller "StarSense" \
     --hand-controller-firmware "as shown on its display" --cable "USB mini-B"
 ```
 
 `discover` sends only documented read-only queries (ADR 0010) and writes `report.md`, `report.json` and `trace.ndjson` to a timestamped folder under `reports/discovery/` (git-ignored). It exits non-zero if any check fails. `--simulate` runs against the built-in simulated hand controller instead of hardware, to see the report without a mount. Reports redact USB serial numbers from device paths; review a report before sharing it anyway.
+
+### Hand controller time and location
+
+Copy `config/site.example.toml` to `config/site.local.toml` (git-ignored) and fill in your site. Leave the hand controller at its top-level screen, then:
+
+```sh
+cwb celestron setup --port /dev/cu.usbserial-XXXX     # time from this Mac, location from the site file
+cwb celestron setup --port /dev/cu.usbserial-XXXX --time-only
+```
+
+It checks the hand controller answers, shows what it will send (the site's name and hemispheres, never its coordinates), asks for confirmation, then sets each value and reads it back (ADR 0011). It exits non-zero unless every value is confirmed. `--site FILE` or `CWB_SITE` points at another site file; `--simulate` runs without hardware.
 
 ## Swift (phone side)
 

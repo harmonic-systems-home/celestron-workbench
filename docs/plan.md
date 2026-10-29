@@ -459,6 +459,8 @@ Design an ASIAIR adapter that starts with supported file and metadata import. Do
 
 - Prove the independent stop and keep the operator within reach. Begin disarmed and stationary.
 
+- Leave the hand controller at its top-level screen and keep hands off its four arrow keys during runs: they move the mount even while the computer is connected, and that motion faults the safety checks. Navigate menus with SCROLL 6 and 9 (ADR 0010).
+
 - Verify fresh IMU, valid clock model, live gap display, correct phone-to-mount transform, and stable pre-roll.
 
 - Run one axis and one short pulse. Review the recorded stop and observed direction before continuing.

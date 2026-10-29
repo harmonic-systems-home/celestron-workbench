@@ -1,6 +1,7 @@
 //! `cwb`: Celestron Workbench command-line tools.
 //!
-//! Nothing here can move a mount: `cwb celestron` sends only read-only queries.
+//! Nothing here can move a mount: `cwb celestron` sends only read-only
+//! queries, plus the hand controller's time and location with `setup`.
 
 use std::{
     fs::{self, File},
@@ -119,8 +120,8 @@ enum Command {
         #[arg(long)]
         device: Option<String>,
     },
-    /// Read-only Celestron hand controller discovery (plan Prompt 7). Sends
-    /// only documented non-motion queries.
+    /// Celestron hand controller tools: read-only discovery (plan Prompt 7)
+    /// and setting its time and location. Nothing here moves the mount.
     Celestron {
         #[command(subcommand)]
         command: CelestronCommand,
@@ -167,6 +168,28 @@ enum CelestronCommand {
         cable: Option<String>,
         #[arg(long)]
         notes: Option<String>,
+    },
+    /// Set the hand controller's time (from this Mac's clock) and location
+    /// (from the site file), then read each back to confirm. No motion.
+    Setup {
+        /// Serial device, e.g. /dev/cu.usbserial-… (see `cwb celestron ports`).
+        #[arg(long, required_unless_present = "simulate")]
+        port: Option<String>,
+        /// Use a simulated hand controller instead of hardware.
+        #[arg(long, conflicts_with = "port")]
+        simulate: bool,
+        /// Site file (git-ignored; template in config/site.example.toml).
+        #[arg(long, env = "CWB_SITE", default_value = "config/site.local.toml")]
+        site: PathBuf,
+        /// Set only the time; no site file needed unless it names the time zone.
+        #[arg(long, conflicts_with = "location_only")]
+        time_only: bool,
+        /// Set only the location.
+        #[arg(long)]
+        location_only: bool,
+        /// Don't ask for confirmation.
+        #[arg(long)]
+        yes: bool,
     },
 }
 
@@ -427,7 +450,144 @@ fn celestron(command: CelestronCommand) -> Result<ExitCode> {
                 ExitCode::FAILURE
             })
         }
+        CelestronCommand::Setup {
+            port,
+            simulate,
+            site,
+            time_only,
+            location_only,
+            yes,
+        } => {
+            let plan = SetupPlan::load(&site, !location_only, !time_only)?;
+            if simulate {
+                setup(cwb_celestron_setup::fake::FakeSetter::default(), &plan, yes)
+            } else {
+                let path = port.expect("clap requires --port without --simulate");
+                let link = SerialLink::open(&path).with_context(|| format!("opening {path}"))?;
+                setup(link, &plan, yes)
+            }
+        }
     }
+}
+
+/// What `cwb celestron setup` will send. The site's coordinates are never
+/// printed: only its name and hemispheres.
+struct SetupPlan {
+    time_zone: Option<jiff::tz::TimeZone>,
+    site: Option<(cwb_celestron_setup::Site, PathBuf)>,
+}
+
+impl SetupPlan {
+    fn load(path: &Path, time: bool, location: bool) -> Result<Self> {
+        let site = if location || path.exists() {
+            let text = fs::read_to_string(path).with_context(|| {
+                format!(
+                    "reading {}: copy config/site.example.toml there and fill it in, or pass --site",
+                    path.display()
+                )
+            })?;
+            Some(cwb_celestron_setup::Site::parse(&text)?)
+        } else {
+            None
+        };
+        let time_zone = if time {
+            Some(match site.as_ref().and_then(|s| s.time_zone.as_deref()) {
+                Some(name) => jiff::tz::TimeZone::get(name)
+                    .with_context(|| format!("time zone {name:?} in {}", path.display()))?,
+                None => jiff::tz::TimeZone::try_system().context("this Mac's time zone")?,
+            })
+        } else {
+            None
+        };
+        Ok(Self {
+            time_zone,
+            site: site.filter(|_| location).map(|s| (s, path.to_owned())),
+        })
+    }
+}
+
+fn setup(
+    mut link: impl cwb_celestron_discovery::Link,
+    plan: &SetupPlan,
+    yes: bool,
+) -> Result<ExitCode> {
+    use cwb_celestron_discovery::{HandController, Query, query::Value};
+    use cwb_celestron_setup::{HandTime, Location, ReadBack, apply};
+    use std::io::{IsTerminal, Write};
+
+    // Make sure something that speaks the protocol is there before changing it.
+    let mut hc = HandController::new(link);
+    let ok = matches!(hc.query(Query::Echo(b'x')).value, Some(Value::Echo(b'x')));
+    let model = hc.query(Query::Model).value.clone();
+    link = hc.into_parts().0;
+    if !ok {
+        anyhow::bail!(
+            "the hand controller didn't echo: check the port, cable and that it has finished starting up"
+        );
+    }
+    println!(
+        "hand controller answering; model {}",
+        model.map_or("unknown".into(), |m| m.to_string())
+    );
+
+    if let Some(tz) = &plan.time_zone {
+        let now = HandTime::at(jiff::Timestamp::now(), tz)?;
+        println!(
+            "will set time: this Mac's clock in {}, now {now}",
+            tz.iana_name().unwrap_or("this Mac's time zone")
+        );
+    }
+    if let Some((site, path)) = &plan.site {
+        println!(
+            "will set location: site {:?} from {} ({}; coordinates not shown)",
+            site.name.as_deref().unwrap_or("unnamed"),
+            path.display(),
+            site.hemispheres()
+        );
+    }
+    if !yes {
+        if !std::io::stdin().is_terminal() {
+            anyhow::bail!("no terminal to confirm on: pass --yes to proceed");
+        }
+        print!("Send to the hand controller? Leave it at its top-level screen. [y/N] ");
+        std::io::stdout().flush()?;
+        let mut answer = String::new();
+        std::io::stdin().read_line(&mut answer)?;
+        if !answer.trim().eq_ignore_ascii_case("y") {
+            println!("nothing sent");
+            return Ok(ExitCode::FAILURE);
+        }
+    }
+
+    let mut all = true;
+    let mut report = |what: &str, applied: apply::Applied| {
+        let text = match (&applied.read_back, applied.acknowledged) {
+            (Some(ReadBack::Matches), _) => "set and confirmed by read-back".to_owned(),
+            (Some(ReadBack::Differs(why)), _) => format!("set, but {why}"),
+            (Some(ReadBack::NotAnswered(o)), _) => {
+                format!("acknowledged, but the read-back went unanswered ({o:?})")
+            }
+            (None, o) => format!("not acknowledged ({o:?}): nothing confirmed"),
+        };
+        all &= applied.confirmed();
+        println!("{what:<9} {text}");
+    };
+    if let Some(tz) = &plan.time_zone {
+        std::thread::sleep(apply::until_next_second(jiff::Timestamp::now()));
+        let time = HandTime::at(jiff::Timestamp::now(), tz)?;
+        report("time", apply::set_time(&mut link, &time));
+    }
+    if let Some((site, _)) = &plan.site {
+        report(
+            "location",
+            apply::set_location(&mut link, &Location::of(site)),
+        );
+    }
+    Ok(if all {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    })
 }
 
 fn analyze(

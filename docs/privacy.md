@@ -16,7 +16,7 @@ This repository is public. The data this project produces is not.
 ## Where it lives instead
 
 - **Real data:** a separate private repo (`harmonic-systems-home/celestron-workbench-data`), or a local data folder outside this repo. Point the tools at it with a config file or environment variable. Never hard-code the path.
-- **Site and signing config:** git-ignored local files (`site.local.toml`, `Local.xcconfig`). Commit a `*.example` template with placeholder values beside each one.
+- **Site and signing config:** git-ignored local files (`config/site.local.toml`, `Local.xcconfig`). Commit a `*.example` template with placeholder values beside each one.
 - **Fixtures:** only synthetic sessions, or real sessions that went through the sanitizer.
 
 ## Sanitizer requirements (to build with the CLI)

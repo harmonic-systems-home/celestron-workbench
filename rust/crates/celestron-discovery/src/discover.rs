@@ -7,21 +7,11 @@ use cwb_mount_core::{MountIdentity, MountQueries, SafetyConfig, TransportError};
 use serde::Serialize;
 
 use crate::{
-    link::{Link, UsbInfo},
-    query::{self, Device, EVOLUTION_MODEL, Query, REPLY_TIMEOUT_MS, Value},
+    link::{self, Link, UsbInfo},
+    query::{self, Device, EVOLUTION_MODEL, Query, Value},
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Outcome {
-    Ok,
-    /// Pass-through reply with the extra byte: the device didn't answer.
-    DeviceNoResponse,
-    Timeout,
-    /// A terminated reply of the wrong length or content.
-    Malformed,
-    LinkError,
-}
+pub use crate::link::Outcome;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Exchange {
@@ -67,7 +57,8 @@ impl<L: Link> HandController<L> {
         let sent = q.bytes();
         let started = self.start.elapsed();
         let t0 = Instant::now();
-        let (mut outcome, received) = self.transact(q, &sent);
+        let (mut outcome, received) =
+            link::transact(&mut self.link, &sent, q.reply_len(), q.is_pass_through());
         let latency = t0.elapsed();
         let value = if outcome == Outcome::Ok {
             q.decode(&received[..q.reply_len()])
@@ -90,48 +81,6 @@ impl<L: Link> HandController<L> {
             kind: Some(q),
         });
         self.exchanges.last().expect("just pushed")
-    }
-
-    /// Reads exactly the documented payload, then the `#` terminator. A
-    /// pass-through reply with one extra byte before `#` means the device
-    /// didn't answer (the protocol's own error flag).
-    fn transact(&mut self, q: Query, sent: &[u8]) -> (Outcome, Vec<u8>) {
-        let deadline = Instant::now() + Duration::from_millis(REPLY_TIMEOUT_MS);
-        if self
-            .link
-            .discard_input()
-            .and_then(|()| self.link.write_all(sent))
-            .is_err()
-        {
-            return (Outcome::LinkError, Vec::new());
-        }
-        let n = q.reply_len();
-        let mut got = Vec::new();
-        loop {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            let byte = match self.link.read_byte(remaining) {
-                Ok(Some(b)) => b,
-                Ok(None) => return (Outcome::Timeout, got),
-                Err(_) => return (Outcome::LinkError, got),
-            };
-            got.push(byte);
-            if got.len() <= n {
-                continue;
-            }
-            if byte == b'#' {
-                let outcome = if got.len() == n + 1 {
-                    Outcome::Ok
-                } else if q.is_pass_through() && got.len() == n + 2 {
-                    Outcome::DeviceNoResponse
-                } else {
-                    Outcome::Malformed
-                };
-                return (outcome, got);
-            }
-            if got.len() > n + 16 {
-                return (Outcome::Malformed, got);
-            }
-        }
     }
 }
 

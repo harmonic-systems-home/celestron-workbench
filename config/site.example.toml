@@ -1,0 +1,17 @@
+# Observing site for `cwb celestron setup`.
+#
+# Copy this file to config/site.local.toml, which git ignores, and fill in
+# your site. Never commit real coordinates (docs/privacy.md). The values
+# below are placeholders, and the tool refuses them.
+
+# A label for you; it isn't sent.
+name = "Home"
+
+# Decimal degrees: north and east positive, south and west negative.
+# The hand controller stores whole arcseconds (about 30 m).
+latitude = 0.0
+longitude = 0.0
+
+# Optional IANA time zone name, e.g. "America/Denver". Without it the Mac's
+# time zone is used.
+# time_zone = "America/Denver"

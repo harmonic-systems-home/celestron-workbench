@@ -1,0 +1,19 @@
+[package]
+name = "cwb-celestron-setup"
+description = "Sets a Celestron hand controller's time and location; no motion"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+cwb-celestron-discovery.workspace = true
+jiff.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+toml.workspace = true
+
+[lints]
+workspace = true

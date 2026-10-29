@@ -2,9 +2,14 @@
 //! controller in [`crate::fake`]. Port listings never carry USB serial
 //! numbers, and [`redact_path`] removes them from device paths.
 
-use std::{io, time::Duration};
+use std::{
+    io,
+    time::{Duration, Instant},
+};
 
 use serde::Serialize;
+
+use crate::query::REPLY_TIMEOUT_MS;
 
 pub trait Link {
     fn write_all(&mut self, bytes: &[u8]) -> io::Result<()>;
@@ -12,6 +17,64 @@ pub trait Link {
     fn read_byte(&mut self, timeout: Duration) -> io::Result<Option<u8>>;
     /// Drops anything left from an earlier exchange.
     fn discard_input(&mut self) -> io::Result<()>;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Outcome {
+    Ok,
+    /// Pass-through reply with the extra byte: the device didn't answer.
+    DeviceNoResponse,
+    Timeout,
+    /// A terminated reply of the wrong length or content.
+    Malformed,
+    LinkError,
+}
+
+/// Sends one command and reads exactly `reply_len` payload bytes, then the
+/// `#` terminator. A pass-through reply with one extra byte before `#` means
+/// the device didn't answer (the protocol's own error flag).
+pub fn transact(
+    link: &mut impl Link,
+    sent: &[u8],
+    reply_len: usize,
+    pass_through: bool,
+) -> (Outcome, Vec<u8>) {
+    let deadline = Instant::now() + Duration::from_millis(REPLY_TIMEOUT_MS);
+    if link
+        .discard_input()
+        .and_then(|()| link.write_all(sent))
+        .is_err()
+    {
+        return (Outcome::LinkError, Vec::new());
+    }
+    let n = reply_len;
+    let mut got = Vec::new();
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let byte = match link.read_byte(remaining) {
+            Ok(Some(b)) => b,
+            Ok(None) => return (Outcome::Timeout, got),
+            Err(_) => return (Outcome::LinkError, got),
+        };
+        got.push(byte);
+        if got.len() <= n {
+            continue;
+        }
+        if byte == b'#' {
+            let outcome = if got.len() == n + 1 {
+                Outcome::Ok
+            } else if pass_through && got.len() == n + 2 {
+                Outcome::DeviceNoResponse
+            } else {
+                Outcome::Malformed
+            };
+            return (outcome, got);
+        }
+        if got.len() > n + 16 {
+            return (Outcome::Malformed, got);
+        }
+    }
 }
 
 /// The hand control's RS-232 settings: 9600 baud, 8 data bits, no parity, one stop bit.

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/protocol", "crates/storage", "crates/receiver", "crates/analysis", "crates/mount-core", "crates/mount-sim", "crates/celestron-discovery", "crates/cli"]
+members = ["crates/protocol", "crates/storage", "crates/receiver", "crates/analysis", "crates/mount-core", "crates/mount-sim", "crates/celestron-discovery", "crates/celestron-setup", "crates/cli"]
 
 [workspace.package]
 version = "0.1.0"
@@ -14,6 +14,7 @@ publish = false
 anyhow = "1.0.104"
 clap = { version = "4.6.7", features = ["derive", "env"] }
 crc32fast = "1.5.3"
+jiff = "0.2.32"
 jsonschema = { version = "0.60.2", default-features = false }
 rusqlite = { version = "0.41.1", features = ["bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }
@@ -36,6 +37,7 @@ cwb-analysis = { path = "crates/analysis" }
 cwb-mount-core = { path = "crates/mount-core" }
 cwb-mount-sim = { path = "crates/mount-sim" }
 cwb-celestron-discovery = { path = "crates/celestron-discovery" }
+cwb-celestron-setup = { path = "crates/celestron-setup" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

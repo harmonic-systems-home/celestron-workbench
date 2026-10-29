@@ -16,5 +16,5 @@ pub mod query;
 pub mod report;
 
 pub use discover::{Discovery, HandController, discover, summarize};
-pub use link::{Link, SerialLink, list_ports, redact_path};
+pub use link::{Link, Outcome, SerialLink, list_ports, redact_path, transact};
 pub use query::Query;
