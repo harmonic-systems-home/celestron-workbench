@@ -29,7 +29,10 @@ cargo test
 - **Migration tests** (`crates/storage/tests/migrations.rs`): every migration applies to an empty database; constraints, foreign keys and append-only triggers work; every file in `schemas/sql/` is registered.
 - **Repository tests** (`crates/storage/tests/ingest.rs`): sessions created and resumed, sequence gaps holding the acknowledgement until filled, resent and conflicting duplicates, refused batches, values stored bit-exactly with `NULL` for unavailable fields, `bye` and incomplete sessions, and an export → import round trip that reproduces the session byte for byte.
 - **Network tests** (`crates/receiver/tests/network.rs`): a synthetic phone streams to a real receiver on loopback through dropped connections, corrupted frames, malformed batches, a receiver restart mid-session, a second phone claiming the session, protocol errors, and a one-slot writer queue. Each test checks the stored session is complete.
-- **Framing** and **mount state machine** unit tests.
+- **Clock fit tests** (`crates/storage/tests/clockfit.rs`): offset and drift recovered through Wi-Fi-like delays, and a constant one-way delay staying inside the reported uncertainty. The network tests also check a live exchange over loopback.
+- **Analysis golden tests** (`crates/analysis/tests/golden.rs`): synthetic sessions with known answers (zero motion, bias and drift, known rotations, missing data, heading wrap, quaternion sign) and byte-identical reports.
+- **Mount safety suite** (`crates/mount-sim/tests/safety.rs`): every injected fault stops the simulated mount or latches with a cut-power alert, plus a randomized search over 1,000 fault combinations (ADR 0005). Run it alone with `cargo test -p cwb-mount-sim`.
+- **Framing**, **mount state machine** and **safety configuration** unit tests.
 
 ### The `cwb` command
 

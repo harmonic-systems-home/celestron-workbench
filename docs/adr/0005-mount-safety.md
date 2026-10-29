@@ -46,3 +46,25 @@ Code that can move real hardware lives only in `mount-celestron`, which does not
 
 - `mount-core` must stay free of I/O so the state machine can be tested exhaustively.
 - Hardware tests start with one axis, the lowest useful rate and the shortest practical pulse, with a spotter.
+
+## Implementation (plan Prompt 6)
+
+`mount-core` holds the [`Controller`](../../rust/crates/mount-core/src/controller.rs): pure, with every input stamped with Mac time and every output an action to carry out at once (send a command, alert the operator). `mount-sim` holds a deterministic two-axis mount and IMU with fault injection, and a harness that wires them together the way the hardware runner will. The safety suite is `cargo test -p cwb-mount-sim`.
+
+- **Inputs:** operator actions (connect, arm, disarm, move, stop, emergency stop, reset), mount acknowledgements, link loss, IMU observations already in mount-axis terms (azimuth and altitude rates, tube altitude, on the Mac clock), process shutdown, and a periodic tick for deadlines.
+- **A move request** names one axis, a direction, a rate and a duration. It is recorded first, then refused unless the session is armed, no command is active, the request ID is new (a duplicate is refused, never re-sent), the rate and duration are within the configuration, the IMU is fresh, the altitude is inside the envelope, and both axes are still. The duration is the command's lease: when it ends, the controller sends the stop.
+- **During motion** the controller latches a fault and sends `StopAll` on: no acknowledgement by the deadline; stale IMU; the commanded axis moving opposite to the command; moving faster than commanded (overspeed); the other axis moving; leaving the altitude envelope; no motion seen by the start deadline (stall); motion continuing past the stop deadline. Rates are averaged over a short window before every check.
+- **Completion** needs both axes still for a hold time. A command whose motion was never seen in the commanded direction ends as a stall fault, even if it was short: direction that can't be confirmed isn't trusted.
+- **While armed with no command**, any motion or a stale IMU latches a fault.
+- **While latched**, `StopAll` is re-sent at intervals until the IMU confirms both axes still. Each re-send tells the operator to cut mount power: because motion is seen, or because a silent IMU means the stop can't be confirmed. A failed re-send over a lost link does not stack further faults.
+- **Reset** is refused until the IMU is fresh and shows the mount still; it returns to read-only, and arming is a separate operator action.
+- **Configuration** ([`SafetyConfig`](../../rust/crates/mount-core/src/config.rs)) is checked before use. It refuses settings that blind an interlock: a minimum rate under twice the motion threshold (direction couldn't be confirmed), a start deadline longer than the longest lease, a still threshold at or above the motion threshold, an empty altitude envelope. Defaults: 0.3–1.0 °/s, at most 2 s per command, acknowledgement within 300 ms, motion seen within 1 s, still within 1.5 s of a stop, IMU at most 1 s old.
+
+**Proven in simulation:** delayed and missing acknowledgements, an ignored stop, opposite motion, stall, overspeed, a dropped link with the axes still turning, a silent IMU, a duplicate request, process shutdown, emergency stop, an external bump while armed, leaving the altitude envelope, refused requests, and manual re-arming. A randomized search over 1,000 fault combinations checks that every fault stops first, motion is only commanded when armed, commands never overlap and always reach a final stage, a stoppable mount always ends still, and an unstoppable one always gets the cut-power alert. That search found one gap, now fixed: an ignored stop with a silent IMU gave no alert.
+
+**Known limits for the hardware stage:**
+
+- The software cannot stop a mount that ignores stops or keeps turning after its link drops; it can only latch and keep alerting. The operator's power switch (layer 1) remains the real stop.
+- Rates below about 0.3 °/s can't be commanded, because the IMU can't confirm their direction quickly. Step-and-settle steps (ADR 0007) are therefore short pulses at 0.3 °/s or more, not slow creeps.
+- The IMU freshness limit (1 s) is close to the Wi-Fi delivery delays measured so far (99th percentile 0.93 s, worst 1.1 s, docs/assumptions.md N1). Expect false stale-IMU faults over Wi-Fi until the phone sends smaller, more frequent batches or the link improves; the limit is not to be raised to hide them.
+- Observations must be in mount-axis terms. Mapping the phone's attitude onto the azimuth and altitude axes belongs to the hardware runner (plan Prompt 8).

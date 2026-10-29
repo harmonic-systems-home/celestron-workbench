@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/protocol", "crates/storage", "crates/receiver", "crates/analysis", "crates/mount-core", "crates/cli"]
+members = ["crates/protocol", "crates/storage", "crates/receiver", "crates/analysis", "crates/mount-core", "crates/mount-sim", "crates/cli"]
 
 [workspace.package]
 version = "0.1.0"
@@ -33,6 +33,7 @@ cwb-storage = { path = "crates/storage" }
 cwb-receiver = { path = "crates/receiver" }
 cwb-analysis = { path = "crates/analysis" }
 cwb-mount-core = { path = "crates/mount-core" }
+cwb-mount-sim = { path = "crates/mount-sim" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
