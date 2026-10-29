@@ -16,6 +16,7 @@ path = "src/main.rs"
 anyhow.workspace = true
 clap.workspace = true
 cwb-analysis.workspace = true
+cwb-celestron-discovery.workspace = true
 cwb-protocol.workspace = true
 cwb-receiver.workspace = true
 cwb-storage.workspace = true

@@ -32,6 +32,7 @@ cargo test
 - **Clock fit tests** (`crates/storage/tests/clockfit.rs`): offset and drift recovered through Wi-Fi-like delays, and a constant one-way delay staying inside the reported uncertainty. The network tests also check a live exchange over loopback.
 - **Analysis golden tests** (`crates/analysis/tests/golden.rs`): synthetic sessions with known answers (zero motion, bias and drift, known rotations, missing data, heading wrap, quaternion sign) and byte-identical reports.
 - **Mount safety suite** (`crates/mount-sim/tests/safety.rs`): every injected fault stops the simulated mount or latches with a cut-power alert, plus a randomized search over 1,000 fault combinations (ADR 0005). Run it alone with `cargo test -p cwb-mount-sim`.
+- **Celestron discovery** (`crates/celestron-discovery/tests/`): every sendable command is a documented read-only query (no motion, setters, location or time), replies decode as the protocol document's examples, and discovery against the simulated hand controller passes when healthy and fails or warns on a missing motor, silence, tracking on, another model or a moving mount (ADR 0010).
 - **Framing**, **mount state machine** and **safety configuration** unit tests.
 
 ### The `cwb` command
@@ -95,6 +96,20 @@ cwb replay --synthetic 60 --clock-interval 1                       # with clock 
 ```
 
 A recorded log's clock results replay as recorded; only synthetic sessions run new exchanges, since a recording's phone clock can't be reproduced.
+
+### Celestron discovery (read-only)
+
+Connect the NexStar+ hand controller's USB port to the Mac, power the mount, and let the hand controller finish starting up. Then:
+
+```sh
+cwb celestron ports                 # find the hand controller's /dev/cu.* device
+cwb celestron queries               # every byte discovery will send, with references; sends nothing
+cwb celestron discover --port /dev/cu.usbserial-XXXX \
+    --mount "NexStar Evolution" --hand-controller "NexStar+" \
+    --hand-controller-firmware "as shown on its display" --cable "USB mini-B"
+```
+
+`discover` sends only documented read-only queries (ADR 0010) and writes `report.md`, `report.json` and `trace.ndjson` to a timestamped folder under `reports/discovery/` (git-ignored). It exits non-zero if any check fails. `--simulate` runs against the built-in simulated hand controller instead of hardware, to see the report without a mount. Reports redact USB serial numbers from device paths; review a report before sharing it anyway.
 
 ## Swift (phone side)
 

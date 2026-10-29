@@ -1,6 +1,6 @@
 //! `cwb`: Celestron Workbench command-line tools.
 //!
-//! Nothing here can move a mount.
+//! Nothing here can move a mount: `cwb celestron` sends only read-only queries.
 
 use std::{
     fs::{self, File},
@@ -119,8 +119,55 @@ enum Command {
         #[arg(long)]
         device: Option<String>,
     },
+    /// Read-only Celestron hand controller discovery (plan Prompt 7). Sends
+    /// only documented non-motion queries.
+    Celestron {
+        #[command(subcommand)]
+        command: CelestronCommand,
+    },
     /// Print the software, protocol and database schema versions.
     Versions,
+}
+
+#[derive(Subcommand)]
+enum CelestronCommand {
+    /// List serial ports, USB ones first. Sends nothing.
+    Ports,
+    /// Print every byte sequence `discover` would send, with its reference. Sends nothing.
+    Queries {
+        #[arg(long, default_value_t = 20)]
+        repeats: usize,
+    },
+    /// Query the hand controller and write a compatibility report folder
+    /// (report.md, report.json, trace.ndjson).
+    Discover {
+        /// Serial device, e.g. /dev/cu.usbserial-… (see `cwb celestron ports`).
+        #[arg(long, required_unless_present = "simulate")]
+        port: Option<String>,
+        /// Use the built-in simulated hand controller instead of hardware.
+        #[arg(long, conflicts_with = "port")]
+        simulate: bool,
+        /// Position-and-echo pairs to time after identification.
+        #[arg(long, default_value_t = 20)]
+        repeats: usize,
+        /// Parent folder; the report goes in a timestamped folder inside.
+        #[arg(long, short, default_value = "reports/discovery")]
+        out: PathBuf,
+        /// Mount, as you know it (the protocol reports only a model code).
+        #[arg(long)]
+        mount: Option<String>,
+        /// Hand controller, e.g. "NexStar+".
+        #[arg(long)]
+        hand_controller: Option<String>,
+        /// Hand controller firmware as its display shows it.
+        #[arg(long)]
+        hand_controller_firmware: Option<String>,
+        /// Cable or adapter used.
+        #[arg(long)]
+        cable: Option<String>,
+        #[arg(long)]
+        notes: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -262,11 +309,123 @@ fn main() -> Result<ExitCode> {
             out,
             device,
         } => analyze(&db.db, &session, config.as_deref(), out, device.as_deref()),
+        Command::Celestron { command } => celestron(command),
         Command::Versions => {
             println!("cwb {}", env!("CARGO_PKG_VERSION"));
             println!("protocol {}", cwb_protocol::PROTOCOL_VERSION);
             println!("database schema {}", cwb_storage::SCHEMA_VERSION);
             Ok(ExitCode::SUCCESS)
+        }
+    }
+}
+
+fn celestron(command: CelestronCommand) -> Result<ExitCode> {
+    use cwb_celestron_discovery::{
+        HandController, SerialLink,
+        discover::{Connection, OperatorInfo},
+        fake::{FakeHandController, FakeSetup},
+        list_ports, query, redact_path, report, summarize,
+    };
+
+    match command {
+        CelestronCommand::Ports => {
+            let ports = list_ports().context("listing serial ports")?;
+            if ports.is_empty() {
+                println!("no serial ports found");
+            }
+            for p in ports {
+                match p.usb {
+                    Some(u) => println!("{}  {}", p.path, u.describe()),
+                    None => println!("{}", p.path),
+                }
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        CelestronCommand::Queries { repeats } => {
+            println!(
+                "Sent in this order at {} baud, 8N1; each reply ends with '#'.",
+                cwb_celestron_discovery::link::BAUD
+            );
+            for (i, q) in query::plan(repeats).into_iter().enumerate() {
+                println!(
+                    "{i:>3}  {:<26} {:<24}  since {}.{}  {}",
+                    q.to_string(),
+                    cwb_celestron_discovery::discover::hex(&q.bytes()),
+                    q.since_version().0,
+                    q.since_version().1,
+                    q.reference()
+                );
+            }
+            println!(
+                "Reference: {}\n  {}",
+                query::REFERENCE,
+                query::REFERENCE_URL
+            );
+            Ok(ExitCode::SUCCESS)
+        }
+        CelestronCommand::Discover {
+            port,
+            simulate,
+            repeats,
+            out,
+            mount,
+            hand_controller,
+            hand_controller_firmware,
+            cable,
+            notes,
+        } => {
+            let operator = OperatorInfo {
+                mount,
+                hand_controller,
+                hand_controller_firmware,
+                cable,
+                notes,
+            };
+            let settings = format!("{} baud, 8N1", cwb_celestron_discovery::link::BAUD);
+            let (exchanges, connection) = if simulate {
+                let mut hc = HandController::new(FakeHandController::new(FakeSetup::default()));
+                cwb_celestron_discovery::discover(&mut hc, repeats);
+                let connection = Connection {
+                    port: "simulated".into(),
+                    usb: None,
+                    settings,
+                };
+                (hc.into_parts().1, connection)
+            } else {
+                let path = port.expect("clap requires --port without --simulate");
+                let usb = list_ports()
+                    .ok()
+                    .and_then(|ports| ports.into_iter().find(|p| p.path == path))
+                    .and_then(|p| p.usb);
+                let link = SerialLink::open(&path).with_context(|| format!("opening {path}"))?;
+                eprintln!("querying {path} (read-only)…");
+                let mut hc = HandController::new(link);
+                cwb_celestron_discovery::discover(&mut hc, repeats);
+                let connection = Connection {
+                    port: redact_path(&path),
+                    usb,
+                    settings,
+                };
+                (hc.into_parts().1, connection)
+            };
+            let generated = cwb_storage::clock::utc_now();
+            let dir = out.join(generated.replace(':', "-"));
+            let d = summarize(exchanges, simulate, generated, operator, connection);
+            report::write(&d, &dir).with_context(|| format!("writing {}", dir.display()))?;
+            for c in &d.checks {
+                println!(
+                    "{:<24} {:<5} {}",
+                    c.name,
+                    format!("{:?}", c.status).to_lowercase(),
+                    c.detail
+                );
+            }
+            println!("\nreport: {}", dir.join("report.md").display());
+            Ok(if d.ready() {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            })
         }
     }
 }
