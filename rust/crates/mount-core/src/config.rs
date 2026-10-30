@@ -53,6 +53,27 @@ pub struct SafetyConfig {
     /// travel is integrated from IMU rates, so gyro bias accumulates too:
     /// disarm during long holds.
     pub travel_tolerance_deg: f64,
+    /// Gotos (ADR 0014). Longest distance per leg. Until a stop has been
+    /// shown to end a goto on the mount, keep this to about 1 s of travel at
+    /// the slow speed, so a goto the stop can't end still ends on its own.
+    pub max_goto_deg: f64,
+    /// Overspeed for a goto: observed rate above this × (1 +
+    /// `overspeed_fraction`) + `motion_deg_s`.
+    pub max_goto_rate_deg_s: f64,
+    /// A goto must finish within distance / this + `goto_settle_ms` of
+    /// leaving, or it times out.
+    pub min_goto_rate_deg_s: f64,
+    pub goto_settle_ms: u64,
+    /// Fast gotos stay refused until their speed has been measured and
+    /// `max_goto_rate_deg_s` set from it.
+    pub allow_fast_goto: bool,
+    /// How far past the target the approach flag's first leg goes. It must
+    /// exceed the gear backlash. Within this distance of a leg's target,
+    /// a servo's brief reversal isn't opposite motion; further past the
+    /// target than this is an overshoot fault.
+    pub approach_margin_deg: f64,
+    /// A goto that settles further than this from its target missed it.
+    pub goto_tolerance_deg: f64,
 }
 
 impl Default for SafetyConfig {
@@ -78,6 +99,13 @@ impl Default for SafetyConfig {
             verify_travel_deg: 1.0,
             min_observed_fraction: 0.5,
             travel_tolerance_deg: 0.25,
+            max_goto_deg: 0.05,
+            max_goto_rate_deg_s: 1.0,
+            min_goto_rate_deg_s: 0.05,
+            goto_settle_ms: 2_000,
+            allow_fast_goto: false,
+            approach_margin_deg: 0.15,
+            goto_tolerance_deg: 0.01,
         }
     }
 }
@@ -93,6 +121,11 @@ impl SafetyConfig {
             ("still_deg_s", self.still_deg_s),
             ("verify_travel_deg", self.verify_travel_deg),
             ("travel_tolerance_deg", self.travel_tolerance_deg),
+            ("max_goto_deg", self.max_goto_deg),
+            ("max_goto_rate_deg_s", self.max_goto_rate_deg_s),
+            ("min_goto_rate_deg_s", self.min_goto_rate_deg_s),
+            ("approach_margin_deg", self.approach_margin_deg),
+            ("goto_tolerance_deg", self.goto_tolerance_deg),
         ];
         for (name, v) in positive {
             if !(v.is_finite() && v > 0.0) {
@@ -107,6 +140,7 @@ impl SafetyConfig {
             ("imu_max_age_ms", self.imu_max_age_ms),
             ("smoothing_ms", self.smoothing_ms),
             ("stop_resend_ms", self.stop_resend_ms),
+            ("goto_settle_ms", self.goto_settle_ms),
         ] {
             if v == 0 {
                 p.push(format!("{name} must be positive"));
@@ -120,6 +154,12 @@ impl SafetyConfig {
         }
         if self.still_deg_s >= self.motion_deg_s {
             p.push("still_deg_s must be below motion_deg_s".into());
+        }
+        if self.min_goto_rate_deg_s > self.max_goto_rate_deg_s {
+            p.push("min_goto_rate_deg_s exceeds max_goto_rate_deg_s".into());
+        }
+        if self.goto_tolerance_deg >= self.approach_margin_deg {
+            p.push("goto_tolerance_deg must be below approach_margin_deg".into());
         }
         if self.min_altitude_deg >= self.max_altitude_deg {
             p.push("altitude envelope is empty".into());

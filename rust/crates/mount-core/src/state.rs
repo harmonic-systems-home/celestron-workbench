@@ -52,6 +52,10 @@ pub enum FaultKind {
     Stall,
     /// The commanded axis turned faster than commanded.
     Overspeed,
+    /// A goto went further past its target than the approach margin.
+    Overshoot,
+    /// A goto settled further from its target than the tolerance.
+    MissedTarget,
     /// Motion continued past the stop deadline.
     StopNotObserved,
     LimitBreach,

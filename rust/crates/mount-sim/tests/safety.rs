@@ -4,7 +4,8 @@
 //! until this suite passes.
 
 use cwb_mount_core::{
-    Action, Axis, Direction, FaultKind, MountCommand, MountState, MoveRequest, Stage,
+    Action, Axis, Direction, FaultKind, GotoRequest, GotoSpeed, MountCommand, MountState,
+    MoveRequest, SafetyConfig, Stage,
 };
 use cwb_mount_sim::{
     SimFaults,
@@ -766,6 +767,14 @@ fn safety_invariants_hold_across_random_fault_combinations() {
             bump: rng
                 .chance(10)
                 .then(|| (Axis::Altitude, 0.4, 1_000 + rng.next() % 2_000, 3_500)),
+            goto_overshoot_deg: if rng.chance(15) {
+                [0.01, 0.1, 0.3][rng.next() as usize % 3]
+            } else {
+                0.0
+            },
+            goto_short_deg: if rng.chance(10) { 0.02 } else { 0.0 },
+            stop_ignores_goto: rng.chance(15),
+            ..SimFaults::default()
         };
         let mut script = vec![(100, Op::Connect), (300, Op::Arm)];
         let mut t = 400;
@@ -776,6 +785,25 @@ fn safety_invariants_hold_across_random_fault_combinations() {
                 1 => Op::Reset,
                 2 => Op::Arm,
                 3 if rng.chance(30) => Op::EmergencyStop,
+                4..=6 => Op::Goto(GotoRequest {
+                    request_id: format!("r{}", if rng.chance(10) { 0 } else { i }),
+                    axis: if rng.chance(50) {
+                        Axis::Azimuth
+                    } else {
+                        Axis::Altitude
+                    },
+                    delta_deg: (rng.next() % 2_001) as f64 / 1_000.0 - 1.0,
+                    speed: if rng.chance(50) {
+                        GotoSpeed::Slow
+                    } else {
+                        GotoSpeed::Fast
+                    },
+                    approach: match rng.next() % 3 {
+                        0 => Some(Direction::Positive),
+                        1 => Some(Direction::Negative),
+                        _ => None,
+                    },
+                }),
                 _ => Op::Move(request(
                     &format!("r{}", if rng.chance(10) { 0 } else { i }),
                     if rng.chance(50) {
@@ -799,12 +827,20 @@ fn safety_invariants_hold_across_random_fault_combinations() {
             script.push((t, op));
         }
         let scenario = Scenario {
+            // Gotos up to 1.5°, fast ones allowed: room for every fault.
+            config: SafetyConfig {
+                max_goto_deg: 1.5,
+                allow_fast_goto: true,
+                ..SafetyConfig::default()
+            },
             faults: faults.clone(),
             script,
             // Long enough for the travel check to catch the slowest random
             // move (0.02 °/s, below the IMU's motion threshold) left
             // running by an ignored stop: 0.25° beyond commanded takes 12.5 s.
-            run_ms: t + 15_000,
+            // And for the longest goto leg's deadline: 1.15° at 0.05 °/s
+            // plus 2 s.
+            run_ms: t + 26_000,
             seed,
             ..Scenario::default()
         };
@@ -819,11 +855,24 @@ fn safety_invariants_hold_across_random_fault_combinations() {
                 "{ctx}: fault at {at} did not stop first"
             );
         }
-        // 2. Motion is only ever commanded from the armed state.
+        // 2. Motion is only ever commanded from the armed state, except a
+        //    goto's approach leg, sent while its own goto is under way.
+        let mut last_goto = None;
         for (at, command) in &trace.sent {
-            if matches!(command, MountCommand::Move { .. }) {
-                let before = trace.states.iter().rev().find(|(t, _)| t < at).map(|s| s.1);
-                assert_eq!(before, Some(MountState::Armed), "{ctx}: move at {at}");
+            let before = trace.states.iter().rev().find(|(t, _)| t < at).map(|s| s.1);
+            match command {
+                MountCommand::Move { .. } => {
+                    assert_eq!(before, Some(MountState::Armed), "{ctx}: move at {at}");
+                }
+                MountCommand::Goto { id, .. } => {
+                    let leg = before == Some(MountState::Moving) && last_goto == Some(*id);
+                    assert!(
+                        before == Some(MountState::Armed) || leg,
+                        "{ctx}: goto at {at} from {before:?}"
+                    );
+                    last_goto = Some(*id);
+                }
+                _ => {}
             }
         }
         // 3. One command at a time, and every command reaches a final stage.

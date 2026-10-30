@@ -20,6 +20,13 @@
 //! Observed travel is integrated continuously while armed or latched, so
 //! motion too slow for the rate checks (a slow move whose stop was ignored)
 //! is caught once it exceeds the commanded travel by `travel_tolerance_deg`.
+//!
+//! A goto (ADR 0014) has no lease: it ends when the axis's goto-finished
+//! flag is set and two position readings in a row agree on the target, and
+//! the controller then sends the same stop as for a move. The IMU checks still
+//! apply, with the goto rate cap for overspeed and a reversal allowed near
+//! the target; the axis positions add an overshoot check, a deadline per
+//! leg and a check that the axis settled on its target.
 
 use std::collections::{HashSet, VecDeque};
 
@@ -29,8 +36,9 @@ use thiserror::Error;
 use crate::{
     FaultKind, MountEvent, MountState, SafetyConfig,
     command::{
-        Axis, CommandId, CommandRecord, Direction, MountCommand, MoveRequest, Nanos, Observation,
-        Stage,
+        Axis, CommandId, CommandRecord, Direction, GotoOutcome, GotoRequest, GotoSpeed,
+        MountCommand, MoveRequest, Nanos, Observation, Request, Stage, deg_to_units, units_between,
+        units_to_deg, wrap_units,
     },
     transition,
 };
@@ -80,6 +88,74 @@ struct Active {
     cancelled: bool,
     /// The axis tally's observed travel when the command was transmitted.
     observed_at_start: f64,
+    /// Set for a goto; `direction` is then its current leg's.
+    goto: Option<GotoRun>,
+}
+
+/// A goto in progress. Positions are axis units.
+#[derive(Debug, Clone)]
+struct GotoRun {
+    speed: GotoSpeed,
+    start: u32,
+    target: u32,
+    legs: Vec<u32>,
+    /// Index of the leg being run.
+    leg: usize,
+    /// Where the current leg was planned to start from.
+    leg_start: u32,
+    /// Newest position and goto-finished flag read since the current leg left.
+    position: Option<(Nanos, u32)>,
+    done: Option<bool>,
+    /// When the position last changed (by more than a unit), and to what.
+    steady: Option<(Nanos, u32)>,
+    overshoot: i64,
+    crossings: u32,
+    /// Which side of the target the last differing reading was on.
+    side: i64,
+    /// When the last leg settled.
+    settled: Option<Nanos>,
+    at_stop: Option<u32>,
+}
+
+impl GotoRun {
+    fn leg_target(&self) -> u32 {
+        self.legs[self.leg]
+    }
+
+    fn last_leg(&self) -> bool {
+        self.leg + 1 == self.legs.len()
+    }
+
+    fn leg_sign(&self) -> i64 {
+        units_between(self.leg_start, self.leg_target()).signum()
+    }
+
+    /// The planned leg target furthest from the start, signed, in degrees.
+    fn reach_deg(&self) -> f64 {
+        self.legs
+            .iter()
+            .map(|l| units_between(self.start, *l))
+            .max_by_key(|d| d.abs())
+            .map_or(0.0, units_to_deg)
+    }
+
+    fn outcome(&self, settled_from: Option<Nanos>) -> GotoOutcome {
+        let last = self.position.map(|p| p.1);
+        GotoOutcome {
+            start: self.start,
+            target: self.target,
+            legs: self.legs.clone(),
+            at_stop: self.at_stop,
+            last,
+            error_units: last.map(|l| units_between(self.target, l)),
+            overshoot_units: self.overshoot,
+            crossings: self.crossings,
+            settle_ms: self
+                .settled
+                .zip(settled_from)
+                .map(|(s, from)| (s - from) as f64 / MS as f64),
+        }
+    }
 }
 
 /// Net signed travel on one axis since the IMU last confirmed it: commanded
@@ -295,22 +371,10 @@ impl Controller {
         request: MoveRequest,
         now: Nanos,
     ) -> Result<Vec<Action>, Refused> {
-        let mut record = CommandRecord {
-            command_id: None,
-            request: request.clone(),
-            stages: vec![(Stage::Requested, now)],
-            reason: None,
-            fault: None,
-            commanded_deg: None,
-            observed_deg: None,
-        };
-        let c = &self.config;
-        let refusal = if !self.request_ids.insert(request.request_id.clone()) {
-            Some("duplicate request ID; not re-sent".to_string())
-        } else if self.state != MountState::Armed {
-            Some(format!("not armed (state {:?})", self.state))
-        } else if self.active.is_some() {
-            Some("another command is active".into())
+        let mut record = new_record(Request::Move(request.clone()), now);
+        let c = self.config.clone();
+        let refusal = if let Some(why) = self.refuse_any(&request.request_id) {
+            Some(why)
         } else if !(request.rate_deg_s.is_finite()
             && request.rate_deg_s >= c.min_rate_deg_s
             && request.rate_deg_s <= c.max_rate_deg_s)
@@ -324,20 +388,11 @@ impl Controller {
                 "duration {} ms is outside 1–{} ms",
                 request.duration_ms, c.max_duration_ms
             ))
-        } else if !self.fresh(now) {
-            Some("IMU data is stale".into())
-        } else if !self.in_envelope() {
-            Some("altitude is outside the envelope".into())
-        } else if !self.still(self.config.still_deg_s) {
-            Some("the mount is not still".into())
         } else {
-            None
+            self.refuse_now(now)
         };
         if let Some(reason) = refusal {
-            record.stages.push((Stage::Rejected, now));
-            record.reason = Some(reason.clone());
-            self.records.push(record);
-            return Err(Refused(reason));
+            return Err(self.reject(record, reason, now));
         }
 
         let id = self.next_id;
@@ -360,6 +415,7 @@ impl Controller {
             stop_sent: None,
             cancelled: false,
             observed_at_start: self.tally[request.axis.index()].observed_deg,
+            goto: None,
         });
         self.still_since = None;
         self.go(MountEvent::MotionCommandSent);
@@ -369,6 +425,160 @@ impl Controller {
             direction: request.direction,
             rate_deg_s: request.rate_deg_s,
         })])
+    }
+
+    /// Checks every interlock for a goto from `start`, the axis's own
+    /// position (axis units) read since it last moved; on success returns
+    /// the first leg's command. Every request is recorded, refused or not.
+    pub fn request_goto(
+        &mut self,
+        request: GotoRequest,
+        start: u32,
+        now: Nanos,
+    ) -> Result<Vec<Action>, Refused> {
+        let mut record = new_record(Request::Goto(request.clone()), now);
+        let c = self.config.clone();
+        let delta = deg_to_units(request.delta_deg);
+        let margin = deg_to_units(c.approach_margin_deg);
+        let target = wrap_units(i64::from(start) + delta);
+        // With the approach flag, a goto heading the wrong way first goes
+        // the margin past the target.
+        let legs: Vec<u32> = match request.approach {
+            Some(way) if delta.signum() != way.sign() as i64 => vec![
+                wrap_units(i64::from(target) - way.sign() as i64 * margin),
+                target,
+            ],
+            _ => vec![target],
+        };
+        let mut from = start;
+        let mut longest = 0;
+        let mut offsets = Vec::new();
+        for leg in &legs {
+            longest = longest.max(units_between(from, *leg).abs());
+            offsets.push(units_to_deg(units_between(start, *leg)));
+            from = *leg;
+        }
+        let altitude = self.window.back().map(|o| o.altitude_deg);
+        let refusal = if let Some(why) = self.refuse_any(&request.request_id) {
+            Some(why)
+        } else if !request.delta_deg.is_finite() || delta == 0 {
+            Some(format!(
+                "goto of {}° is less than one position unit",
+                request.delta_deg
+            ))
+        } else if units_to_deg(longest) > c.max_goto_deg {
+            Some(format!(
+                "a goto leg of {:.4}° exceeds max_goto_deg {}°",
+                units_to_deg(longest),
+                c.max_goto_deg
+            ))
+        } else if request.speed == GotoSpeed::Fast && !c.allow_fast_goto {
+            Some("fast gotos are off until their speed is measured (allow_fast_goto)".into())
+        } else if request.axis == Axis::Altitude
+            && let Some(alt) = altitude
+            && offsets
+                .iter()
+                .any(|d| alt + d < c.min_altitude_deg || alt + d > c.max_altitude_deg)
+        {
+            Some("the goto would take the altitude outside the envelope".into())
+        } else {
+            self.refuse_now(now)
+        };
+        if let Some(reason) = refusal {
+            return Err(self.reject(record, reason, now));
+        }
+
+        let id = self.next_id;
+        self.next_id += 1;
+        record.command_id = Some(id);
+        record.stages.push((Stage::Transmitted, now));
+        self.records.push(record);
+        let run = GotoRun {
+            speed: request.speed,
+            start,
+            target,
+            legs,
+            leg: 0,
+            leg_start: start,
+            position: None,
+            done: None,
+            steady: None,
+            overshoot: 0,
+            crossings: 0,
+            side: 0,
+            settled: None,
+            at_stop: None,
+        };
+        let command = MountCommand::Goto {
+            id,
+            axis: request.axis,
+            target: run.leg_target(),
+            speed: run.speed,
+        };
+        self.active = Some(Active {
+            record: self.records.len() - 1,
+            id,
+            axis: request.axis,
+            direction: direction_of(run.leg_sign()),
+            rate_deg_s: c.max_goto_rate_deg_s,
+            requested: now,
+            sent: None,
+            transmitted: now,
+            acked: None,
+            duration: 0,
+            lease_end: Nanos::MAX,
+            stop_sent: None,
+            cancelled: false,
+            observed_at_start: self.tally[request.axis.index()].observed_deg,
+            goto: Some(run),
+        });
+        self.still_since = None;
+        self.go(MountEvent::MotionCommandSent);
+        Ok(vec![Action::Send(command)])
+    }
+
+    /// The axis's own position, read at `t_ns` while a goto runs or stops.
+    /// Readings from before the current leg left are ignored.
+    pub fn position(&mut self, axis: Axis, t_ns: Nanos, units: u32, now: Nanos) -> Vec<Action> {
+        if let Some(a) = &mut self.active
+            && a.axis == axis
+            && let Some(sent) = a.sent
+            && t_ns >= sent
+            && let Some(g) = &mut a.goto
+        {
+            g.position = Some((t_ns, units));
+            if !g
+                .steady
+                .is_some_and(|(_, u)| units_between(u, units).abs() <= 1)
+            {
+                g.steady = Some((t_ns, units));
+            }
+            if g.last_leg() {
+                let off = units_between(g.target, units);
+                g.overshoot = g.overshoot.max(off * g.leg_sign());
+                let side = off.signum();
+                if side != 0 {
+                    if g.side != 0 && side != g.side {
+                        g.crossings += 1;
+                    }
+                    g.side = side;
+                }
+            }
+        }
+        self.evaluate(now)
+    }
+
+    /// The axis's goto-finished flag, read at `t_ns`.
+    pub fn slew_done(&mut self, axis: Axis, t_ns: Nanos, done: bool, now: Nanos) -> Vec<Action> {
+        if let Some(a) = &mut self.active
+            && a.axis == axis
+            && let Some(sent) = a.sent
+            && t_ns >= sent
+            && let Some(g) = &mut a.goto
+        {
+            g.done = Some(done);
+        }
+        self.evaluate(now)
     }
 
     /// A command left for the mount at `sent_ns`. The lease restarts from
@@ -381,12 +591,18 @@ impl Controller {
         {
             let at = sent_ns.clamp(a.requested, now);
             a.sent = Some(at);
-            a.transmitted = at;
-            a.lease_end = at + a.duration;
-            for stage in &mut self.records[a.record].stages {
-                if stage.0 == Stage::Transmitted {
-                    stage.1 = at;
-                }
+            if a.goto.is_none() {
+                a.transmitted = at;
+                a.lease_end = at + a.duration;
+            }
+            // The latest leg's transmission.
+            if let Some(stage) = self.records[a.record]
+                .stages
+                .iter_mut()
+                .rev()
+                .find(|s| s.0 == Stage::Transmitted)
+            {
+                stage.1 = at;
             }
         }
         Vec::new()
@@ -512,7 +728,13 @@ impl Controller {
         }
         let rate = self.smoothed(a.axis).unwrap_or(0.0);
         let signed = rate * a.direction.sign();
-        if signed < -c.motion_deg_s {
+        // A servo may reverse briefly as it settles near a goto's target.
+        let near_target = a.goto.as_ref().is_some_and(|g| {
+            g.position.is_some_and(|(_, p)| {
+                units_to_deg(units_between(g.leg_target(), p).abs()) <= c.approach_margin_deg
+            })
+        });
+        if signed < -c.motion_deg_s && !near_target {
             return self.fault(
                 FaultKind::OppositeMotion,
                 now,
@@ -549,6 +771,7 @@ impl Controller {
         }
 
         match self.state {
+            MountState::Moving if a.goto.is_some() => self.check_goto(now),
             MountState::Moving => {
                 // The lease runs only once the move has left; until then
                 // the send deadline applies.
@@ -577,6 +800,95 @@ impl Controller {
                 Vec::new()
             }
         }
+    }
+
+    /// A goto's own checks, from the axis's positions: its deadline, an
+    /// overshoot or a wrong-way run beyond the margin, and whether the leg
+    /// has finished. A finished leg sends the next, or ends the goto with a
+    /// stop.
+    fn check_goto(&mut self, now: Nanos) -> Vec<Action> {
+        let c = self.config.clone();
+        let still = self.still(c.still_deg_s);
+        let Some(a) = self.active.as_mut() else {
+            return Vec::new();
+        };
+        let (Some(sent), Some(g)) = (a.sent, a.goto.as_mut()) else {
+            return Vec::new();
+        };
+        let margin = deg_to_units(c.approach_margin_deg);
+        let distance = units_to_deg(units_between(g.leg_start, g.leg_target()).abs());
+        let allowed =
+            (distance / c.min_goto_rate_deg_s * 1e9) as Nanos + c.goto_settle_ms as Nanos * MS;
+        if now - sent > allowed {
+            let detail = format!(
+                "the goto didn't finish within {:.1} s",
+                allowed as f64 / 1e9
+            );
+            return self.fault(FaultKind::CommandTimeout, now, &detail);
+        }
+        let Some((t, p)) = g.position else {
+            return Vec::new();
+        };
+        let past = units_between(g.leg_target(), p) * g.leg_sign();
+        if past > margin {
+            let detail = format!(
+                "{:?} went {:.4}° past its goto target",
+                a.axis,
+                units_to_deg(past)
+            );
+            return self.fault(FaultKind::Overshoot, now, &detail);
+        }
+        if units_between(g.leg_start, p) * g.leg_sign() < -margin {
+            let detail = format!(
+                "{:?} is {:.4}° the wrong way from where its goto started",
+                a.axis,
+                units_to_deg(units_between(g.leg_start, p).abs())
+            );
+            return self.fault(FaultKind::OppositeMotion, now, &detail);
+        }
+        // Two readings in a row the same; the IMU then confirms the axis
+        // still before the goto completes, as for any stop.
+        let held = g.steady.is_some_and(|(since, _)| since < t);
+        if g.done != Some(true) || !held {
+            return Vec::new();
+        }
+        let error = units_between(g.leg_target(), p);
+        if units_to_deg(error.abs()) > c.goto_tolerance_deg {
+            let detail = format!(
+                "{:?} settled {:+.4}° from its goto target",
+                a.axis,
+                units_to_deg(error)
+            );
+            return self.fault(FaultKind::MissedTarget, now, &detail);
+        }
+        if g.last_leg() {
+            g.settled = Some(t);
+            return self.begin_stop(now, false);
+        }
+        // The approach leg: back to the target slowly, once the IMU too
+        // shows the axis still, as for any request.
+        if !still {
+            return Vec::new();
+        }
+        g.leg_start = g.leg_target();
+        g.leg += 1;
+        g.position = None;
+        g.done = None;
+        g.steady = None;
+        let command = MountCommand::Goto {
+            id: a.id,
+            axis: a.axis,
+            target: g.leg_target(),
+            speed: GotoSpeed::Slow,
+        };
+        a.direction = direction_of(g.leg_sign());
+        a.requested = now;
+        a.sent = None;
+        a.acked = None;
+        self.records[a.record]
+            .stages
+            .push((Stage::Transmitted, now));
+        vec![Action::Send(command)]
     }
 
     fn while_latched(&mut self, now: Nanos) -> Vec<Action> {
@@ -633,6 +945,9 @@ impl Controller {
         };
         a.stop_sent = Some(now);
         a.cancelled = cancelled;
+        if let Some(g) = &mut a.goto {
+            g.at_stop = g.position.map(|p| p.1);
+        }
         let axis = a.axis;
         self.records[a.record].stages.push((Stage::StopSent, now));
         self.last_stop = Some(now);
@@ -646,16 +961,24 @@ impl Controller {
             return Vec::new();
         };
         let stop_sent = a.stop_sent.unwrap_or(now);
-        // A move overtaken by its stop never left: nothing was commanded.
-        let commanded = if a.sent.is_some() {
-            a.rate_deg_s * a.direction.sign() * (stop_sent - a.transmitted).max(0) as f64 / 1e9
-        } else {
-            0.0
+        let commanded = match &a.goto {
+            // A goto that settled was commanded to its target; one stopped
+            // early, as far as its positions showed.
+            Some(g) if g.settled.is_some() => units_to_deg(units_between(g.start, g.target)),
+            Some(g) => g
+                .position
+                .map_or(0.0, |(_, p)| units_to_deg(units_between(g.start, p))),
+            // A move overtaken by its stop never left: nothing was commanded.
+            None if a.sent.is_some() => {
+                a.rate_deg_s * a.direction.sign() * (stop_sent - a.transmitted).max(0) as f64 / 1e9
+            }
+            None => 0.0,
         };
         let observed = self.tally[a.axis.index()].observed_deg - a.observed_at_start;
         let record = &mut self.records[a.record];
         record.commanded_deg = Some(commanded);
         record.observed_deg = Some(observed);
+        record.goto = a.goto.as_ref().map(|g| g.outcome(a.sent));
         record.stages.push((
             if a.cancelled {
                 Stage::Cancelled
@@ -675,9 +998,13 @@ impl Controller {
             .active
             .as_ref()
             .filter(|a| a.axis == axis && a.sent.is_some())
-            .map_or(0.0, |a| {
-                let end = a.stop_sent.unwrap_or(now);
-                a.rate_deg_s * a.direction.sign() * (end - a.transmitted) as f64 / 1e9
+            .map_or(0.0, |a| match &a.goto {
+                // Anywhere up to the furthest leg target.
+                Some(g) => g.reach_deg(),
+                None => {
+                    let end = a.stop_sent.unwrap_or(now);
+                    a.rate_deg_s * a.direction.sign() * (end - a.transmitted) as f64 / 1e9
+                }
             });
         self.tally[axis.index()].commanded_deg + active
     }
@@ -752,6 +1079,10 @@ impl Controller {
                 _ => Stage::Cancelled,
             };
             let record = &mut self.records[a.record];
+            record.goto = a.goto.as_ref().map(|g| GotoOutcome {
+                at_stop: g.at_stop.or(g.position.map(|p| p.1)),
+                ..g.outcome(a.sent)
+            });
             if a.stop_sent.is_none() {
                 record.stages.push((Stage::StopSent, now));
             }
@@ -782,6 +1113,40 @@ impl Controller {
             // Never expected: treat as a fault rather than ignore it.
             Err(_) => MountState::FaultLatched,
         };
+    }
+
+    /// Refusals common to every request: a repeated ID, not armed, or a
+    /// command already active.
+    fn refuse_any(&mut self, request_id: &str) -> Option<String> {
+        if !self.request_ids.insert(request_id.to_owned()) {
+            Some("duplicate request ID; not re-sent".into())
+        } else if self.state != MountState::Armed {
+            Some(format!("not armed (state {:?})", self.state))
+        } else if self.active.is_some() {
+            Some("another command is active".into())
+        } else {
+            None
+        }
+    }
+
+    /// Refusals from the IMU now: stale, outside the envelope, or moving.
+    fn refuse_now(&self, now: Nanos) -> Option<String> {
+        if !self.fresh(now) {
+            Some("IMU data is stale".into())
+        } else if !self.in_envelope() {
+            Some("altitude is outside the envelope".into())
+        } else if !self.still(self.config.still_deg_s) {
+            Some("the mount is not still".into())
+        } else {
+            None
+        }
+    }
+
+    fn reject(&mut self, mut record: CommandRecord, reason: String, now: Nanos) -> Refused {
+        record.stages.push((Stage::Rejected, now));
+        record.reason = Some(reason.clone());
+        self.records.push(record);
+        Refused(reason)
     }
 
     fn require(&self, state: MountState, action: &str) -> Result<(), Refused> {
@@ -821,5 +1186,26 @@ impl Controller {
             o.altitude_deg >= self.config.min_altitude_deg
                 && o.altitude_deg <= self.config.max_altitude_deg
         })
+    }
+}
+
+fn new_record(request: Request, now: Nanos) -> CommandRecord {
+    CommandRecord {
+        command_id: None,
+        request,
+        stages: vec![(Stage::Requested, now)],
+        reason: None,
+        fault: None,
+        commanded_deg: None,
+        observed_deg: None,
+        goto: None,
+    }
+}
+
+fn direction_of(sign: i64) -> Direction {
+    if sign < 0 {
+        Direction::Negative
+    } else {
+        Direction::Positive
     }
 }

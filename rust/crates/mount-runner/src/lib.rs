@@ -17,8 +17,9 @@ use std::collections::{HashSet, VecDeque};
 
 use cwb_mount_celestron::{CelestronAdapter, Position, Transaction, encode::quantized_deg_s};
 use cwb_mount_core::{
-    Action, Axis, Controller, Direction, FaultKind, MountAdapter, MountReport, MountState,
-    MoveRequest, Nanos, Observation, imu::AxisMapper,
+    Action, Axis, CommandRecord, Controller, Direction, FaultKind, GotoRequest, GotoSpeed,
+    MountAdapter, MountReport, MountState, MoveRequest, Nanos, Observation, Request, deg_to_units,
+    imu::AxisMapper, units_between, units_to_deg, wrap_units,
 };
 use cwb_mount_sim::SimMount;
 use cwb_protocol::{Message, Sample};
@@ -75,6 +76,12 @@ pub trait RunnerAdapter: MountAdapter {
     }
     /// Lets go of the link (closing the serial port) so it can be reopened.
     fn close_link(&mut self) {}
+    /// The axis's position now (axis units), for an adapter that knows it
+    /// without a read: the simulator. Otherwise gotos start from the last
+    /// position read.
+    fn axis_units(&self, _axis: Axis) -> Option<u32> {
+        None
+    }
 }
 
 impl RunnerAdapter for CelestronAdapter {
@@ -98,7 +105,11 @@ impl RunnerAdapter for CelestronAdapter {
     }
 }
 
-impl RunnerAdapter for SimMount {}
+impl RunnerAdapter for SimMount {
+    fn axis_units(&self, axis: Axis) -> Option<u32> {
+        Some(self.position_units(axis))
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
@@ -152,6 +163,10 @@ pub const HELP: &str = "\
 Enter (empty line)  STOP: ends any move at once
 arm | disarm        allow moves | refuse them
 az+ az- alt+ alt-   move one axis: [rate °/s] [seconds], e.g. `az+ 0.1 1`
+goto az|alt ±deg    go that far by the axis's own position: [fast] [from-|from+],
+                    e.g. `goto az +0.02`. from- always arrives moving up (from
+                    below), from+ moving down; off by default: anti-backlash,
+                    once set, does that job
 status              state, IMU, travel and mount positions
 note <text>         put a timestamped remark in the run log (e.g. `note chatter`)
 reset               clear a fault once the mount is still
@@ -175,8 +190,9 @@ pub struct Runner<A: RunnerAdapter> {
     /// Moves on real hardware need confirming the first time per axis and direction.
     hardware: bool,
     stage: Stage,
-    pending: Option<MoveRequest>,
+    pending: Option<Request>,
     confirmed: HashSet<(Axis, Direction)>,
+    confirmed_gotos: HashSet<(Axis, GotoSpeed)>,
     next_request: u64,
     session: Option<String>,
     last_state: MountState,
@@ -229,6 +245,7 @@ impl<A: RunnerAdapter> Runner<A> {
             stage: Stage::Checklist,
             pending: None,
             confirmed: HashSet::new(),
+            confirmed_gotos: HashSet::new(),
             next_request: 1,
             session: None,
             last_state: MountState::Disconnected,
@@ -315,9 +332,13 @@ impl<A: RunnerAdapter> Runner<A> {
                 "Confirm the checklist first: type yes when every item holds.",
             )),
             (Stage::Ready, "yes") => match self.pending.take() {
-                Some(request) => {
+                Some(Request::Move(request)) => {
                     self.confirmed.insert((request.axis, request.direction));
                     self.request(request, now, &mut out);
+                }
+                Some(Request::Goto(request)) => {
+                    self.confirmed_gotos.insert((request.axis, request.speed));
+                    self.request_goto(request, now, &mut out);
                 }
                 None => out.push(info("Nothing to confirm.")),
             },
@@ -354,6 +375,27 @@ impl<A: RunnerAdapter> Runner<A> {
                 self.result(result, now, &mut out);
             }
             (Stage::Ready, "status" | "s") => out.push(info(self.status(now))),
+            (Stage::Ready, "goto" | "g") => match self.parse_goto(&words[1..]) {
+                Ok(request) => {
+                    self.pending = None;
+                    if self.hardware
+                        && !self
+                            .confirmed_gotos
+                            .contains(&(request.axis, request.speed))
+                    {
+                        out.push(prompt(format!(
+                            "First {} on the mount: {:+.4}° ({:+} units of 0.077″). Its speed, overshoot and settling aren't known yet. Watch the mount with a hand on the power switch. Type yes to send it, Enter to cancel.",
+                            describe_goto(&request),
+                            request.delta_deg,
+                            deg_to_units(request.delta_deg),
+                        )));
+                        self.pending = Some(Request::Goto(request));
+                    } else {
+                        self.request_goto(request, now, &mut out);
+                    }
+                }
+                Err(e) => out.push(info(e)),
+            },
             (Stage::Ready, word) => match self.parse_move(word, &words[1..]) {
                 Ok(request) => {
                     self.pending = None;
@@ -366,7 +408,7 @@ impl<A: RunnerAdapter> Runner<A> {
                             request.duration_ms as f64 / 1000.0,
                             request.rate_deg_s * request.duration_ms as f64 / 1000.0,
                         )));
-                        self.pending = Some(request);
+                        self.pending = Some(Request::Move(request));
                     } else {
                         self.request(request, now, &mut out);
                     }
@@ -499,14 +541,32 @@ impl<A: RunnerAdapter> Runner<A> {
     pub fn tick(&mut self, now: Nanos) -> Vec<Out> {
         let mut out = Vec::new();
         for report in self.adapter.poll(now) {
-            self.log.write(
-                now,
-                "mount_report",
-                json!({ "report": format!("{report:?}") }),
-            );
+            match report {
+                MountReport::Position { axis, t_ns, units } => self.log.write(
+                    now,
+                    "goto_position",
+                    json!({ "axis": axis, "t_ns": t_ns, "units": units }),
+                ),
+                MountReport::SlewDone { axis, t_ns, done } => self.log.write(
+                    now,
+                    "goto_done",
+                    json!({ "axis": axis, "t_ns": t_ns, "done": done }),
+                ),
+                _ => self.log.write(
+                    now,
+                    "mount_report",
+                    json!({ "report": format!("{report:?}") }),
+                ),
+            }
             let actions = match report {
                 MountReport::Sent { id, sent_ns } => self.controller.sent(id, sent_ns, now),
                 MountReport::Acknowledged(id) => self.controller.acknowledged(id, now),
+                MountReport::Position { axis, t_ns, units } => {
+                    self.controller.position(axis, t_ns, units, now)
+                }
+                MountReport::SlewDone { axis, t_ns, done } => {
+                    self.controller.slew_done(axis, t_ns, done, now)
+                }
                 MountReport::TransportLost => self.controller.transport_lost(now),
             };
             self.carry_out(actions, now, &mut out);
@@ -648,6 +708,59 @@ impl<A: RunnerAdapter> Runner<A> {
         out.extend(self.changes(now));
     }
 
+    fn request_goto(&mut self, request: GotoRequest, now: Nanos, out: &mut Vec<Out>) {
+        self.log
+            .write(now, "goto_request", json!({ "request": request }));
+        let start = self
+            .link_alive(now)
+            .and_then(|()| self.goto_start(request.axis));
+        let start = match start {
+            Ok(start) => start,
+            Err(why) => {
+                self.log.write(now, "refused", json!({ "reason": why }));
+                out.push(alert(format!("refused: {why}")));
+                return;
+            }
+        };
+        match self.controller.request_goto(request.clone(), start, now) {
+            Ok(actions) => {
+                let target = wrap_units(i64::from(start) + deg_to_units(request.delta_deg));
+                self.log.write(
+                    now,
+                    "goto_start",
+                    json!({ "start": start, "target": target }),
+                );
+                out.push(info(format!(
+                    "goto: {} {:+.4}° from {start} to {target} (Enter stops)",
+                    describe_goto(&request),
+                    request.delta_deg,
+                )));
+                self.carry_out(actions, now, out);
+            }
+            Err(refused) => {
+                self.log
+                    .write(now, "refused", json!({ "reason": refused.0 }));
+                out.push(alert(refused.to_string()));
+            }
+        }
+        out.extend(self.changes(now));
+    }
+
+    /// Where a goto starts: the axis's position read since it last moved,
+    /// in axis units.
+    fn goto_start(&self, axis: Axis) -> Result<u32, String> {
+        if let Some(units) = self.adapter.axis_units(axis) {
+            return Ok(units);
+        }
+        match self.last_position {
+            Some(p) if p.t_ns > self.last_busy => {
+                let motor = wrap_units(deg_to_units(p.deg[axis.index()]));
+                Ok(self.config.celestron.flip_units(axis, motor))
+            }
+            _ => Err("no position read since the mount last moved: wait a moment".into()),
+        }
+    }
+
     fn result(
         &mut self,
         result: Result<Vec<Action>, cwb_mount_core::Refused>,
@@ -724,19 +837,7 @@ impl<A: RunnerAdapter> Runner<A> {
         for record in &records[self.records_seen..self.records_seen + done] {
             self.log.write(now, "record", json!({ "record": record }));
             if record.command_id.is_some() {
-                out.push(info(format!(
-                    "{}: {:?}{}{}",
-                    describe(&record.request),
-                    record.last_stage(),
-                    record
-                        .commanded_deg
-                        .map(|c| format!(", commanded {c:+.3}°"))
-                        .unwrap_or_default(),
-                    record
-                        .observed_deg
-                        .map(|o| format!(", IMU {o:+.3}°"))
-                        .unwrap_or_default(),
-                )));
+                out.push(info(summary(record)));
             }
         }
         self.records_seen += done;
@@ -853,6 +954,45 @@ impl<A: RunnerAdapter> Runner<A> {
         )
     }
 
+    /// `goto az|alt ±deg [fast|slow] [from-|from+]`.
+    fn parse_goto(&mut self, args: &[&str]) -> Result<GotoRequest, String> {
+        const USAGE: &str = "usage: goto az|alt ±deg [fast] [from-|from+], e.g. `goto az +0.02`";
+        let (Some(axis), Some(delta)) = (args.first(), args.get(1)) else {
+            return Err(USAGE.into());
+        };
+        let axis = match axis.to_lowercase().as_str() {
+            "az" | "azimuth" => Axis::Azimuth,
+            "alt" | "altitude" => Axis::Altitude,
+            other => return Err(format!("unknown axis {other:?}; {USAGE}")),
+        };
+        let delta_deg = delta
+            .parse::<f64>()
+            .ok()
+            .filter(|d| d.is_finite() && *d != 0.0)
+            .ok_or_else(|| format!("{delta:?} isn't a nonzero number of degrees; {USAGE}"))?;
+        let mut speed = GotoSpeed::Slow;
+        let mut approach = None;
+        for word in &args[2..] {
+            match word.to_lowercase().as_str() {
+                "fast" => speed = GotoSpeed::Fast,
+                "slow" => speed = GotoSpeed::Slow,
+                // Arriving from below means moving up at the end.
+                "from-" => approach = Some(Direction::Positive),
+                "from+" => approach = Some(Direction::Negative),
+                other => return Err(format!("unknown option {other:?}; {USAGE}")),
+            }
+        }
+        let id = self.next_request;
+        self.next_request += 1;
+        Ok(GotoRequest {
+            request_id: format!("operator-{id}"),
+            axis,
+            delta_deg,
+            speed,
+            approach,
+        })
+    }
+
     fn parse_move(&mut self, word: &str, args: &[&str]) -> Result<MoveRequest, String> {
         let (axis, direction) = match word {
             "az+" => (Axis::Azimuth, Direction::Positive),
@@ -891,16 +1031,76 @@ fn wrap_deg(d: f64) -> f64 {
     if d > 180.0 { d - 360.0 } else { d }
 }
 
+fn axis_name(axis: Axis) -> &'static str {
+    match axis {
+        Axis::Azimuth => "azimuth",
+        Axis::Altitude => "altitude",
+    }
+}
+
 fn describe(request: &MoveRequest) -> String {
     format!(
         "{} {}",
-        match request.axis {
-            Axis::Azimuth => "azimuth",
-            Axis::Altitude => "altitude",
-        },
+        axis_name(request.axis),
         match request.direction {
             Direction::Positive => "positive",
             Direction::Negative => "negative",
         }
     )
+}
+
+fn describe_goto(request: &GotoRequest) -> String {
+    format!(
+        "{} {} goto{}",
+        match request.speed {
+            GotoSpeed::Slow => "slow",
+            GotoSpeed::Fast => "fast",
+        },
+        axis_name(request.axis),
+        match request.approach {
+            Some(Direction::Positive) => " arriving from below",
+            Some(Direction::Negative) => " arriving from above",
+            None => "",
+        }
+    )
+}
+
+/// One line for a finished command.
+fn summary(record: &CommandRecord) -> String {
+    let name = match &record.request {
+        Request::Move(m) => describe(m),
+        Request::Goto(g) => format!("{} {:+.4}°", describe_goto(g), g.delta_deg),
+    };
+    let mut text = format!("{name}: {:?}", record.last_stage());
+    if let Some(c) = record.commanded_deg {
+        text += &format!(", commanded {c:+.4}°");
+    }
+    if let Some(o) = record.observed_deg {
+        text += &format!(", IMU {o:+.3}°");
+    }
+    if let Some(g) = &record.goto {
+        let arcsec = |units: i64| units_to_deg(units) * 3600.0;
+        if let Some(e) = g.error_units {
+            text += &format!(", off target {e:+} units ({:+.1}″)", arcsec(e));
+        }
+        text += &format!(
+            ", overshoot {} units ({:.1}″), crossed the target {} times",
+            g.overshoot_units,
+            arcsec(g.overshoot_units),
+            g.crossings
+        );
+        if let Some(ms) = g.settle_ms {
+            text += &format!(", settled {:.2} s after leaving", ms / 1000.0);
+        }
+        if let (Some(at), Some(last)) = (g.at_stop, g.last)
+            && g.settle_ms.is_none()
+        {
+            let after = units_between(at, last);
+            text += &format!(
+                ", moved {after:+} units ({:+.1}″) after the last read before the stop",
+                arcsec(after)
+            );
+        }
+    }
+    text
 }

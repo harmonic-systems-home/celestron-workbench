@@ -42,3 +42,19 @@ stop_resend_ms = 250
 verify_travel_deg = 1.0
 min_observed_fraction = 0.5
 travel_tolerance_deg = 0.25
+# Gotos by motor position (ADR 0014). Until the stop-during-goto trial shows
+# a stop ends a goto, max_goto_deg stays at about 1 s of slow-goto travel.
+# Fast gotos stay off until their speed is measured and max_goto_rate_deg_s
+# is set from it. min_goto_rate_deg_s and goto_settle_ms set each leg's
+# deadline: distance / min rate + settle.
+max_goto_deg = 0.05
+max_goto_rate_deg_s = 1.0
+min_goto_rate_deg_s = 0.05
+goto_settle_ms = 2000
+allow_fast_goto = false
+# The approach flag's first leg goes this far past the target; it must
+# exceed the backlash (0.068° in azimuth, O9). Within it, a servo's brief
+# reversal near the target is allowed; beyond it is an overshoot fault.
+approach_margin_deg = 0.15
+# A goto that settles further than this from its target latches a fault.
+goto_tolerance_deg = 0.01

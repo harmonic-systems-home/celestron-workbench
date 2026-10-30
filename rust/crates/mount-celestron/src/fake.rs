@@ -7,7 +7,10 @@
 //! It behaves like the Evolution's motor controllers did on 2026-10-29
 //! (docs/observations.md, O1): a variable-rate command sets a rate that
 //! fixed-rate commands don't cancel; variable rate 0 creeps at the slowest
-//! rate (+0.21″/s, −0.36″/s); tracking off (`T 00`) stops it.
+//! rate (+0.21″/s, −0.36″/s); tracking off (`T 00`) stops it. Gotos by
+//! position (`P 04 dev 02|17 HH MM LL 00`) run on the simulated mount, and
+//! fixed rate 0 ends one there (unverified on the mount: ADR 0014); the
+//! motor controllers' position and goto-finished flag are answered too.
 
 use std::{
     collections::VecDeque,
@@ -17,7 +20,7 @@ use std::{
 };
 
 use cwb_celestron_discovery::Link;
-use cwb_mount_core::{Axis, Direction, MountAdapter, MountCommand};
+use cwb_mount_core::{Axis, Direction, GotoSpeed, MountAdapter, MountCommand};
 use cwb_mount_sim::SimMount;
 
 use crate::adapter::Clock;
@@ -107,6 +110,22 @@ impl SimHandController {
                 })
                 .into_iter()
                 .collect(),
+            [b'P', 4, dev, message @ (0x02 | 0x17), hh, mm, ll, 0] => axis(dev)
+                .map(|axis| {
+                    self.variable[axis.index()] = false;
+                    MountCommand::Goto {
+                        id: 0,
+                        axis,
+                        target: u32::from_be_bytes([0, hh, mm, ll]),
+                        speed: if message == 0x02 {
+                            GotoSpeed::Fast
+                        } else {
+                            GotoSpeed::Slow
+                        },
+                    }
+                })
+                .into_iter()
+                .collect(),
             [b'T', _] => Axis::BOTH
                 .into_iter()
                 .filter(|a| std::mem::take(&mut self.variable[a.index()]))
@@ -147,6 +166,19 @@ impl SimHandController {
             [b'm'] => vec![22],
             [b'P', 1, 16 | 17, 254, 0, 0, 0, 2] => vec![7, 17],
             [b'P', 1, 16 | 17, 0x40 | 0x41, 0, 0, 0, 1] => vec![self.backlash],
+            [b'P', 1, dev @ (16 | 17), 0x01, 0, 0, 0, 3] => {
+                // About the 12 bytes' time on the wire at 9600 baud, so a
+                // goto watch's readings are spread out as on the mount.
+                std::thread::sleep(Duration::from_millis(10));
+                let axis = axis(dev).expect("motor");
+                let units = self.mount.lock().expect("sim mount").position_units(axis);
+                units.to_be_bytes()[1..].to_vec()
+            }
+            [b'P', 1, dev @ (16 | 17), 0x13, 0, 0, 0, 1] => {
+                let axis = axis(dev).expect("motor");
+                let done = self.mount.lock().expect("sim mount").slew_done(axis);
+                vec![if done { 0xFF } else { 0x00 }]
+            }
             [b'L'] => vec![b'0'],
             [b't'] => vec![self.tracking],
             [b'T', mode] => {

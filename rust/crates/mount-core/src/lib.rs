@@ -19,7 +19,9 @@ pub mod imu;
 pub mod state;
 
 pub use command::{
-    Axis, CommandId, CommandRecord, Direction, MountCommand, MoveRequest, Nanos, Observation, Stage,
+    Axis, CommandId, CommandRecord, Direction, GotoOutcome, GotoRequest, GotoSpeed, MountCommand,
+    MoveRequest, Nanos, Observation, Request, Stage, UNITS_PER_REV, deg_to_units, units_between,
+    units_to_deg, wrap_units,
 };
 pub use config::SafetyConfig;
 pub use controller::{Action, Controller, FaultRecord, Refused};
@@ -36,6 +38,20 @@ pub enum MountReport {
         sent_ns: Nanos,
     },
     Acknowledged(CommandId),
+    /// While a goto runs, and after a stop until the axis reports it done:
+    /// the axis's own position (axis units, positive as the IMU sees it),
+    /// read at `t_ns`.
+    Position {
+        axis: Axis,
+        t_ns: Nanos,
+        units: u32,
+    },
+    /// The axis's goto-finished flag, read at `t_ns`.
+    SlewDone {
+        axis: Axis,
+        t_ns: Nanos,
+        done: bool,
+    },
     /// The link to the mount is gone.
     TransportLost,
 }

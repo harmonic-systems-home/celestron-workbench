@@ -6,8 +6,8 @@
 use std::collections::VecDeque;
 
 use cwb_mount_core::{
-    Action, Controller, FaultRecord, MountAdapter, MountCommand, MountReport, MountState,
-    MoveRequest, Nanos, Observation, SafetyConfig,
+    Action, Controller, FaultRecord, GotoRequest, MountAdapter, MountCommand, MountReport,
+    MountState, MoveRequest, Nanos, Observation, SafetyConfig,
 };
 
 use crate::{SimFaults, SimMount};
@@ -24,6 +24,8 @@ pub enum Op {
     Arm,
     Disarm,
     Move(MoveRequest),
+    /// From the axis's position as the mount reports it now.
+    Goto(GotoRequest),
     Stop,
     EmergencyStop,
     Shutdown,
@@ -105,6 +107,14 @@ impl Trace {
             .filter(|(_, c)| matches!(c, MountCommand::Move { .. }))
             .count()
     }
+
+    pub fn gotos_sent(&self) -> Vec<MountCommand> {
+        self.sent
+            .iter()
+            .filter(|(_, c)| matches!(c, MountCommand::Goto { .. }))
+            .map(|(_, c)| c.clone())
+            .collect()
+    }
 }
 
 pub fn run(scenario: &Scenario) -> Trace {
@@ -133,6 +143,10 @@ pub fn run(scenario: &Scenario) -> Trace {
                 Op::Arm => controller.arm(now),
                 Op::Disarm => controller.disarm(now),
                 Op::Move(request) => controller.request_move(request, now),
+                Op::Goto(request) => {
+                    let start = mount.position_units(request.axis);
+                    controller.request_goto(request, start, now)
+                }
                 Op::Stop => Ok(controller.stop(now)),
                 Op::EmergencyStop => Ok(controller.emergency_stop(now)),
                 Op::Shutdown => Ok(controller.shutdown(now)),
@@ -149,6 +163,12 @@ pub fn run(scenario: &Scenario) -> Trace {
             let actions = match report {
                 MountReport::Sent { id, sent_ns } => controller.sent(id, sent_ns, now),
                 MountReport::Acknowledged(id) => controller.acknowledged(id, now),
+                MountReport::Position { axis, t_ns, units } => {
+                    controller.position(axis, t_ns, units, now)
+                }
+                MountReport::SlewDone { axis, t_ns, done } => {
+                    controller.slew_done(axis, t_ns, done, now)
+                }
                 MountReport::TransportLost => controller.transport_lost(now),
             };
             carry_out(actions, now, &mut controller, &mut mount, &mut trace);

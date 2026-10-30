@@ -1,9 +1,10 @@
 //! Byte encodings for the commands this adapter may send, from the approved
 //! discovery report (ADR 0010, "Proposed commands"): pass-through variable-
 //! rate slews (`P 03 dev 06|07 hi lo 00 00`, never rate 0) and stops (`T 00`
-//! and fixed rate 0), each answered `#`.
+//! and fixed rate 0), each answered `#`; and gotos by motor position (ADR
+//! 0014, `P 04 dev 02|17 HH MM LL 00`).
 
-use cwb_mount_core::{Axis, Direction, MountCommand};
+use cwb_mount_core::{Axis, Direction, GotoSpeed, MountCommand, wrap_units};
 use serde::{Deserialize, Serialize};
 
 /// Pass-through bus addresses of the motor controllers.
@@ -17,6 +18,8 @@ pub fn device(axis: Axis) -> u8 {
 const VARIABLE_POSITIVE: u8 = 6;
 const VARIABLE_NEGATIVE: u8 = 7;
 const FIXED_POSITIVE: u8 = 36;
+pub const GOTO_FAST: u8 = 0x02;
+pub const GOTO_SLOW: u8 = 0x17;
 
 /// How the adapter drives this mount (`[celestron]` in `config/mount.toml`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -35,6 +38,16 @@ impl CelestronSettings {
         match axis {
             Axis::Azimuth => self.reverse_azimuth,
             Axis::Altitude => self.reverse_altitude,
+        }
+    }
+
+    /// Converts a position between the motor controller's count and axis
+    /// units (positive as the IMU sees it); the same either way.
+    pub fn flip_units(self, axis: Axis, units: u32) -> u32 {
+        if self.reversed(axis) {
+            wrap_units(-i64::from(units))
+        } else {
+            units
         }
     }
 }
@@ -93,6 +106,19 @@ pub fn transactions(command: &MountCommand, signs: CelestronSettings) -> Vec<Tx>
                 0,
                 0,
             ])]
+        }
+        MountCommand::Goto {
+            axis,
+            target,
+            speed,
+            ..
+        } => {
+            let [_, hh, mm, ll] = signs.flip_units(axis, target).to_be_bytes();
+            let message = match speed {
+                GotoSpeed::Fast => GOTO_FAST,
+                GotoSpeed::Slow => GOTO_SLOW,
+            };
+            vec![motor([b'P', 4, device(axis), message, hh, mm, ll, 0])]
         }
         MountCommand::Stop { axis } => vec![tracking_off(), fixed_zero(axis)],
         MountCommand::StopAll => vec![

@@ -50,7 +50,7 @@ impl Direction {
 }
 
 /// What the operator (or a test protocol) asks for: one axis, one
-/// direction, a fixed rate, for at most `duration_ms`. There is no goto.
+/// direction, a fixed rate, for at most `duration_ms`.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct MoveRequest {
     /// Chosen by the requester; a repeated ID is refused, never re-sent.
@@ -59,6 +59,77 @@ pub struct MoveRequest {
     pub direction: Direction,
     pub rate_deg_s: f64,
     pub duration_ms: u64,
+}
+
+/// Axis positions are counted as the motor controllers count them: 24 bits
+/// per revolution (one unit is 0.077″), but positive as the IMU sees it.
+/// Adapters convert for an axis whose motor counts the other way.
+pub const UNITS_PER_REV: i64 = 1 << 24;
+
+pub fn units_to_deg(units: i64) -> f64 {
+    units as f64 * 360.0 / UNITS_PER_REV as f64
+}
+
+pub fn deg_to_units(deg: f64) -> i64 {
+    (deg / 360.0 * UNITS_PER_REV as f64).round() as i64
+}
+
+/// A position, wrapped into one revolution.
+pub fn wrap_units(units: i64) -> u32 {
+    units.rem_euclid(UNITS_PER_REV) as u32
+}
+
+/// The signed distance from `from` to `to` the short way round.
+pub fn units_between(from: u32, to: u32) -> i64 {
+    let d = (i64::from(to) - i64::from(from)).rem_euclid(UNITS_PER_REV);
+    if d > UNITS_PER_REV / 2 {
+        d - UNITS_PER_REV
+    } else {
+        d
+    }
+}
+
+/// The motor controllers' two gotos (ADR 0014). Their speeds are measured,
+/// not documented.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GotoSpeed {
+    Slow,
+    Fast,
+}
+
+/// A goto by the axis's own position, relative to where it is now
+/// (ADR 0014). With `approach`, the axis always ends moving that way: a
+/// goto heading the other way first goes `approach_margin_deg` past the
+/// target, then comes back slowly. Off by default: anti-backlash, once set,
+/// does the same job in the motor controllers.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct GotoRequest {
+    /// Chosen by the requester; a repeated ID is refused, never re-sent.
+    pub request_id: String,
+    pub axis: Axis,
+    /// Signed, as the IMU sees the axis.
+    pub delta_deg: f64,
+    pub speed: GotoSpeed,
+    /// The direction the axis must be moving as it arrives.
+    pub approach: Option<Direction>,
+}
+
+/// Either kind of request, as kept in its record.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Request {
+    Move(MoveRequest),
+    Goto(GotoRequest),
+}
+
+impl Request {
+    pub fn axis(&self) -> Axis {
+        match self {
+            Request::Move(m) => m.axis,
+            Request::Goto(g) => g.axis,
+        }
+    }
 }
 
 pub type CommandId = u64;
@@ -74,10 +145,24 @@ pub enum MountCommand {
         direction: Direction,
         rate_deg_s: f64,
     },
+    /// Go to `target` (axis units, see [`UNITS_PER_REV`]) and hold there.
+    /// One request's legs share its ID.
+    Goto {
+        id: CommandId,
+        axis: Axis,
+        target: u32,
+        speed: GotoSpeed,
+    },
     Stop {
         axis: Axis,
     },
     StopAll,
+}
+
+impl MountCommand {
+    pub fn is_stop(&self) -> bool {
+        matches!(self, MountCommand::Stop { .. } | MountCommand::StopAll)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -113,7 +198,7 @@ impl Stage {
 pub struct CommandRecord {
     /// `None` for requests refused before a command was created.
     pub command_id: Option<CommandId>,
-    pub request: MoveRequest,
+    pub request: Request,
     pub stages: Vec<(Stage, Nanos)>,
     /// Why it was refused or how it ended.
     pub reason: Option<String>,
@@ -123,6 +208,33 @@ pub struct CommandRecord {
     /// when the command completes.
     pub commanded_deg: Option<f64>,
     pub observed_deg: Option<f64>,
+    /// For a goto that was sent: what the axis's own positions showed.
+    pub goto: Option<GotoOutcome>,
+}
+
+/// How a goto went, from the axis positions read while it ran (ADR 0014).
+/// Positions are axis units; "past" is beyond the final target in the
+/// direction of the last leg.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct GotoOutcome {
+    pub start: u32,
+    pub target: u32,
+    /// Leg targets in order; two when the approach flag added a leg.
+    pub legs: Vec<u32>,
+    /// The position last read before a stop was sent, if one was: with
+    /// `last`, it shows whether the stop ended the goto.
+    pub at_stop: Option<u32>,
+    /// The last position read.
+    pub last: Option<u32>,
+    /// `last` minus `target`, signed.
+    pub error_units: Option<i64>,
+    /// The furthest any reading went past the target on the last leg (0 if
+    /// none did).
+    pub overshoot_units: i64,
+    /// How many times readings crossed the target on the last leg.
+    pub crossings: u32,
+    /// From the last leg leaving to the axis settling, if it settled.
+    pub settle_ms: Option<f64>,
 }
 
 impl CommandRecord {

@@ -14,7 +14,9 @@ use cwb_mount_celestron::{
     fake::SimHandController,
     prepare::prepare,
 };
-use cwb_mount_core::{Axis, Direction, MountAdapter, MountCommand, MountReport};
+use cwb_mount_core::{
+    Axis, Direction, GotoSpeed, MountAdapter, MountCommand, MountReport, deg_to_units,
+};
 use cwb_mount_sim::{SimFaults, SimMount};
 
 fn clock() -> Clock {
@@ -175,6 +177,170 @@ fn variable_rate_0_is_never_sent() {
             "{t:?}"
         );
     }
+}
+
+fn goto(axis: Axis, target: u32, speed: GotoSpeed) -> MountCommand {
+    MountCommand::Goto {
+        id: 9,
+        axis,
+        target,
+        speed,
+    }
+}
+
+#[test]
+fn gotos_are_the_documented_bytes_and_nothing_else() {
+    assert_eq!(
+        bytes(
+            &goto(Axis::Azimuth, 0x12_3456, GotoSpeed::Slow),
+            CelestronSettings::default()
+        ),
+        [vec![b'P', 4, 16, 0x17, 0x12, 0x34, 0x56, 0]]
+    );
+    assert_eq!(
+        bytes(
+            &goto(Axis::Altitude, 300, GotoSpeed::Fast),
+            CelestronSettings::default()
+        ),
+        [vec![b'P', 4, 17, 0x02, 0, 0x01, 0x2C, 0]]
+    );
+    // A reversed axis counts the other way: one unit up is one unit below 0.
+    let reversed = CelestronSettings {
+        reverse_altitude: true,
+        ..CelestronSettings::default()
+    };
+    assert_eq!(
+        bytes(&goto(Axis::Altitude, 1, GotoSpeed::Slow), reversed),
+        [vec![b'P', 4, 17, 0x17, 0xFF, 0xFF, 0xFF, 0]]
+    );
+    assert_eq!(reversed.flip_units(Axis::Altitude, 0xFF_FFFF), 1);
+    assert_eq!(reversed.flip_units(Axis::Azimuth, 5), 5);
+    for axis in Axis::BOTH {
+        for speed in [GotoSpeed::Slow, GotoSpeed::Fast] {
+            for target in [0, 1, 0x80_0000, 0xFF_FFFF] {
+                for settings in [CelestronSettings::default(), reversed] {
+                    let all = bytes(&goto(axis, target, speed), settings);
+                    assert_eq!(all.len(), 1);
+                    let t = &all[0];
+                    assert_eq!(t.len(), 8);
+                    assert_eq!(t[..2], [b'P', 4], "{t:?}");
+                    assert!([16, 17].contains(&t[2]), "{t:?}");
+                    assert!([0x02, 0x17].contains(&t[3]), "{t:?}");
+                    assert_eq!(t[7], 0, "{t:?}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn a_goto_is_watched_until_it_settles() {
+    let mut rig = rig_with(SimFaults::default(), Some(Duration::from_millis(250)));
+    let target = deg_to_units(0.02) as u32;
+    rig.adapter
+        .send(&goto(Axis::Azimuth, target, GotoSpeed::Slow), 0)
+        .unwrap();
+    let reports = rig.run(1_000);
+    assert!(
+        matches!(
+            reports[..2],
+            [
+                MountReport::Sent { id: 9, .. },
+                MountReport::Acknowledged(9)
+            ]
+        ),
+        "{reports:?}"
+    );
+    let watch = &reports[2..];
+    assert!(watch.len() >= 6, "{watch:?}");
+    // Position and flag in turn, ending on a repeated position after done.
+    for (i, r) in watch.iter().enumerate() {
+        let position = matches!(
+            r,
+            MountReport::Position {
+                axis: Axis::Azimuth,
+                ..
+            }
+        );
+        assert_eq!(position, i % 2 == 0, "{watch:?}");
+    }
+    assert!(
+        watch.contains(&MountReport::SlewDone {
+            axis: Axis::Azimuth,
+            t_ns: match watch
+                .iter()
+                .find(|r| matches!(r, MountReport::SlewDone { done: true, .. }))
+            {
+                Some(MountReport::SlewDone { t_ns, .. }) => *t_ns,
+                _ => panic!("never done: {watch:?}"),
+            },
+            done: true
+        })
+    );
+    let positions: Vec<u32> = watch
+        .iter()
+        .filter_map(|r| match r {
+            MountReport::Position { units, .. } => Some(*units),
+            _ => None,
+        })
+        .collect();
+    let n = positions.len();
+    assert_eq!(positions[n - 2..], [target, target], "{positions:?}");
+    assert_eq!(rig.angles()[1], 0.0);
+    // The watch read only the motor controller.
+    let sent = rig.received.lock().unwrap().clone();
+    let goto_at = sent.iter().position(|c| c[0] == b'P' && c[1] == 4).unwrap();
+    let after = &sent[goto_at + 1..];
+    let reads = after.iter().take_while(|c| c[0] == b'P').count();
+    assert!(reads >= 6, "{sent:?}");
+    for c in &after[..reads] {
+        assert!(
+            *c == [b'P', 1, 16, 0x01, 0, 0, 0, 3] || *c == [b'P', 1, 16, 0x13, 0, 0, 0, 1],
+            "{c:?}"
+        );
+    }
+    // Nothing else: `z` reads wait for the controller's stop, which ends
+    // every goto.
+    assert_eq!(reads, after.len(), "{:?}", &after[reads..]);
+}
+
+#[test]
+fn the_watch_outlasts_a_stop_during_a_goto() {
+    let mut rig = rig(SimFaults::default());
+    rig.adapter
+        .send(
+            &goto(Axis::Azimuth, deg_to_units(0.05) as u32, GotoSpeed::Slow),
+            0,
+        )
+        .unwrap();
+    rig.run(200);
+    rig.adapter
+        .send(
+            &MountCommand::Stop {
+                axis: Axis::Azimuth,
+            },
+            0,
+        )
+        .unwrap();
+    let reports = rig.run(600);
+    assert_eq!(rig.rates(), [0.0, 0.0]);
+    let travel = rig.angles()[0];
+    assert!((0.01..0.035).contains(&travel), "{travel}");
+    assert!(
+        reports
+            .iter()
+            .any(|r| matches!(r, MountReport::SlewDone { done: true, .. })),
+        "{reports:?}"
+    );
+    let last = reports
+        .iter()
+        .rev()
+        .find_map(|r| match r {
+            MountReport::Position { units, .. } => Some(*units),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(last, deg_to_units(travel) as u32);
 }
 
 #[test]

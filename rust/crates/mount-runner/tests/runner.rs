@@ -10,6 +10,7 @@ use std::{
 use cwb_mount_celestron::Position;
 use cwb_mount_core::{
     MountAdapter, MountCommand, MountReport, MountState, Nanos, Stage, TransportError,
+    units_to_deg, wrap_units,
 };
 use cwb_mount_runner::{Kind, Out, RunLog, Runner, RunnerAdapter, RunnerConfig};
 use cwb_mount_sim::{SimFaults, SimMount};
@@ -118,6 +119,16 @@ impl Sim {
             .count()
     }
 
+    fn gotos_sent(&self) -> Vec<MountCommand> {
+        self.runner
+            .adapter()
+            .received
+            .iter()
+            .filter(|(_, c)| matches!(c, MountCommand::Goto { .. }))
+            .map(|(_, c)| c.clone())
+            .collect()
+    }
+
     fn ready(hardware: bool) -> Self {
         let mut sim = Self::new(hardware, SimFaults::default());
         sim.line("yes");
@@ -180,6 +191,103 @@ fn on_hardware_the_first_move_each_way_needs_yes() {
     sim.line("");
     sim.line("yes");
     assert_eq!(sim.moves_sent(), 2, "Enter cancelled the pending move");
+}
+
+#[test]
+fn a_goto_runs_to_its_target_and_reports_how_it_settled() {
+    let mut sim = Sim::ready(false);
+    sim.line("goto az +0.03");
+    assert!(sim.said(
+        Kind::Info,
+        "goto: slow azimuth goto +0.0300° from 0 to 1398"
+    ));
+    sim.run(3_000);
+    let records = sim.runner.controller().records();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].last_stage(), Stage::Completed, "{:#?}", sim.out);
+    assert_eq!(records[0].goto.as_ref().unwrap().error_units, Some(0));
+    assert!(sim.said(
+        Kind::Info,
+        "slow azimuth goto +0.0300°: Completed, commanded +0.0300°"
+    ));
+    assert!(sim.said(Kind::Info, "off target +0 units (+0.0″), overshoot 0 units"));
+    assert!(sim.said(Kind::Info, "settled"));
+    assert_eq!(sim.runner.state(), MountState::Armed);
+    let events = sim.log.events();
+    for e in [
+        "goto_request",
+        "goto_start",
+        "goto_position",
+        "goto_done",
+        "record",
+    ] {
+        assert!(events.iter().any(|x| x == e), "{e} not in {events:?}");
+    }
+}
+
+#[test]
+fn on_hardware_the_first_goto_per_axis_and_speed_needs_yes() {
+    let mut sim = Sim::ready(true);
+    sim.line("goto az 0.03");
+    assert!(sim.said(
+        Kind::Prompt,
+        "First slow azimuth goto on the mount: +0.0300° (+1398 units of 0.077″)"
+    ));
+    sim.run(200);
+    assert!(sim.gotos_sent().is_empty(), "nothing sent before yes");
+    sim.line("yes");
+    assert_eq!(sim.gotos_sent().len(), 1);
+    sim.run(3_000);
+    sim.line("goto az -0.03");
+    assert_eq!(sim.gotos_sent().len(), 2, "the same axis and speed again");
+    sim.run(3_000);
+    sim.line("goto alt 0.03");
+    assert!(sim.said(Kind::Prompt, "First slow altitude goto"));
+    sim.line("");
+    sim.line("yes");
+    assert_eq!(
+        sim.gotos_sent().len(),
+        2,
+        "Enter cancelled the pending goto"
+    );
+    assert!(sim.said(Kind::Info, "Nothing to confirm."));
+}
+
+#[test]
+fn goto_words_are_checked_and_the_rules_apply() {
+    let mut sim = Sim::ready(false);
+    for (line, said) in [
+        ("goto", "usage: goto az|alt"),
+        ("goto up 0.01", "unknown axis \"up\""),
+        ("goto az x", "\"x\" isn't a nonzero number"),
+        ("goto az 0", "\"0\" isn't a nonzero number"),
+        ("goto az 0.01 sideways", "unknown option \"sideways\""),
+    ] {
+        sim.line(line);
+        assert!(sim.said(Kind::Info, said), "{line}: {:#?}", sim.out);
+    }
+    sim.line("goto az 0.03 fast");
+    assert!(sim.said(Kind::Alert, "fast gotos are off"));
+    // The approach leg would go 0.18°, past the 0.05° cap.
+    sim.line("goto az 0.03 from+");
+    assert!(sim.said(Kind::Alert, "a goto leg of 0.1800° exceeds max_goto_deg"));
+    assert!(sim.gotos_sent().is_empty());
+    assert_eq!(sim.runner.state(), MountState::Armed);
+}
+
+#[test]
+fn enter_stops_a_goto_and_the_record_shows_where_it_ended() {
+    let mut sim = Sim::ready(false);
+    sim.line("goto alt +0.05");
+    sim.run(200);
+    sim.line("");
+    sim.run(1_500);
+    let record = &sim.runner.controller().records()[0];
+    assert_eq!(record.last_stage(), Stage::Cancelled);
+    assert!(record.commanded_deg.unwrap() < 0.035);
+    assert!(sim.said(Kind::Info, "after the last read before the stop"));
+    assert_eq!(sim.runner.adapter().rates_deg_s(), [0.0, 0.0]);
+    assert_eq!(sim.runner.state(), MountState::Armed);
 }
 
 #[test]
@@ -589,6 +697,48 @@ fn reporting_runner(phone: bool) -> (Runner<Reporting>, Vec<Out>) {
         ));
     }
     (runner, out)
+}
+
+#[test]
+fn on_the_mount_a_goto_starts_from_the_last_position_read() {
+    for reversed in [false, true] {
+        let mut config = config();
+        config.celestron.reverse_azimuth = reversed;
+        let (mut runner, mut out) = Runner::new(
+            config,
+            Reporting {
+                mount: SimMount::new(SimFaults::default(), 30.0, 1),
+                positions: Vec::new(),
+            },
+            RunLog::discard(),
+            false,
+            MAC_BOOT,
+            0,
+        )
+        .unwrap();
+        out.extend(runner.line("yes", 0));
+        let mut now = 0;
+        // `z` reads 100 units on the azimuth motor.
+        let z = units_to_deg(100);
+        feed(&mut runner, &mut now, 600, |_| [z, 30.0], &mut out);
+        out.extend(runner.line("arm", now));
+        assert_eq!(runner.state(), MountState::Armed, "{out:#?}");
+        out.extend(runner.line("goto az +0.002", now));
+        let target = runner
+            .adapter()
+            .mount
+            .received
+            .iter()
+            .find_map(|(_, c)| match c {
+                MountCommand::Goto { target, .. } => Some(*target),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{out:#?}"));
+        // In axis units: the motor's 100 counts the other way when reversed.
+        let start: i64 = if reversed { -100 } else { 100 };
+        assert_eq!(target, wrap_units(start + 93), "reversed {reversed}");
+        out.extend(runner.line("", now));
+    }
 }
 
 #[test]
