@@ -1,7 +1,7 @@
 //! Checks before the adapter starts: the hand controller answers, both
-//! motors answer, no goto is running, and tracking is off (slews conflict
-//! with it, so it is turned off here if needed). Nothing here moves the
-//! mount.
+//! motors answer and no goto is running. Then tracking off (`T 00`) is sent
+//! whatever tracking reads, which also clears any variable rate left on the
+//! motors. Nothing here moves the mount; tracking off stops motion.
 
 use cwb_celestron_discovery::{
     HandController, Link, Outcome, Query,
@@ -49,25 +49,28 @@ fn checks<L: Link>(hc: &mut HandController<L>) -> Result<Prepared, String> {
         Some(_) => return Err("a goto is in progress: wait for it to finish".into()),
         None => return Err("the goto status query went unanswered".into()),
     }
-    match hc.query(Query::TrackingMode).value {
-        Some(Value::TrackingMode(0)) => {}
-        Some(Value::TrackingMode(mode)) => {
-            let (outcome, _) = transact(hc.link_mut(), &TRACKING_OFF, 0, false);
-            if outcome != Outcome::Ok {
-                return Err(format!(
-                    "tracking is on (mode {mode}) and turning it off failed ({outcome:?})"
-                ));
-            }
-            if !matches!(
-                hc.query(Query::TrackingMode).value,
-                Some(Value::TrackingMode(0))
-            ) {
-                return Err(format!("tracking is on (mode {mode}) and stayed on"));
-            }
-            notes.push(format!("tracking was on (mode {mode}); turned it off"));
-        }
+    // Tracking off, always: it also clears a variable rate left on a motor
+    // controller by earlier software, which "tracking 0" doesn't reveal and
+    // which keeps the axis creeping (docs/observations.md, O1).
+    let mode = match hc.query(Query::TrackingMode).value {
+        Some(Value::TrackingMode(mode)) => mode,
         _ => return Err("the tracking mode query went unanswered".into()),
+    };
+    let (outcome, _) = transact(hc.link_mut(), &TRACKING_OFF, 0, false);
+    if outcome != Outcome::Ok {
+        return Err(format!("turning tracking off failed ({outcome:?})"));
     }
+    if !matches!(
+        hc.query(Query::TrackingMode).value,
+        Some(Value::TrackingMode(0))
+    ) {
+        return Err(format!("tracking is on (mode {mode}) and stayed on"));
+    }
+    notes.push(if mode == 0 {
+        "tracking off sent (it read off already)".into()
+    } else {
+        format!("tracking was on (mode {mode}); turned it off")
+    });
     let positions_deg = hc.axis_positions_deg().map_err(|e| e.0)?;
     let backlash = [Device::AzmMotor, Device::AltMotor].map(|d| {
         [Sense::Positive, Sense::Negative].map(|sense| {

@@ -178,6 +178,57 @@ enum CelestronCommand {
         #[arg(long)]
         notes: Option<String>,
     },
+    /// The stop-form test (docs/observations.md, O1): confirm the mount is
+    /// still, send ONE rate-0 stop command to one axis, and watch the mount's
+    /// own positions for creep. Only rate-0 commands can be sent.
+    StopTest {
+        /// Serial device, e.g. /dev/cu.usbserial-… (see `cwb celestron ports`).
+        #[arg(long, required_unless_present = "simulate")]
+        port: Option<String>,
+        /// Use the simulated hand controller and mount instead of hardware.
+        #[arg(long, conflicts_with = "port")]
+        simulate: bool,
+        /// azm or alt.
+        #[arg(long)]
+        axis: String,
+        /// variable+, variable-, fixed+ or fixed-.
+        #[arg(long)]
+        form: String,
+        /// Seconds to watch before sending (the mount must be still).
+        #[arg(long, default_value_t = 5.0)]
+        before: f64,
+        /// Seconds to watch after sending.
+        #[arg(long, default_value_t = 30.0)]
+        after: f64,
+        /// Where the result goes (git-ignored).
+        #[arg(long, short, default_value = "reports/stop-test")]
+        out: PathBuf,
+        /// Don't ask for confirmation.
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Find a command that cancels a variable-rate creep (docs/observations.md,
+    /// O1): start the creep with variable rate 0 if the axis is still, then
+    /// try each candidate in turn until one leaves the mount still.
+    CancelSweep {
+        /// Serial device, e.g. /dev/cu.usbserial-… (see `cwb celestron ports`).
+        #[arg(long, required_unless_present = "simulate")]
+        port: Option<String>,
+        /// Use the simulated hand controller and mount instead of hardware.
+        #[arg(long, conflicts_with = "port")]
+        simulate: bool,
+        /// azm or alt.
+        #[arg(long, default_value = "azm")]
+        axis: String,
+        /// Seconds to watch after each candidate.
+        #[arg(long, default_value_t = 15.0)]
+        watch: f64,
+        #[arg(long, short, default_value = "reports/stop-test")]
+        out: PathBuf,
+        /// Don't ask for confirmation.
+        #[arg(long)]
+        yes: bool,
+    },
     /// Read the motor controllers' anti-backlash settings, and optionally set
     /// them (0–99), reading each back. No motion.
     Backlash {
@@ -551,6 +602,79 @@ fn celestron(command: CelestronCommand) -> Result<ExitCode> {
                 ExitCode::FAILURE
             })
         }
+        CelestronCommand::StopTest {
+            port,
+            simulate,
+            axis,
+            form,
+            before,
+            after,
+            out,
+            yes,
+        } => {
+            use cwb_mount_celestron::stoptest::StopForm;
+            let axis = match axis.as_str() {
+                "azm" | "az" | "azimuth" => cwb_mount_core::Axis::Azimuth,
+                "alt" | "altitude" => cwb_mount_core::Axis::Altitude,
+                other => anyhow::bail!("--axis {other}: use azm or alt"),
+            };
+            let form = StopForm::parse(&form).with_context(|| {
+                format!("--form {form}: use variable+, variable-, fixed+ or fixed-")
+            })?;
+            let mac = Arc::new(MacClock::new());
+            let clock: cwb_mount_celestron::adapter::Clock = {
+                let mac = mac.clone();
+                Arc::new(move || mac.now_ns())
+            };
+            let windows = (
+                std::time::Duration::from_secs_f64(before.max(1.0)),
+                std::time::Duration::from_secs_f64(after.max(1.0)),
+            );
+            if simulate {
+                let mount = Arc::new(std::sync::Mutex::new(cwb_mount_sim::SimMount::new(
+                    cwb_mount_sim::SimFaults::default(),
+                    30.0,
+                    1,
+                )));
+                let link = cwb_mount_celestron::fake::SimHandController::new(mount, clock.clone());
+                stop_test(link, &clock, axis, form, windows, &out, yes)
+            } else {
+                let path = port.expect("clap requires --port without --simulate");
+                stop_test(open_serial(&path), &clock, axis, form, windows, &out, yes)
+            }
+        }
+        CelestronCommand::CancelSweep {
+            port,
+            simulate,
+            axis,
+            watch,
+            out,
+            yes,
+        } => {
+            let axis = match axis.as_str() {
+                "azm" | "az" | "azimuth" => cwb_mount_core::Axis::Azimuth,
+                "alt" | "altitude" => cwb_mount_core::Axis::Altitude,
+                other => anyhow::bail!("--axis {other}: use azm or alt"),
+            };
+            let mac = Arc::new(MacClock::new());
+            let clock: cwb_mount_celestron::adapter::Clock = {
+                let mac = mac.clone();
+                Arc::new(move || mac.now_ns())
+            };
+            let watch = std::time::Duration::from_secs_f64(watch.max(5.0));
+            if simulate {
+                let mount = Arc::new(std::sync::Mutex::new(cwb_mount_sim::SimMount::new(
+                    cwb_mount_sim::SimFaults::default(),
+                    30.0,
+                    1,
+                )));
+                let link = cwb_mount_celestron::fake::SimHandController::new(mount, clock.clone());
+                cancel_sweep(link, &clock, axis, watch, &out, yes)
+            } else {
+                let path = port.expect("clap requires --port without --simulate");
+                cancel_sweep(open_serial(&path), &clock, axis, watch, &out, yes)
+            }
+        }
         CelestronCommand::Backlash {
             port,
             simulate,
@@ -611,6 +735,243 @@ fn celestron(command: CelestronCommand) -> Result<ExitCode> {
             }
         }
     }
+}
+
+/// A still mount's own positions don't change at all: allow one unit
+/// (0.077″) of reading noise on each axis.
+const STILL_ARCSEC: f64 = 0.08;
+
+fn stop_test(
+    mut link: impl cwb_celestron_discovery::Link,
+    clock: &cwb_mount_celestron::adapter::Clock,
+    axis: cwb_mount_core::Axis,
+    form: cwb_mount_celestron::stoptest::StopForm,
+    (before, after): (std::time::Duration, std::time::Duration),
+    out: &Path,
+    yes: bool,
+) -> Result<ExitCode> {
+    use cwb_mount_celestron::stoptest::{self, StopTest, rate_arcsec_s};
+    use std::io::{IsTerminal, Write};
+
+    let every = std::time::Duration::from_millis(250);
+    let spread = |r: &[stoptest::Reading]| -> [f64; 2] {
+        [0, 1].map(|i| {
+            let d: Vec<f64> = r
+                .iter()
+                .map(|x| ((x.deg[i] - r[0].deg[i] + 180.0).rem_euclid(360.0) - 180.0) * 3600.0)
+                .collect();
+            d.iter().cloned().fold(f64::MIN, f64::max) - d.iter().cloned().fold(f64::MAX, f64::min)
+        })
+    };
+    println!("watching the mount for {:.0} s…", before.as_secs_f64());
+    let before_r = stoptest::watch(&mut link, clock, before, every);
+    if before_r.len() < 4 {
+        anyhow::bail!(
+            "couldn't read the mount's positions ({} readings)",
+            before_r.len()
+        );
+    }
+    let s = spread(&before_r);
+    if s.iter().any(|v| *v > STILL_ARCSEC) {
+        anyhow::bail!(
+            "the mount isn't still (spread azimuth {:.2}″, altitude {:.2}″): power-cycle it first, so the test starts from still",
+            s[0],
+            s[1]
+        );
+    }
+    println!(
+        "still: azimuth {:.5}°, altitude {:.5}° ({} readings)",
+        before_r[0].deg[0],
+        before_r[0].deg[1],
+        before_r.len()
+    );
+    let bytes = form.bytes(axis);
+    let hex: Vec<String> = bytes.iter().map(|b| format!("{b:02X}")).collect();
+    println!("will send {form} to {axis:?}: {}", hex.join(" "));
+    if !yes {
+        if !std::io::stdin().is_terminal() {
+            anyhow::bail!("no terminal to confirm on: pass --yes to proceed");
+        }
+        print!("Send it? Stay by the power switch. [y/N] ");
+        std::io::stdout().flush()?;
+        let mut answer = String::new();
+        std::io::stdin().read_line(&mut answer)?;
+        if !answer.trim().eq_ignore_ascii_case("y") {
+            println!("nothing sent");
+            return Ok(ExitCode::FAILURE);
+        }
+    }
+    let (sent_ns, outcome) = stoptest::send(&mut link, clock, axis, form);
+    println!(
+        "sent: {outcome:?}; watching for {:.0} s…",
+        after.as_secs_f64()
+    );
+    let after_r = stoptest::watch(&mut link, clock, after, every);
+    let rates = rate_arcsec_s(&after_r).unwrap_or([f64::NAN; 2]);
+    let moved = spread(&after_r);
+    let creeping: Vec<&str> = [("azimuth", 0), ("altitude", 1)]
+        .iter()
+        .filter(|(_, i)| moved[*i] > STILL_ARCSEC)
+        .map(|(n, _)| *n)
+        .collect();
+    println!(
+        "after: azimuth {:+.3}″/s ({:.2}″ in all), altitude {:+.3}″/s ({:.2}″ in all), {} readings",
+        rates[0],
+        moved[0],
+        rates[1],
+        moved[1],
+        after_r.len()
+    );
+    if creeping.is_empty() {
+        println!("result: {form} on {axis:?} left the mount still");
+    } else {
+        println!(
+            "result: {form} on {axis:?} started a creep on {}. Power-cycle the mount before the next test.",
+            creeping.join(" and ")
+        );
+    }
+    let test = StopTest {
+        axis,
+        form,
+        bytes: hex.join(" "),
+        outcome,
+        sent_ns,
+        before: before_r,
+        after: after_r,
+    };
+    fs::create_dir_all(out).with_context(|| format!("creating {}", out.display()))?;
+    let file = out.join(format!(
+        "{}_{form}_{}.json",
+        cwb_storage::clock::utc_now().replace(':', "-"),
+        match axis {
+            cwb_mount_core::Axis::Azimuth => "azm",
+            cwb_mount_core::Axis::Altitude => "alt",
+        }
+    ));
+    fs::write(&file, serde_json::to_string_pretty(&test)? + "\n")?;
+    println!("saved: {}", file.display());
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Arcsecond spread of each axis over `readings`, wrap-aware.
+fn spread_arcsec(r: &[cwb_mount_celestron::stoptest::Reading]) -> [f64; 2] {
+    [0, 1].map(|i| {
+        let d: Vec<f64> = r
+            .iter()
+            .map(|x| ((x.deg[i] - r[0].deg[i] + 180.0).rem_euclid(360.0) - 180.0) * 3600.0)
+            .collect();
+        d.iter().cloned().fold(f64::MIN, f64::max) - d.iter().cloned().fold(f64::MAX, f64::min)
+    })
+}
+
+fn cancel_sweep(
+    mut link: impl cwb_celestron_discovery::Link,
+    clock: &cwb_mount_celestron::adapter::Clock,
+    axis: cwb_mount_core::Axis,
+    watch: std::time::Duration,
+    out: &Path,
+    yes: bool,
+) -> Result<ExitCode> {
+    use cwb_mount_celestron::stoptest::{self, Cancel, Reading, StopForm, rate_arcsec_s};
+    use std::io::{IsTerminal, Write};
+
+    let every = std::time::Duration::from_millis(250);
+    let ns = |s: f64| (s * 1e9) as i64;
+    // Judge each window on its last 10 s, after any settling.
+    let tail = |r: &[Reading]| -> Vec<Reading> {
+        let end = r.last().map_or(0, |x| x.t_ns);
+        r.iter()
+            .filter(|x| x.t_ns >= end - ns(10.0))
+            .copied()
+            .collect()
+    };
+    let creeping = |r: &[Reading]| spread_arcsec(&tail(r))[axis.index()] > STILL_ARCSEC;
+    let show = |label: &str, r: &[Reading]| {
+        let rate = rate_arcsec_s(&tail(r)).unwrap_or([f64::NAN; 2]);
+        println!(
+            "{label}: azimuth {:+.3}″/s, altitude {:+.3}″/s ({} readings)",
+            rate[0],
+            rate[1],
+            r.len()
+        );
+    };
+    if !yes {
+        if !std::io::stdin().is_terminal() {
+            anyhow::bail!("no terminal to confirm on: pass --yes to proceed");
+        }
+        println!(
+            "This starts a slow creep on {axis:?} (variable rate 0) if it's still, then tries:"
+        );
+        for c in Cancel::ALL {
+            println!("  - {c}");
+        }
+        print!("Go ahead? Stay by the power switch. [y/N] ");
+        std::io::stdout().flush()?;
+        let mut answer = String::new();
+        std::io::stdin().read_line(&mut answer)?;
+        if !answer.trim().eq_ignore_ascii_case("y") {
+            println!("nothing sent");
+            return Ok(ExitCode::FAILURE);
+        }
+    }
+    let mut record = serde_json::Map::new();
+    let start = stoptest::watch(&mut link, clock, std::time::Duration::from_secs(5), every);
+    if start.len() < 4 {
+        anyhow::bail!("couldn't read the mount's positions");
+    }
+    show("at the start", &start);
+    record.insert("start".into(), serde_json::to_value(&start)?);
+    if !creeping(&start) {
+        let (_, outcome) = stoptest::send(&mut link, clock, axis, StopForm::VariablePositive);
+        println!("still; sent variable rate 0 to start the creep ({outcome:?})");
+        let r = stoptest::watch(&mut link, clock, std::time::Duration::from_secs(10), every);
+        show("creep", &r);
+        record.insert("creep".into(), serde_json::to_value(&r)?);
+        if !creeping(&r) {
+            println!("result: variable rate 0 didn't start a creep this time; nothing to cancel");
+            return Ok(ExitCode::FAILURE);
+        }
+    } else {
+        println!("already creeping; testing cancels against it");
+    }
+    let mut tried = Vec::new();
+    let mut found = None;
+    for c in Cancel::ALL {
+        let sent = stoptest::run_cancel(&mut link, axis, c);
+        let r = stoptest::watch(&mut link, clock, watch, every);
+        let still = !creeping(&r);
+        println!(
+            "{c}: {} → {}",
+            sent.iter()
+                .map(|(b, o)| format!("{b} ({o:?})"))
+                .collect::<Vec<_>>()
+                .join(", "),
+            if still { "STILL" } else { "still creeping" }
+        );
+        show("  after", &r);
+        tried.push(serde_json::json!({ "cancel": c, "sent": sent, "readings": r, "still": still }));
+        if still {
+            found = Some(c);
+            break;
+        }
+    }
+    record.insert("tried".into(), serde_json::Value::Array(tried));
+    match found {
+        Some(c) => println!("result: {c} cancelled the creep"),
+        None => println!("result: nothing cancelled the creep. Power-cycle the mount."),
+    }
+    fs::create_dir_all(out).with_context(|| format!("creating {}", out.display()))?;
+    let file = out.join(format!(
+        "{}_cancel-sweep.json",
+        cwb_storage::clock::utc_now().replace(':', "-")
+    ));
+    fs::write(&file, serde_json::to_string_pretty(&record)? + "\n")?;
+    println!("saved: {}", file.display());
+    Ok(if found.is_some() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    })
 }
 
 /// Opens the hand controller's serial port. If it can't be opened (most

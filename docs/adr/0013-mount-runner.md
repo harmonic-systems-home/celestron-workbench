@@ -100,3 +100,14 @@ Night sessions run on a laptop in the dark, where a silent port failure is easy 
 - **The runner reconnects mid-session.** When the link is lost it closes the port, beeps, waits for it as above, and re-runs the preparation checks (anti-backlash 0, tracking off, positions readable; retried every 2 s while the hand controller starts up). The session stays latched: `reset` once the mount is still now returns to read-only, then `arm` as usual. The run log continues.
 - **`note <text>`** puts a timestamped remark in the run log, so what the operator hears or does sits on the same timeline as the mount's positions.
 - **The checklist** asks for a re-plug after any mount power cycle.
+
+## Stops are tracking off, then fixed rate 0 (2026-10-29)
+
+`cwb celestron stop-test` and `cwb celestron cancel-sweep` (docs/observations.md, O1) showed that on these motor controllers (7.17) variable rate 0 doesn't stop: it runs at the slowest variable rate (+0.21″/s, −0.36″/s), and fixed rate 0 doesn't cancel it. Tracking off (`T 00`) does. Variable-rate commands evidently set the motor controllers' guide/tracking rate, a separate mechanism from fixed-rate slews.
+
+- **Every stop, a move's own or `StopAll`, is `T 00` then fixed rate 0** on the axis (both axes for `StopAll`). Tracking off is mount-wide, which suits: only one axis ever moves, and fault stops should stop both. Fixed rate 0 covers anything in fixed-rate mode.
+- **Variable rate 0 is never sent;** a move's rate is always at least one unit. A test checks every transaction the adapter can produce.
+- **The stop-form setting is gone.**
+- **Preparation always sends `T 00`,** clearing any rate left on the motors by earlier software (it reads "tracking off" regardless).
+- **The simulated hand controller now behaves like these motors:** variable rate 0 creeps, fixed rate 0 doesn't cancel a variable rate, tracking off does. A simulated move ends with no creep afterwards.
+- **Still to confirm on hardware:** that `T 00` ends a real variable-rate move as cleanly, and how fast. The runner's serial timing and idle-creep check measure both.

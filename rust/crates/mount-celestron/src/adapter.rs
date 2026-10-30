@@ -36,7 +36,7 @@ pub struct Position {
 pub struct Transaction {
     pub sent_ns: Nanos,
     pub reply_ns: Nanos,
-    pub bytes: [u8; 8],
+    pub bytes: Vec<u8>,
     pub outcome: Outcome,
 }
 
@@ -212,9 +212,10 @@ impl<L: Link> Worker<L> {
     fn execute(&mut self, command: &MountCommand) {
         self.moving = matches!(command, MountCommand::Move { .. });
         let mut all_ok = true;
-        for bytes in transactions(command, self.signs) {
+        for tx in transactions(command, self.signs) {
             let sent_ns = (self.clock)();
-            let (outcome, _) = transact(&mut self.link, &bytes, 0, true);
+            let (outcome, _) = transact(&mut self.link, &tx.bytes, 0, tx.pass_through);
+            let bytes = tx.bytes;
             let _ = self.events.send(Event::Transaction(Transaction {
                 sent_ns,
                 reply_ns: (self.clock)(),

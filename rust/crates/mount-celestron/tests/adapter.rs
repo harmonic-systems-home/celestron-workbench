@@ -8,7 +8,7 @@ use std::{
 };
 
 use cwb_mount_celestron::{
-    CelestronAdapter, CelestronSettings, StopForm,
+    CelestronAdapter, CelestronSettings,
     adapter::Clock,
     encode::{quantized_deg_s, rate_units, transactions},
     fake::SimHandController,
@@ -87,95 +87,91 @@ impl Rig {
     }
 }
 
+fn bytes(command: &MountCommand, settings: CelestronSettings) -> Vec<Vec<u8>> {
+    transactions(command, settings)
+        .into_iter()
+        .map(|t| t.bytes)
+        .collect()
+}
+
 #[test]
-fn moves_and_stops_are_the_documented_pass_through_bytes() {
+fn moves_and_stops_are_the_documented_bytes() {
     // 0.1 °/s = 360″/s, × 4 = 1440 = 0x05A0.
     assert_eq!(
-        transactions(
+        bytes(
             &mv(Axis::Azimuth, Direction::Positive, 0.1),
             CelestronSettings::default()
         ),
-        [[b'P', 3, 16, 6, 0x05, 0xA0, 0, 0]]
+        [vec![b'P', 3, 16, 6, 0x05, 0xA0, 0, 0]]
     );
     assert_eq!(
-        transactions(
+        bytes(
             &mv(Axis::Altitude, Direction::Negative, 0.1),
             CelestronSettings::default()
         ),
-        [[b'P', 3, 17, 7, 0x05, 0xA0, 0, 0]]
+        [vec![b'P', 3, 17, 7, 0x05, 0xA0, 0, 0]]
     );
     let reversed = CelestronSettings {
         reverse_azimuth: true,
         ..CelestronSettings::default()
     };
     assert_eq!(
-        transactions(&mv(Axis::Azimuth, Direction::Positive, 0.1), reversed)[0][3],
+        bytes(&mv(Axis::Azimuth, Direction::Positive, 0.1), reversed)[0][3],
         7
     );
-    assert_eq!(
-        transactions(
-            &MountCommand::Stop {
-                axis: Axis::Altitude
-            },
-            reversed
-        ),
-        [[b'P', 3, 17, 6, 0, 0, 0, 0], [b'P', 2, 17, 36, 0, 0, 0, 0]]
+    // A stop: tracking off (to the hand controller), then fixed rate 0.
+    let stop = transactions(
+        &MountCommand::Stop {
+            axis: Axis::Altitude,
+        },
+        reversed,
     );
+    assert_eq!(stop[0].bytes, [b'T', 0]);
+    assert!(!stop[0].pass_through);
+    assert_eq!(stop[1].bytes, [b'P', 2, 17, 36, 0, 0, 0, 0]);
+    assert!(stop[1].pass_through);
     assert_eq!(
-        transactions(&MountCommand::StopAll, reversed).len(),
-        4,
-        "both axes, both stop forms"
+        bytes(&MountCommand::StopAll, reversed),
+        [
+            vec![b'T', 0],
+            vec![b'P', 2, 16, 36, 0, 0, 0, 0],
+            vec![b'P', 2, 17, 36, 0, 0, 0, 0]
+        ]
     );
-    // The stop-form trial: a move's own stop can be one form; StopAll is both.
-    for (form, expected) in [
-        (StopForm::Variable, vec![[b'P', 3, 16, 6, 0, 0, 0, 0]]),
-        (StopForm::Fixed, vec![[b'P', 2, 16, 36, 0, 0, 0, 0]]),
-    ] {
-        let settings = CelestronSettings {
-            stop: form,
-            ..CelestronSettings::default()
-        };
-        assert_eq!(
-            transactions(
-                &MountCommand::Stop {
-                    axis: Axis::Azimuth
-                },
-                settings
-            ),
-            expected
-        );
-        assert_eq!(transactions(&MountCommand::StopAll, settings).len(), 4);
-    }
     assert_eq!(rate_units(1e-9), 1, "a move is never rate 0");
     assert!((quantized_deg_s(0.001) - 14.0 / 4.0 / 3600.0).abs() < 1e-12);
 }
 
 #[test]
-fn every_transaction_is_a_variable_rate_slew_or_a_stop() {
+fn variable_rate_0_is_never_sent() {
     let mut all = Vec::new();
     for axis in Axis::BOTH {
         for direction in [Direction::Positive, Direction::Negative] {
-            for rate in [0.001, 0.1, 1.0, 4.5] {
-                all.extend(transactions(
+            for rate in [0.0, 1e-9, 0.001, 0.1, 1.0, 4.5] {
+                all.extend(bytes(
                     &mv(axis, direction, rate),
                     CelestronSettings::default(),
                 ));
             }
         }
-        all.extend(transactions(
+        all.extend(bytes(
             &MountCommand::Stop { axis },
             CelestronSettings::default(),
         ));
     }
-    all.extend(transactions(
-        &MountCommand::StopAll,
-        CelestronSettings::default(),
-    ));
+    all.extend(bytes(&MountCommand::StopAll, CelestronSettings::default()));
     for t in all {
-        let slew = t[1] == 3 && [6, 7].contains(&t[3]) && t[6..] == [0, 0];
-        let fixed_stop = t[1] == 2 && t[3] == 36 && t[4..] == [0, 0, 0, 0];
+        let tracking_off = t == [b'T', 0];
+        let slew = t.len() == 8
+            && t[0] == b'P'
+            && t[1] == 3
+            && [6, 7].contains(&t[3])
+            && t[4..6] != [0, 0]
+            && t[6..] == [0, 0];
+        let fixed_zero =
+            t.len() == 8 && t[0] == b'P' && t[1] == 2 && t[3] == 36 && t[4..] == [0, 0, 0, 0];
         assert!(
-            t[0] == b'P' && [16, 17].contains(&t[2]) && (slew || fixed_stop),
+            tracking_off || ((slew || fixed_zero) && [16, 17].contains(&t[2])),
             "{t:?}"
         );
     }
@@ -221,17 +217,15 @@ fn dropping_the_adapter_stops_both_axes() {
         ..
     } = rig;
     drop(adapter);
-    let last: Vec<Vec<u8>> = received
-        .lock()
-        .unwrap()
-        .iter()
-        .rev()
-        .take(4)
-        .cloned()
-        .collect();
-    assert!(
-        last.iter().all(|c| c[0] == b'P' && c[4..] == [0, 0, 0, 0]),
-        "{last:?}"
+    let received = received.lock().unwrap();
+    let last = &received[received.len() - 3..];
+    assert_eq!(
+        last,
+        [
+            vec![b'T', 0],
+            vec![b'P', 2, 16, 36, 0, 0, 0, 0],
+            vec![b'P', 2, 17, 36, 0, 0, 0, 0]
+        ]
     );
     let mut m = mount.lock().unwrap();
     m.step(10_000_000_000, 1_000_000_000);
@@ -261,7 +255,7 @@ fn a_dropped_link_is_reported_once_and_stops_are_still_attempted() {
     rig.run(100);
     assert_eq!(
         rig.received.lock().unwrap().len(),
-        before + 4,
+        before + 3,
         "the stop went out anyway; the move didn't"
     );
 }
@@ -362,4 +356,117 @@ fn positions_are_not_read_between_a_move_and_its_stop() {
         after[after.rfind('P').unwrap()..].contains('z'),
         "reads resume: {text}"
     );
+}
+
+#[test]
+fn the_stop_test_can_only_send_rate_zero_commands() {
+    use cwb_mount_celestron::stoptest::StopForm;
+    for axis in Axis::BOTH {
+        for form in StopForm::ALL {
+            let b = form.bytes(axis);
+            assert_eq!(b[0], b'P');
+            assert!([16, 17].contains(&b[2]));
+            assert!(
+                (b[1] == 3 && [6, 7].contains(&b[3])) || (b[1] == 2 && [36, 37].contains(&b[3])),
+                "{b:?}"
+            );
+            assert_eq!(b[4..], [0, 0, 0, 0], "{form}: rate 0, nothing else");
+            assert_eq!(StopForm::parse(&form.to_string()), Some(form));
+        }
+    }
+}
+
+#[test]
+fn the_stop_test_measures_rates_from_positions() {
+    use cwb_mount_celestron::stoptest::{Reading, rate_arcsec_s};
+    let r = |s: f64, a: f64, b: f64| Reading {
+        t_ns: (s * 1e9) as i64,
+        deg: [a, b],
+    };
+    // 0.21″/s on azimuth across 0°; altitude still.
+    let rates = rate_arcsec_s(&[
+        r(0.0, 359.9999, 26.0),
+        r(10.0, 359.9999 + 2.1 / 3600.0 - 360.0, 26.0),
+    ])
+    .unwrap();
+    assert!((rates[0] - 0.21).abs() < 1e-6, "{rates:?}");
+    assert_eq!(rates[1], 0.0);
+    assert!(rate_arcsec_s(&[r(0.0, 0.0, 0.0)]).is_none());
+}
+
+#[test]
+fn cancel_candidates_are_stops_or_state_commands_and_one_tiny_nudge() {
+    use cwb_mount_celestron::stoptest::Cancel;
+    for axis in Axis::BOTH {
+        for c in Cancel::ALL {
+            for s in c.steps(axis) {
+                let b = &s.bytes;
+                let ok = match b[0] {
+                    b'T' => b == &[b'T', 0],
+                    b'M' => b.len() == 1,
+                    b'P' => {
+                        [16, 17].contains(&b[2])
+                            && b[5..8] == [0, 0, 0]
+                            && match (b[1], b[3]) {
+                                // Fixed rate: only 0, or 1 in the nudge.
+                                (2, 36 | 37) => b[4] == 0 || (c == Cancel::FixedNudge && b[4] == 1),
+                                // 24-bit guide rate: only 0.
+                                (4, 6 | 7) => b[4] == 0,
+                                _ => false,
+                            }
+                    }
+                    _ => false,
+                };
+                assert!(ok, "{c}: {b:?}");
+            }
+        }
+    }
+}
+
+#[test]
+fn the_simulated_motors_creep_on_variable_rate_0_and_only_tracking_off_cancels_it() {
+    use cwb_mount_celestron::stoptest::{self, Cancel, StopForm};
+    let clock = clock();
+    let mount = Arc::new(Mutex::new(SimMount::new(SimFaults::default(), 30.0, 1)));
+    let mut hc = SimHandController::new(mount.clone(), clock.clone());
+    stoptest::send(&mut hc, &clock, Axis::Azimuth, StopForm::VariablePositive);
+    let step = |m: &Arc<Mutex<SimMount>>| {
+        let mut m = m.lock().unwrap();
+        for i in 1..=100 {
+            m.step(i * 10_000_000, 10_000_000);
+        }
+        m.rates_deg_s()[0] * 3600.0
+    };
+    assert!(
+        (step(&mount) - 0.21).abs() < 1e-6,
+        "creeps at the slowest rate"
+    );
+    for c in [Cancel::FixedZeroPositive, Cancel::FixedZeroNegative] {
+        stoptest::run_cancel(&mut hc, Axis::Azimuth, c);
+        assert!(step(&mount) > 0.2, "{c} doesn't cancel it");
+    }
+    stoptest::run_cancel(&mut hc, Axis::Azimuth, Cancel::TrackingOff);
+    assert_eq!(step(&mount), 0.0, "tracking off does");
+}
+
+#[test]
+fn a_real_move_ends_cleanly_with_the_adapter_stop() {
+    let mut rig = rig_with(SimFaults::default(), Some(Duration::from_millis(50)));
+    rig.adapter
+        .send(&mv(Axis::Azimuth, Direction::Positive, 0.2), 0)
+        .unwrap();
+    rig.run(300);
+    rig.adapter
+        .send(
+            &MountCommand::Stop {
+                axis: Axis::Azimuth,
+            },
+            0,
+        )
+        .unwrap();
+    rig.run(300);
+    let after = rig.angles();
+    rig.run(500);
+    assert_eq!(rig.rates(), [0.0, 0.0]);
+    assert_eq!(rig.angles(), after, "no creep after the stop");
 }

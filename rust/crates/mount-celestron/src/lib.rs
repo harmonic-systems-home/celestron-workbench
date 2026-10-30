@@ -14,6 +14,7 @@ pub mod adapter;
 pub mod encode;
 pub mod fake;
 pub mod prepare;
+pub mod stoptest;
 
 pub use adapter::{CelestronAdapter, Position, Transaction};
-pub use encode::{CelestronSettings, StopForm};
+pub use encode::CelestronSettings;

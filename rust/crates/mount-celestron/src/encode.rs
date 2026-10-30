@@ -1,6 +1,7 @@
 //! Byte encodings for the commands this adapter may send, from the approved
 //! discovery report (ADR 0010, "Proposed commands"): pass-through variable-
-//! rate slews (`P 03 dev 06|07 hi lo 00 00`) and stops, each answered `#`.
+//! rate slews (`P 03 dev 06|07 hi lo 00 00`, never rate 0) and stops (`T 00`
+//! and fixed rate 0), each answered `#`.
 
 use cwb_mount_core::{Axis, Direction, MountCommand};
 use serde::{Deserialize, Serialize};
@@ -27,23 +28,6 @@ pub struct CelestronSettings {
     /// once as opposite motion, which latches a fault.
     pub reverse_azimuth: bool,
     pub reverse_altitude: bool,
-    /// How a move's own stop is sent (the stop-form trial). Stops after a
-    /// fault, and on shutdown, always send both forms.
-    #[serde(default)]
-    pub stop: StopForm,
-}
-
-/// Which stop command ends a move.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum StopForm {
-    /// Variable rate 0, then fixed rate 0.
-    #[default]
-    Both,
-    /// Variable rate 0 only (the same mode as the slew).
-    Variable,
-    /// Fixed rate 0 only.
-    Fixed,
 }
 
 impl CelestronSettings {
@@ -68,12 +52,24 @@ pub fn quantized_deg_s(rate_deg_s: f64) -> f64 {
     f64::from(rate_units(rate_deg_s)) / 4.0 / 3600.0
 }
 
-/// The serial transactions for one controller command, in order. A move's
-/// own stop uses the configured [`StopForm`]; `StopAll` (faults, shutdown)
-/// always sends a variable-rate 0 and then a fixed-rate 0 on each axis,
-/// since which of them ends a variable-rate slew is still being observed
-/// (ADR 0010, "To observe").
-pub fn transactions(command: &MountCommand, signs: CelestronSettings) -> Vec<[u8; 8]> {
+/// One serial command: pass-through to a motor controller, or to the hand
+/// controller itself. Every one is answered `#`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Tx {
+    pub bytes: Vec<u8>,
+    pub pass_through: bool,
+}
+
+/// The serial transactions for one controller command, in order.
+///
+/// A stop is `T 00` (tracking off) and then fixed rate 0 on the axis.
+/// Variable-rate commands set the motor controllers' guide/tracking rate:
+/// on these controllers (7.17) "variable rate 0" doesn't stop, it creeps at
+/// the slowest rate, and fixed rate 0 doesn't cancel it; tracking off does
+/// (docs/observations.md, O1). Tracking off is mount-wide, which is fine:
+/// only one axis ever moves. The fixed rate 0 covers anything in fixed-rate
+/// mode. Variable rate 0 is never sent.
+pub fn transactions(command: &MountCommand, signs: CelestronSettings) -> Vec<Tx> {
     match *command {
         MountCommand::Move {
             axis,
@@ -83,7 +79,7 @@ pub fn transactions(command: &MountCommand, signs: CelestronSettings) -> Vec<[u8
         } => {
             let positive = (direction == Direction::Positive) != signs.reversed(axis);
             let [hi, lo] = rate_units(rate_deg_s).to_be_bytes();
-            vec![[
+            vec![motor([
                 b'P',
                 3,
                 device(axis),
@@ -96,28 +92,35 @@ pub fn transactions(command: &MountCommand, signs: CelestronSettings) -> Vec<[u8
                 lo,
                 0,
                 0,
-            ]]
+            ])]
         }
-        MountCommand::Stop { axis } => {
-            let [variable, fixed] = stop(axis);
-            match signs.stop {
-                StopForm::Both => vec![variable, fixed],
-                StopForm::Variable => vec![variable],
-                StopForm::Fixed => vec![fixed],
-            }
-        }
-        MountCommand::StopAll => Axis::BOTH.iter().flat_map(|a| stop(*a)).collect(),
+        MountCommand::Stop { axis } => vec![tracking_off(), fixed_zero(axis)],
+        MountCommand::StopAll => vec![
+            tracking_off(),
+            fixed_zero(Axis::Azimuth),
+            fixed_zero(Axis::Altitude),
+        ],
     }
 }
 
-fn stop(axis: Axis) -> [[u8; 8]; 2] {
-    let d = device(axis);
-    [
-        [b'P', 3, d, VARIABLE_POSITIVE, 0, 0, 0, 0],
-        [b'P', 2, d, FIXED_POSITIVE, 0, 0, 0, 0],
-    ]
+fn motor(bytes: [u8; 8]) -> Tx {
+    Tx {
+        bytes: bytes.to_vec(),
+        pass_through: true,
+    }
 }
 
-/// Set Tracking Mode off (`T 00`): sent only during preparation, when the
-/// hand controller reports tracking on, because slews conflict with it.
+fn tracking_off() -> Tx {
+    Tx {
+        bytes: TRACKING_OFF.to_vec(),
+        pass_through: false,
+    }
+}
+
+fn fixed_zero(axis: Axis) -> Tx {
+    motor([b'P', 2, device(axis), FIXED_POSITIVE, 0, 0, 0, 0])
+}
+
+/// Set Tracking Mode off (`T 00`): the stop for a variable-rate move, and
+/// sent during preparation to clear any rate left over from earlier.
 pub const TRACKING_OFF: [u8; 2] = [b'T', 0];

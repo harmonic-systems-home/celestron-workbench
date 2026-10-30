@@ -3,6 +3,11 @@
 //! adapter sends and drives the simulated axes, so the simulator's fault
 //! injection (ignored stops, reversal, stalls, a dropped link) applies to
 //! the real adapter. It answers the preparation queries and `z` too.
+//!
+//! It behaves like the Evolution's motor controllers did on 2026-10-29
+//! (docs/observations.md, O1): a variable-rate command sets a rate that
+//! fixed-rate commands don't cancel; variable rate 0 creeps at the slowest
+//! rate (+0.21″/s, −0.36″/s); tracking off (`T 00`) stops it.
 
 use std::{
     collections::VecDeque,
@@ -17,11 +22,17 @@ use cwb_mount_sim::SimMount;
 
 use crate::adapter::Clock;
 
+/// The slowest variable rates, which "variable rate 0" runs at.
+pub const CREEP_POSITIVE_ARCSEC_S: f64 = 0.21;
+pub const CREEP_NEGATIVE_ARCSEC_S: f64 = 0.358;
+
 pub struct SimHandController {
     mount: Arc<Mutex<SimMount>>,
     clock: Clock,
     /// Tracking mode as `t` reports it; `T` sets it.
     pub tracking: u8,
+    /// A variable rate is set on the axis (`Axis::index`).
+    variable: [bool; 2],
     /// Every anti-backlash setting reads as this.
     pub backlash: u8,
     /// Every command received, shared so tests can read it after the
@@ -37,6 +48,7 @@ impl SimHandController {
             mount,
             clock,
             tracking: 0,
+            variable: [false; 2],
             backlash: 0,
             received: Arc::default(),
             pending: Vec::new(),
@@ -60,38 +72,67 @@ impl SimHandController {
             17 => Some(Axis::Altitude),
             _ => None,
         };
-        let motion = match *cmd {
-            [b'P', 3, dev, dir @ (6 | 7), hi, lo, 0, 0] => axis(dev).map(|axis| {
-                let units = u16::from_be_bytes([hi, lo]);
-                if units == 0 {
-                    MountCommand::Stop { axis }
-                } else {
-                    MountCommand::Move {
-                        id: 0,
-                        axis,
-                        direction: if dir == 6 {
-                            Direction::Positive
-                        } else {
-                            Direction::Negative
-                        },
-                        rate_deg_s: f64::from(units) / 4.0 / 3600.0,
-                    }
-                }
-            }),
-            [b'P', 2, dev, 36 | 37, 0, 0, 0, 0] => {
-                axis(dev).map(|axis| MountCommand::Stop { axis })
-            }
-            _ => None,
+        let mv = |axis, positive: bool, rate_deg_s| MountCommand::Move {
+            id: 0,
+            axis,
+            direction: if positive {
+                Direction::Positive
+            } else {
+                Direction::Negative
+            },
+            rate_deg_s,
         };
-        if let Some(command) = motion {
+        let motion: Vec<MountCommand> = match *cmd {
+            [b'P', 3, dev, dir @ (6 | 7), hi, lo, 0, 0] => axis(dev)
+                .map(|axis| {
+                    self.variable[axis.index()] = true;
+                    let units = u16::from_be_bytes([hi, lo]);
+                    let rate = if units > 0 {
+                        f64::from(units) / 4.0 / 3600.0
+                    } else if dir == 6 {
+                        CREEP_POSITIVE_ARCSEC_S / 3600.0
+                    } else {
+                        CREEP_NEGATIVE_ARCSEC_S / 3600.0
+                    };
+                    mv(axis, dir == 6, rate)
+                })
+                .into_iter()
+                .collect(),
+            [b'P', 2, dev, dir @ (36 | 37), rate, 0, 0, 0] => axis(dev)
+                .filter(|axis| !self.variable[axis.index()])
+                .map(|axis| match rate {
+                    0 => MountCommand::Stop { axis },
+                    // Fixed rate 1, about twice sidereal.
+                    _ => mv(axis, dir == 36, 0.0084),
+                })
+                .into_iter()
+                .collect(),
+            [b'T', _] => Axis::BOTH
+                .into_iter()
+                .filter(|a| std::mem::take(&mut self.variable[a.index()]))
+                .map(|axis| MountCommand::Stop { axis })
+                .collect(),
+            _ => Vec::new(),
+        };
+        if !motion.is_empty() {
             let now = (self.clock)();
             let mut mount = self.mount.lock().expect("sim mount");
-            mount
-                .send(&command, now)
-                .map_err(|e| io::Error::new(io::ErrorKind::BrokenPipe, e.0))?;
+            for command in &motion {
+                mount
+                    .send(command, now)
+                    .map_err(|e| io::Error::new(io::ErrorKind::BrokenPipe, e.0))?;
+            }
             // The simulated mount's own acknowledgements aren't the serial
             // `#`; drop them.
             mount.poll(now);
+            if let [b'T', mode] = *cmd {
+                self.tracking = mode;
+            }
+            return Ok(Some(Vec::new()));
+        }
+        if matches!(*cmd, [b'P', 2, 16 | 17, 36 | 37, _, 0, 0, 0]) {
+            // A fixed-rate command to an axis with a variable rate: answered,
+            // but it changes nothing.
             return Ok(Some(Vec::new()));
         }
         if !self.mount.lock().expect("sim mount").is_connected() {
