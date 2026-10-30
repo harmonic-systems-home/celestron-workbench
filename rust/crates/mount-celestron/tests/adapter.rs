@@ -324,8 +324,18 @@ fn the_watch_outlasts_a_stop_during_a_goto() {
         .unwrap();
     let reports = rig.run(600);
     assert_eq!(rig.rates(), [0.0, 0.0]);
+    // The simulated motors, like the mount's, ignore tracking off and fixed
+    // rate 0 during a goto: the re-aimed goto is what stopped it short.
     let travel = rig.angles()[0];
     assert!((0.01..0.035).contains(&travel), "{travel}");
+    let sent = rig.received.lock().unwrap().clone();
+    let stop_at = sent.iter().position(|c| c == b"T\0").unwrap();
+    let after: Vec<&Vec<u8>> = sent[stop_at..]
+        .iter()
+        .filter(|c| c[0] == b'P' && [2, 4].contains(&c[1]))
+        .collect();
+    assert_eq!(after[0], &vec![b'P', 2, 16, 36, 0, 0, 0, 0]);
+    assert_eq!(after[1][..4], [b'P', 4, 16, 0x17], "{after:?}");
     assert!(
         reports
             .iter()
@@ -536,6 +546,20 @@ fn positions_are_not_read_between_a_move_and_its_stop() {
         after[after.rfind('P').unwrap()..].contains('z'),
         "reads resume: {text}"
     );
+}
+
+#[test]
+fn stops_resent_faster_than_the_read_interval_do_not_starve_position_reads() {
+    // A latched fault re-sends StopAll every 250 ms; reads come every 250 ms.
+    let mut rig = rig_with(SimFaults::default(), Some(Duration::from_millis(250)));
+    rig.run(300);
+    rig.adapter.take_positions();
+    for _ in 0..15 {
+        rig.adapter.send(&MountCommand::StopAll, 0).unwrap();
+        rig.run(100);
+    }
+    let reads = rig.adapter.take_positions().len();
+    assert!((5..=8).contains(&reads), "{reads} reads in 1.5 s");
 }
 
 #[test]

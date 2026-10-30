@@ -215,6 +215,8 @@ pub struct Runner<A: RunnerAdapter> {
     /// Where the mount settled since it was last busy or armed; idle
     /// positions are compared with it.
     settled: Option<Position>,
+    /// The newest position read already compared with `settled`.
+    compared: Option<Nanos>,
 }
 
 impl<A: RunnerAdapter> Runner<A> {
@@ -259,6 +261,7 @@ impl<A: RunnerAdapter> Runner<A> {
             bias: None,
             last_busy: now,
             settled: None,
+            compared: None,
             config,
         };
         let mut out = vec![info("Mount-session checklist:")];
@@ -624,6 +627,11 @@ impl<A: RunnerAdapter> Runner<A> {
                     self.carry_out(actions, now, &mut out);
                 }
             }
+            // Latched: positions that haven't moved show the gyroscope's
+            // drift for what it is.
+            MountState::FaultLatched if self.adapter.reports_positions() => {
+                out.extend(self.check_creep(now));
+            }
             // Not armed: the next arming settles afresh.
             _ => self.settled = None,
         }
@@ -634,15 +642,33 @@ impl<A: RunnerAdapter> Runner<A> {
     }
 
     /// While armed and idle, the mount's own positions must stay where they
-    /// settled: this catches a creep far too slow for the gyroscope.
+    /// settled: this catches a creep far too slow for the gyroscope. While
+    /// they do (armed or latched), the controller discards the gyroscope's
+    /// drift; while latched, positions that moved settle afresh.
     fn check_creep(&mut self, now: Nanos) -> Vec<Out> {
         let mut out = Vec::new();
         let Some(p) = self.last_position.filter(|p| p.t_ns > self.last_busy) else {
             return out;
         };
+        if self.compared.is_some_and(|t| t >= p.t_ns) {
+            return out;
+        }
+        self.compared = Some(p.t_ns);
         let settled = *self.settled.get_or_insert(p);
         let moved = [0, 1].map(|i| wrap_deg(p.deg[i] - settled.deg[i]));
-        if moved.iter().any(|m| m.abs() > IDLE_CREEP_DEG) {
+        let still = moved.iter().all(|m| m.abs() <= IDLE_CREEP_DEG);
+        if self.controller.state() == MountState::FaultLatched {
+            if still {
+                let actions = self.controller.mount_still(now);
+                self.carry_out(actions, now, &mut out);
+            } else {
+                self.controller.mount_moved(now, "");
+                self.settled = Some(p);
+            }
+        } else if still {
+            let actions = self.controller.mount_still(now);
+            self.carry_out(actions, now, &mut out);
+        } else {
             let detail = format!(
                 "the mount's own positions moved azimuth {:+.4}°, altitude {:+.4}° while idle: a creep the gyroscope can't see. Power-cycle the mount if it continues",
                 moved[0], moved[1]

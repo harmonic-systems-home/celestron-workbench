@@ -8,6 +8,10 @@
 //! come, between commands, and reports both. The watch outlasts a stop, so
 //! the record shows whether the stop ended the goto, and ends once the flag
 //! reads done and a position read repeats the one before.
+//!
+//! Tracking off and fixed rate 0 don't end a goto on these motor controllers
+//! (docs/observations.md, O11), so a stop for an axis with a goto still
+//! running also re-aims the goto, slowly, at the position just read there.
 
 use std::{
     sync::{
@@ -15,7 +19,7 @@ use std::{
         mpsc::{self, RecvTimeoutError},
     },
     thread::{self, JoinHandle},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use cwb_celestron_discovery::{
@@ -24,10 +28,10 @@ use cwb_celestron_discovery::{
     transact,
 };
 use cwb_mount_core::{
-    Axis, CommandId, MountAdapter, MountCommand, MountReport, Nanos, TransportError,
+    Axis, CommandId, GotoSpeed, MountAdapter, MountCommand, MountReport, Nanos, TransportError,
 };
 
-use crate::encode::{CelestronSettings, transactions};
+use crate::encode::{CelestronSettings, Tx, goto_motor, transactions};
 
 /// Consecutive unanswered commands before the link counts as lost: the USB
 /// adapter can stay up while the hand controller or its cable is gone.
@@ -216,6 +220,9 @@ struct Watch {
 
 impl<L: Link> Worker<L> {
     fn run(mut self, jobs: mpsc::Receiver<MountCommand>, position_every: Option<Duration>) {
+        // Stops re-sent every 250 ms while a fault is latched mustn't starve
+        // the position reads: they are the best evidence the mount is still.
+        let mut last_read = Instant::now();
         loop {
             let first = match position_every {
                 // Watching a goto: read between commands, never waiting.
@@ -223,9 +230,10 @@ impl<L: Link> Worker<L> {
                     mpsc::TryRecvError::Empty => RecvTimeoutError::Timeout,
                     mpsc::TryRecvError::Disconnected => RecvTimeoutError::Disconnected,
                 }),
-                Some(every) => jobs.recv_timeout(every),
+                Some(every) => jobs.recv_timeout(every.saturating_sub(last_read.elapsed())),
                 None => jobs.recv().map_err(|_| RecvTimeoutError::Disconnected),
             };
+            let read_due = position_every.is_some_and(|every| last_read.elapsed() >= every);
             match first {
                 Ok(command) => {
                     let mut batch = vec![command];
@@ -233,9 +241,16 @@ impl<L: Link> Worker<L> {
                     for command in overtake(batch) {
                         self.execute(&command);
                     }
+                    if read_due && !self.moving && self.watch.is_none() {
+                        last_read = Instant::now();
+                        self.read_position();
+                    }
+                }
+                Err(RecvTimeoutError::Timeout) if self.watch.is_none() && !self.moving => {
+                    last_read = Instant::now();
+                    self.read_position();
                 }
                 Err(RecvTimeoutError::Timeout) if self.watch.is_some() => self.read_watch(),
-                Err(RecvTimeoutError::Timeout) if !self.moving => self.read_position(),
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => {
                     self.execute(&MountCommand::StopAll);
@@ -258,24 +273,17 @@ impl<L: Link> Worker<L> {
         let mut all_ok = true;
         let mut first = true;
         for tx in transactions(command, self.signs) {
-            let sent_ns = (self.clock)();
             if first && let Some(id) = motion_id {
-                let _ = self.events.send(Event::Sent(id, sent_ns));
+                let _ = self.events.send(Event::Sent(id, (self.clock)()));
             }
             first = false;
-            let (outcome, _) = transact(&mut self.link, &tx.bytes, 0, tx.pass_through);
-            let bytes = tx.bytes;
-            let _ = self.events.send(Event::Transaction(Transaction {
-                sent_ns,
-                reply_ns: (self.clock)(),
-                bytes,
-                outcome,
-            }));
-            all_ok &= outcome == Outcome::Ok;
-            self.outcome(outcome, command);
+            all_ok &= self.transmit(tx, command) == Outcome::Ok;
         }
         if all_ok && let Some(id) = motion_id {
             let _ = self.events.send(Event::Ack(id));
+        }
+        if command.is_stop() {
+            self.retarget(command);
         }
         if let MountCommand::Goto { axis, .. } = *command {
             self.watch = Some(Watch {
@@ -287,6 +295,54 @@ impl<L: Link> Worker<L> {
         }
     }
 
+    /// Sends one transaction and reports it.
+    fn transmit(&mut self, tx: Tx, command: &MountCommand) -> Outcome {
+        let sent_ns = (self.clock)();
+        let (outcome, _) = transact(&mut self.link, &tx.bytes, 0, tx.pass_through);
+        let _ = self.events.send(Event::Transaction(Transaction {
+            sent_ns,
+            reply_ns: (self.clock)(),
+            bytes: tx.bytes,
+            outcome,
+        }));
+        self.outcome(outcome, command);
+        outcome
+    }
+
+    /// After a stop: a goto still running on a stopped axis is re-aimed at
+    /// the position read now, so it stops about there (O11).
+    fn retarget(&mut self, stop: &MountCommand) {
+        let Some(w) = &self.watch else {
+            return;
+        };
+        let axis = w.axis;
+        let stopped = match *stop {
+            MountCommand::Stop { axis: a } => a == axis,
+            _ => true,
+        };
+        if w.finished || !stopped {
+            return;
+        }
+        let query = Query::MotorPosition(device_of(axis));
+        let (outcome, reply) = transact(&mut self.link, &query.bytes(), query.reply_len(), true);
+        let t_ns = (self.clock)();
+        let Some(Value::MotorPosition { units, .. }) = (outcome == Outcome::Ok)
+            .then(|| query.decode(&reply[..query.reply_len()]))
+            .flatten()
+        else {
+            let _ = self.events.send(Event::Note(format!(
+                "couldn't read the {axis:?} position to end its goto: it may run on to its target"
+            )));
+            return;
+        };
+        let _ = self.events.send(Event::Watch(MountReport::Position {
+            axis,
+            t_ns,
+            units: self.signs.flip_units(axis, units),
+        }));
+        self.transmit(goto_motor(axis, units, GotoSpeed::Slow), stop);
+    }
+
     /// One read for the goto watch: the position or the goto-finished flag,
     /// in turn.
     fn read_watch(&mut self) {
@@ -294,14 +350,10 @@ impl<L: Link> Worker<L> {
             return;
         };
         let (axis, position_next) = (w.axis, w.position_next);
-        let device = match axis {
-            Axis::Azimuth => Device::AzmMotor,
-            Axis::Altitude => Device::AltMotor,
-        };
         let query = if position_next {
-            Query::MotorPosition(device)
+            Query::MotorPosition(device_of(axis))
         } else {
-            Query::SlewDone(device)
+            Query::SlewDone(device_of(axis))
         };
         let (outcome, reply) = transact(&mut self.link, &query.bytes(), query.reply_len(), true);
         let t_ns = (self.clock)();
@@ -403,6 +455,13 @@ impl<L: Link> Worker<L> {
                 outcome
             }),
         }
+    }
+}
+
+fn device_of(axis: Axis) -> Device {
+    match axis {
+        Axis::Azimuth => Device::AzmMotor,
+        Axis::Altitude => Device::AltMotor,
     }
 }
 

@@ -8,9 +8,10 @@
 //! (docs/observations.md, O1): a variable-rate command sets a rate that
 //! fixed-rate commands don't cancel; variable rate 0 creeps at the slowest
 //! rate (+0.21″/s, −0.36″/s); tracking off (`T 00`) stops it. Gotos by
-//! position (`P 04 dev 02|17 HH MM LL 00`) run on the simulated mount, and
-//! fixed rate 0 ends one there (unverified on the mount: ADR 0014); the
-//! motor controllers' position and goto-finished flag are answered too.
+//! position (`P 04 dev 02|17 HH MM LL 00`) run on the simulated mount; as
+//! on the mount, neither tracking off nor fixed rate 0 ends one, and a new
+//! goto re-aims it (O11). The motor controllers' position and goto-finished
+//! flag are answered too.
 
 use std::{
     collections::VecDeque,
@@ -101,8 +102,12 @@ impl SimHandController {
                 })
                 .into_iter()
                 .collect(),
+            // Neither ends a goto (O11): only a new goto re-aims it.
             [b'P', 2, dev, dir @ (36 | 37), rate, 0, 0, 0] => axis(dev)
-                .filter(|axis| !self.variable[axis.index()])
+                .filter(|axis| {
+                    !self.variable[axis.index()]
+                        && self.mount.lock().expect("sim mount").slew_done(*axis)
+                })
                 .map(|axis| match rate {
                     0 => MountCommand::Stop { axis },
                     // Fixed rate 1, about twice sidereal.

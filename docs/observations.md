@@ -93,6 +93,13 @@ Evidence paths are run logs and discovery reports under `reports/` (git-ignored,
 - **Unknown:** whether it's a fixed scale (the altitude motor controller's rate units or gearing differ from azimuth's) or depends on load or direction.
 - **Status:** measured. Gotos by position would sidestep it; timed moves need a per-axis rate scale if precise travel matters.
 
+## O11. Our stop doesn't end a goto
+
+- **Seen:** 2026-10-30 (run log `2026-10-30T16-41-01`), the stop-during-goto trial of ADR 0014. A slow azimuth goto of +2,330 units (0.05°) left at 0 ms; the axis read +1,008 at 160 ms. The stop went out at 197 ms: tracking off (`T 00`, answered in 58 ms), then fixed rate 0 (answered at 296 ms). The axis read +2,339 at 340 ms and settled on its target, +2,330, at 420 ms: as if no stop had been sent.
+- **Also seen in the same session:** slow gotos (`P 04 dev 17 …`) run at about 0.29 °/s mid-flight over 0.05° and still accelerating, on both axes; nine gotos of 0.0064–0.05° each way ended within ±1 unit (0.08″) of their targets, overshot by 0–11 units, and settled in 0.4–0.75 s. The goto-finished flag can read done while the position still settles by a few units. One read of it took about 540 ms (as in O7).
+- **Unknown:** whether a new goto re-aims a running one (the community AUX documentation suggests it does), and what else ends a goto.
+- **Status:** worked around, not yet verified: a stop for an axis with a goto running now also re-aims the goto, slowly, at the position just read there (ADR 0014). Until a trial shows that ends it, gotos stay capped at 0.05°, which a slow goto covers in about 0.35 s.
+
 ## From earlier use (not yet reproduced)
 
 Problems from about two years ago, before this project, without a known sequence. To be pinned down one at a time once basic motion is characterized; fill in details as they come back.

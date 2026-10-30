@@ -51,3 +51,8 @@ The interlocks of ADR 0005 carry over, with changes for motion that has no const
 - Overshoot, if any, is recorded rather than hidden, and the opposite-motion check gets a narrow, measured exception near the target.
 - Consistent approach is available for trials without anti-backlash and stays off once anti-backlash is configured, so the two don't compound.
 - Until the stop-during-goto trial passes, gotos are limited to about 1 s of travel.
+
+## First hardware gotos (2026-10-30)
+
+- **Steps 3 and 4 ran** (docs/observations.md, O11). Slow gotos run at about 0.29 °/s, end within ±1 unit and settle in under a second. Our stop (tracking off, then fixed rate 0) does **not** end a goto: the axis carried on to its target.
+- **Change:** after a stop, an axis whose goto is still running (its finished flag not yet read done) is read once and sent a slow goto to that position, so it stops about there with a short reversal. The adapter does this for both a stop and a stop-all; the simulated hand controller now ignores tracking off and fixed rate 0 during a goto, as the mount does, so the adapter tests exercise the re-aim. `max_goto_deg` stays 0.05° until a repeat of step 4 shows the re-aim ends a goto.

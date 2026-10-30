@@ -9,7 +9,7 @@ use std::{
 
 use cwb_mount_celestron::Position;
 use cwb_mount_core::{
-    MountAdapter, MountCommand, MountReport, MountState, Nanos, Stage, TransportError,
+    Axis, MountAdapter, MountCommand, MountReport, MountState, Nanos, Stage, TransportError,
     units_to_deg, wrap_units,
 };
 use cwb_mount_runner::{Kind, Out, RunLog, Runner, RunnerAdapter, RunnerConfig};
@@ -809,6 +809,82 @@ fn a_creep_while_armed_and_idle_latches_unexpected_motion() {
             .any(|o| o.text.contains("FAULT UnexpectedMotion") && o.text.contains("while idle")),
         "{out:#?}"
     );
+}
+
+/// A runner whose simulated IMU drifts 0.02 °/s in azimuth from 1 s on,
+/// as a wandering gyroscope offset would, while the mount stays still.
+fn drifting_runner() -> (Runner<Reporting>, Vec<Out>) {
+    let (mut runner, mut out) = Runner::new(
+        config(),
+        Reporting {
+            mount: SimMount::new(
+                SimFaults {
+                    bump: Some((Axis::Azimuth, 0.02, 1_000, 60_000)),
+                    ..SimFaults::default()
+                },
+                30.0,
+                1,
+            ),
+            positions: Vec::new(),
+        },
+        RunLog::discard(),
+        false,
+        MAC_BOOT,
+        0,
+    )
+    .unwrap();
+    out.extend(runner.line("yes", 0));
+    (runner, out)
+}
+
+#[test]
+fn gyroscope_drift_while_the_positions_hold_is_not_motion() {
+    // 0.02 °/s for 20 s integrates to 0.4°, past the 0.25° tolerance; the
+    // mount's own positions don't change, so it is drift.
+    let (mut runner, mut out) = drifting_runner();
+    let mut now = 0;
+    feed(&mut runner, &mut now, 600, |_| [0.25, 0.03], &mut out);
+    out.extend(runner.line("arm", now));
+    assert_eq!(runner.state(), MountState::Armed, "{out:#?}");
+    feed(&mut runner, &mut now, 20_000, |_| [0.25, 0.03], &mut out);
+    assert_eq!(runner.state(), MountState::Armed, "{out:#?}");
+
+    // Without position reads to say so, the same drift latches.
+    let mut sim = Sim::new(
+        false,
+        SimFaults {
+            bump: Some((Axis::Azimuth, 0.02, 1_000, 60_000)),
+            ..SimFaults::default()
+        },
+    );
+    sim.line("yes");
+    sim.run(500);
+    sim.line("arm");
+    sim.run(20_000);
+    assert_eq!(sim.runner.state(), MountState::FaultLatched);
+    assert!(
+        sim.said(Kind::Alert, "FAULT UnexpectedMotion: Azimuth turned"),
+        "{:#?}",
+        sim.out
+    );
+}
+
+#[test]
+fn latched_with_the_positions_holding_drift_raises_no_alarm() {
+    let (mut runner, mut out) = drifting_runner();
+    let mut now = 0;
+    feed(&mut runner, &mut now, 600, |_| [0.25, 0.03], &mut out);
+    out.extend(runner.line("arm", now));
+    out.extend(runner.line("e", now));
+    assert_eq!(runner.state(), MountState::FaultLatched);
+    out.clear();
+    feed(&mut runner, &mut now, 20_000, |_| [0.25, 0.03], &mut out);
+    assert!(
+        !out.iter().any(|o| o.text.contains("cut mount power")),
+        "{out:#?}"
+    );
+    out.extend(runner.line("reset", now));
+    assert_eq!(runner.state(), MountState::ConnectedReadOnly, "{out:#?}");
 }
 
 #[test]

@@ -138,3 +138,9 @@ With the safety interlocks in place the runner drove the first characterization 
 - **Measuring the tube's travel** uses the phone's raw gyroscope integrated through each move and 3 s of settling, with the offset measured from the stillness just before each move, not the runner's offset from arming. That is good to about ±0.01–0.02° per move; the runner's own IMU figure is coarser.
 - **Disarm and re-arm every few moves** for now: the runner's integrated IMU travel drifts with the residual gyroscope offset and latched a false `UnexpectedMotion` after about a minute armed (+0.25° with the encoder unchanged).
 - **Next:** gotos by motor position (ADR 0014), so travel doesn't depend on timing or the rate scale.
+
+## Gyroscope drift against the mount's own positions (2026-10-30)
+
+- **Seen:** the raw gyroscope's offset wanders by 0.002–0.004 °/s between armings (three measurements in five minutes), so the integrated travel the controller keeps while idle grows at that rate. After about a minute armed and idle it passed the 0.25° tolerance and latched a false `UnexpectedMotion` with the mount's own positions unchanged; latched, the same drift then raised "cut mount power" alerts every 250 ms.
+- **Change:** while the mount's own positions read the same as where it settled (armed and idle, or latched), the controller discards the IMU travel integrated meanwhile as drift (`Controller::mount_still`). Positions that move clear that, and while armed latch the idle-creep fault as before. The IMU rate checks are unchanged. The trade-off: tube motion the motor encoders can't see (a slipping clutch) slower than `motion_deg_s` now goes unnoticed while idle with positions being read.
+- **Seen too:** the stops re-sent every 250 ms while latched restarted the adapter's 250 ms wait for a position read each time, so position reads stopped. Reads are now due on a fixed schedule whatever commands arrive.

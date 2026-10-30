@@ -113,12 +113,7 @@ pub fn transactions(command: &MountCommand, signs: CelestronSettings) -> Vec<Tx>
             speed,
             ..
         } => {
-            let [_, hh, mm, ll] = signs.flip_units(axis, target).to_be_bytes();
-            let message = match speed {
-                GotoSpeed::Fast => GOTO_FAST,
-                GotoSpeed::Slow => GOTO_SLOW,
-            };
-            vec![motor([b'P', 4, device(axis), message, hh, mm, ll, 0])]
+            vec![goto_motor(axis, signs.flip_units(axis, target), speed)]
         }
         MountCommand::Stop { axis } => vec![tracking_off(), fixed_zero(axis)],
         MountCommand::StopAll => vec![
@@ -127,6 +122,16 @@ pub fn transactions(command: &MountCommand, signs: CelestronSettings) -> Vec<Tx>
             fixed_zero(Axis::Altitude),
         ],
     }
+}
+
+/// A goto to `motor_units`, as the motor controller counts.
+pub fn goto_motor(axis: Axis, motor_units: u32, speed: GotoSpeed) -> Tx {
+    let [_, hh, mm, ll] = motor_units.to_be_bytes();
+    let message = match speed {
+        GotoSpeed::Fast => GOTO_FAST,
+        GotoSpeed::Slow => GOTO_SLOW,
+    };
+    motor([b'P', 4, device(axis), message, hh, mm, ll, 0])
 }
 
 fn motor(bytes: [u8; 8]) -> Tx {
