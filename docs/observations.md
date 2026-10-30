@@ -4,6 +4,8 @@ Mount and software behaviour worth explaining, one entry per symptom. Each entry
 
 Evidence paths are run logs and discovery reports under `reports/` (git-ignored, on the operator's Mac). Times are local (Pacific); log names are UTC.
 
+Outside sources (Celestron, the community AUX command set, forums) are listed in [references.md](references.md).
+
 **Status:** *open* (seen, cause unknown), *reproduced* (a sequence produces it), *explained* (cause known), *fixed* or *worked around*.
 
 ## O1. Slow creep on both axes, with audible motor stepping
@@ -144,6 +146,15 @@ Evidence paths are run logs and discovery reports under `reports/` (git-ignored,
 - **Take-up:** the motor runs fast at the start of a reversal, peaking at 0.66–0.88 °/s for about 120–160 ms at 99 (gyroscope, raw). That latched `Overspeed` until the runner allowed it (`takeup_overspeed_deg_s`, `takeup_ms`): now for any move that reverses its axis, or is the first on it since the runner started, as the gears may have been left either way by whatever moved them last.
 - **Servo easing:** after a move with anti-backlash 30, the axis eased back 16 units (1.2″) about 0.6 s after the move ended; the idle-creep check now waits for two equal reads before taking its reference.
 - **Status:** chosen for timed moves. Repeat after rebalancing (O13), and at other tube angles if altitude behaviour matters there.
+
+## O16. Keypad rates: speeds, and anti-backlash at each
+
+- **Trial:** 2026-10-30 (run log `2026-10-30T20-04-30`), azimuth, anti-backlash 60. Keypad-rate moves (`MC_MOVE_POS`/`NEG`, as the arrow keys and ASIAIR's guide pulses send them, references.md) of 1.5 s at rates 1–7, `+ + − −` per rate. Speed from the encoder on the moves that repeat a direction; take-up as the encoder's extra on reversals; lost motion as the IMU's travel on repeats minus on reversals.
+- **Speeds:** 1: 0.0022 °/s (0.5× sidereal), 2: 0.0045 (1.1×), 3: 0.0179 (4.3×), 4: 0.0358 (8.6×), 5: 0.0717 (17×), 6: 0.287, 7: 1.07 °/s. Rates 1–5 run at about half of Celestron's list (2, 4, 8, 16, 32× sidereal); rates 6 and 7 match it (0.3, 1 °/s). Whether ASIAIR's change to rate 1 (references.md) set the table this way isn't known.
+- **Anti-backlash acts on keypad moves at the slower rates:** on a reversal the motor turned an extra 265″, 264″, 253″, 240″ and 216″ at rates 1–5 (about the azimuth backlash, 245″, O9), 123″ at rate 6, and none at rate 7, where the tube lost 191″. At rates 1–5 the IMU suggests a reversal moved the tube 40–100″ more than a repeat (over-correction), but those moves are 0.003–0.1° and the IMU figures there are noisy.
+- **Meaning:** for the arrow keys and guiding (rates 1–5), anti-backlash 60 takes up the slack, perhaps more than fully; at rate 6 partly, at rate 7 not. Gotos ignore it (O14).
+- **Also (discovery `2026-10-30T20-04-03`):** the motor controllers' own approach setting (`MC_GET_APPROACH`) reads positive on both axes, yet pass-through gotos finish in either direction (O14), so they don't use it. `MC_AT_INDEX` got no answer from azimuth: apparently no index marker.
+- **Status:** measured in azimuth at one anti-backlash value. Next if needed: altitude, and anti-backlash 0 at the same rates.
 
 ## From earlier use (not yet reproduced)
 

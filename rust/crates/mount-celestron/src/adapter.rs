@@ -502,6 +502,7 @@ mod tests {
             axis: Axis::Azimuth,
             direction: Direction::Positive,
             rate_deg_s: 0.1,
+            fixed_rate: None,
         }
     }
 

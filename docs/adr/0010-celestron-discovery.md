@@ -31,3 +31,8 @@ Over Wi-Fi the mount speaks its internal motor bus protocol, known mostly from c
 - **Replies:** echo about 5 ms, position about 85 ms (via the motor boards). One position read in three runs took 588 ms, beyond the 300 ms acknowledgement deadline; the deadline stays, and latencies over it are recorded in the first motion trials.
 - **Keypad:** the four arrow keys move the mount directly while the computer is connected; an accidental press moved altitude 0.115°, which `z` reported. Menus are navigated with SCROLL 6 and 9. The operator checklist gets: hands off the arrow keys during runs, since any motion not commanded faults the safety checks.
 - **Anti-backlash (second run, same day):** 50 on both axes and both directions. Since the motor controllers answer for it, they likely apply the compensation to pass-through slews too. Set to 0 for characterization (ADR 0011, ADR 0013).
+
+## Approach and index queries (2026-10-30)
+
+- **Discovery also reads** each motor controller's goto approach setting (`MC_GET_APPROACH`, `P 01 10|11 FC 00 00 00 01`: 0 positive, 1 negative) and whether azimuth is at its index marker (`MC_AT_INDEX`, `P 01 10 18 00 00 00 01`: 0xFF at it). Both are reported as information. Their source, the community AUX command set, and the others this project uses are in [references.md](../references.md). The catalog test allows exactly these new message IDs, with one reply byte, `MC_AT_INDEX` to azimuth only.
+

@@ -2,8 +2,9 @@
 //! documented "get" (ADR 0010).
 
 use cwb_celestron_discovery::query::{
-    self, ALLOWED_FIRST_BYTES, Device, GET_BACKLASH_NEGATIVE, GET_BACKLASH_POSITIVE,
-    GET_DEVICE_VERSION, GET_MOTOR_POSITION, GET_SLEW_DONE, Query, Value,
+    self, ALLOWED_FIRST_BYTES, Device, GET_APPROACH, GET_AT_INDEX, GET_BACKLASH_NEGATIVE,
+    GET_BACKLASH_POSITIVE, GET_DEVICE_VERSION, GET_MOTOR_POSITION, GET_SLEW_DONE, Query, Sense,
+    Value,
 };
 
 fn every_query() -> Vec<Query> {
@@ -34,9 +35,10 @@ fn every_sendable_command_is_a_documented_get() {
             // position (0x04) must never appear.
             match bytes[3] {
                 GET_DEVICE_VERSION => assert_eq!(bytes[7], 2, "{q}"),
-                GET_BACKLASH_POSITIVE | GET_BACKLASH_NEGATIVE | GET_SLEW_DONE => {
+                GET_BACKLASH_POSITIVE | GET_BACKLASH_NEGATIVE | GET_SLEW_DONE | GET_APPROACH => {
                     assert_eq!(bytes[7], 1, "{q}")
                 }
+                GET_AT_INDEX => assert_eq!((bytes[2], bytes[7]), (16, 1), "{q}: azimuth only"),
                 GET_MOTOR_POSITION => assert_eq!(bytes[7], 3, "{q}"),
                 other => panic!("{q}: pass-through message {other:#x}"),
             }
@@ -116,4 +118,10 @@ fn replies_decode_as_documented() {
         Some(Value::Flag(false))
     );
     assert_eq!(Query::SlewDone(Device::AzmMotor).decode(&[0x01]), None);
+    assert_eq!(
+        Query::Approach(Device::AltMotor).decode(&[1]),
+        Some(Value::Approach(Sense::Negative))
+    );
+    assert_eq!(Query::Approach(Device::AltMotor).decode(&[2]), None);
+    assert_eq!(Query::AtIndex.decode(&[0xFF]), Some(Value::Flag(true)));
 }

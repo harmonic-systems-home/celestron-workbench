@@ -29,6 +29,9 @@ pub struct MoveDefaults {
     /// Used when a move command gives no rate or duration.
     pub rate_deg_s: f64,
     pub seconds: f64,
+    /// Nominal speeds of keypad rates 1–9, for the safety checks and
+    /// commanded travel of fixed-rate moves; 0 refuses that rate.
+    pub fixed_rates_deg_s: [f64; 9],
 }
 
 impl RunnerConfig {

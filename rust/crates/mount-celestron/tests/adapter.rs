@@ -30,6 +30,7 @@ fn mv(axis: Axis, direction: Direction, rate_deg_s: f64) -> MountCommand {
         axis,
         direction,
         rate_deg_s,
+        fixed_rate: None,
     }
 }
 
@@ -144,6 +145,71 @@ fn moves_and_stops_are_the_documented_bytes() {
     assert!((quantized_deg_s(0.001) - 14.0 / 4.0 / 3600.0).abs() < 1e-12);
 }
 
+fn fixed(axis: Axis, direction: Direction, rate: u8) -> MountCommand {
+    MountCommand::Move {
+        id: 7,
+        axis,
+        direction,
+        rate_deg_s: 0.0334,
+        fixed_rate: Some(rate),
+    }
+}
+
+#[test]
+fn keypad_rate_moves_are_the_arrow_keys_bytes() {
+    // MC_MOVE_POS (0x24 = 36) / MC_MOVE_NEG (0x25 = 37), rate 1-9.
+    assert_eq!(
+        bytes(
+            &fixed(Axis::Azimuth, Direction::Positive, 3),
+            CelestronSettings::default()
+        ),
+        [vec![b'P', 2, 16, 36, 3, 0, 0, 0]]
+    );
+    assert_eq!(
+        bytes(
+            &fixed(Axis::Altitude, Direction::Negative, 9),
+            CelestronSettings::default()
+        ),
+        [vec![b'P', 2, 17, 37, 9, 0, 0, 0]]
+    );
+    let reversed = CelestronSettings {
+        reverse_azimuth: true,
+        ..CelestronSettings::default()
+    };
+    assert_eq!(
+        bytes(&fixed(Axis::Azimuth, Direction::Positive, 3), reversed)[0][3],
+        37
+    );
+    // Never rate 0, which is the stop.
+    assert_eq!(
+        bytes(
+            &fixed(Axis::Azimuth, Direction::Positive, 0),
+            CelestronSettings::default()
+        )[0][4],
+        1
+    );
+}
+
+#[test]
+fn a_keypad_rate_move_runs_at_its_rate_and_the_stop_ends_it() {
+    let mut rig = rig(SimFaults::default());
+    rig.adapter
+        .send(&fixed(Axis::Azimuth, Direction::Negative, 5), 0)
+        .unwrap();
+    rig.run(400);
+    assert!((rig.rates()[0] + 0.1337).abs() < 1e-6, "{:?}", rig.rates());
+    rig.adapter
+        .send(
+            &MountCommand::Stop {
+                axis: Axis::Azimuth,
+            },
+            0,
+        )
+        .unwrap();
+    rig.run(300);
+    assert_eq!(rig.rates(), [0.0, 0.0]);
+}
+
 #[test]
 fn variable_rate_0_is_never_sent() {
     let mut all = Vec::new();
@@ -152,6 +218,12 @@ fn variable_rate_0_is_never_sent() {
             for rate in [0.0, 1e-9, 0.001, 0.1, 1.0, 4.5] {
                 all.extend(bytes(
                     &mv(axis, direction, rate),
+                    CelestronSettings::default(),
+                ));
+            }
+            for rate in 0..=10 {
+                all.extend(bytes(
+                    &fixed(axis, direction, rate),
                     CelestronSettings::default(),
                 ));
             }
@@ -172,8 +244,14 @@ fn variable_rate_0_is_never_sent() {
             && t[6..] == [0, 0];
         let fixed_zero =
             t.len() == 8 && t[0] == b'P' && t[1] == 2 && t[3] == 36 && t[4..] == [0, 0, 0, 0];
+        let keypad = t.len() == 8
+            && t[0] == b'P'
+            && t[1] == 2
+            && [36, 37].contains(&t[3])
+            && (1..=9).contains(&t[4])
+            && t[5..] == [0, 0, 0];
         assert!(
-            tracking_off || ((slew || fixed_zero) && [16, 17].contains(&t[2])),
+            tracking_off || ((slew || fixed_zero || keypad) && [16, 17].contains(&t[2])),
             "{t:?}"
         );
     }

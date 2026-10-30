@@ -18,6 +18,7 @@ pub fn device(axis: Axis) -> u8 {
 const VARIABLE_POSITIVE: u8 = 6;
 const VARIABLE_NEGATIVE: u8 = 7;
 const FIXED_POSITIVE: u8 = 36;
+const FIXED_NEGATIVE: u8 = 37;
 pub const GOTO_FAST: u8 = 0x02;
 pub const GOTO_SLOW: u8 = 0x17;
 
@@ -89,6 +90,31 @@ pub struct Tx {
 /// mode. Variable rate 0 is never sent.
 pub fn transactions(command: &MountCommand, signs: CelestronSettings) -> Vec<Tx> {
     match *command {
+        MountCommand::Move {
+            axis,
+            direction,
+            fixed_rate: Some(rate),
+            ..
+        } => {
+            // A keypad rate, as the arrow keys send (`MC_MOVE_POS`/`NEG`).
+            // Never 0, which is the stop.
+            let positive = (direction == Direction::Positive) != signs.reversed(axis);
+            let message = if positive {
+                FIXED_POSITIVE
+            } else {
+                FIXED_NEGATIVE
+            };
+            vec![motor([
+                b'P',
+                2,
+                device(axis),
+                message,
+                rate.clamp(1, 9),
+                0,
+                0,
+                0,
+            ])]
+        }
         MountCommand::Move {
             axis,
             direction,

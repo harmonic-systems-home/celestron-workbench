@@ -165,7 +165,8 @@ pub const CHECKLIST: &[&str] = &[
 pub const HELP: &str = "\
 Enter (empty line)  STOP: ends any move at once
 arm | disarm        allow moves | refuse them
-az+ az- alt+ alt-   move one axis: [rate °/s] [seconds], e.g. `az+ 0.1 1`
+az+ az- alt+ alt-   move one axis: [rate °/s] [seconds], e.g. `az+ 0.1 1`,
+                    or a keypad rate as the arrow keys send: `az+ r3 2`
 goto az|alt ±deg    go that far by the axis's own position: [fast] [from-|from+],
                     e.g. `goto az +0.02`. from- always arrives moving up (from
                     below), from+ moving down; off by default. Anti-backlash
@@ -1079,7 +1080,28 @@ impl<A: RunnerAdapter> Runner<A> {
                     .ok_or_else(|| format!("{what} {a:?} isn't a positive number"))
             })
         };
-        let rate = number(0, self.config.moves.rate_deg_s, "rate")?;
+        // `r3`: keypad rate 3, at its nominal speed from the config.
+        let fixed_rate = match args.first() {
+            Some(a) if a.starts_with(['r', 'R']) => {
+                let n = a[1..]
+                    .parse::<u8>()
+                    .ok()
+                    .filter(|n| (1..=9).contains(n))
+                    .ok_or_else(|| format!("keypad rate {a:?} must be r1 to r9"))?;
+                let nominal = self.config.moves.fixed_rates_deg_s[usize::from(n) - 1];
+                if nominal <= 0.0 {
+                    return Err(format!(
+                        "keypad rate {n} has no speed in [moves] fixed_rates_deg_s, so it can't be checked"
+                    ));
+                }
+                Some((n, nominal))
+            }
+            _ => None,
+        };
+        let rate = match fixed_rate {
+            Some((_, nominal)) => nominal,
+            None => number(0, self.config.moves.rate_deg_s, "rate")?,
+        };
         let seconds = number(1, self.config.moves.seconds, "seconds")?;
         let id = self.next_request;
         self.next_request += 1;
@@ -1089,8 +1111,13 @@ impl<A: RunnerAdapter> Runner<A> {
             direction,
             // The rate the hand controller will actually run, so commanded
             // travel matches what is sent.
-            rate_deg_s: quantized_deg_s(rate),
+            rate_deg_s: if fixed_rate.is_some() {
+                rate
+            } else {
+                quantized_deg_s(rate)
+            },
             duration_ms: (seconds * 1000.0).round() as u64,
+            fixed_rate: fixed_rate.map(|(n, _)| n),
         })
     }
 }
@@ -1110,12 +1137,16 @@ fn axis_name(axis: Axis) -> &'static str {
 
 fn describe(request: &MoveRequest) -> String {
     format!(
-        "{} {}",
+        "{} {}{}",
         axis_name(request.axis),
         match request.direction {
             Direction::Positive => "positive",
             Direction::Negative => "negative",
-        }
+        },
+        request
+            .fixed_rate
+            .map(|n| format!(" at keypad rate {n}"))
+            .unwrap_or_default()
     )
 }
 

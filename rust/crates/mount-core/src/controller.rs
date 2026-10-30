@@ -431,6 +431,8 @@ impl Controller {
                 "rate {} °/s is outside {}–{} °/s",
                 request.rate_deg_s, c.min_rate_deg_s, c.max_rate_deg_s
             ))
+        } else if request.fixed_rate.is_some_and(|r| !(1..=9).contains(&r)) {
+            Some("a fixed rate must be 1–9".into())
         } else if request.duration_ms == 0 || request.duration_ms > c.max_duration_ms {
             Some(format!(
                 "duration {} ms is outside 1–{} ms",
@@ -477,6 +479,7 @@ impl Controller {
             axis: request.axis,
             direction: request.direction,
             rate_deg_s: request.rate_deg_s,
+            fixed_rate: request.fixed_rate,
         })])
     }
 

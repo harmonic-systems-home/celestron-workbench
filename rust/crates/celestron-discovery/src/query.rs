@@ -70,6 +70,12 @@ pub enum Query {
     /// Whether a motor controller's goto has finished (`MC_SLEW_DONE`):
     /// 0xFF done, 0x00 not. Same source as [`Query::MotorPosition`].
     SlewDone(Device),
+    /// A motor controller's own goto approach direction (`MC_GET_APPROACH`):
+    /// 0 positive, 1 negative. Same source.
+    Approach(Device),
+    /// Whether the azimuth axis is at its index marker (`MC_AT_INDEX`):
+    /// 0xFF at it, 0x00 not. Azimuth only. Same source.
+    AtIndex,
 }
 
 /// Pass-through message ID for "get version".
@@ -80,6 +86,8 @@ pub const GET_BACKLASH_NEGATIVE: u8 = 0x41;
 /// Pass-through message IDs from the AUX command set.
 pub const GET_MOTOR_POSITION: u8 = 0x01;
 pub const GET_SLEW_DONE: u8 = 0x13;
+pub const GET_APPROACH: u8 = 0xFC;
+pub const GET_AT_INDEX: u8 = 0x18;
 
 impl Sense {
     pub fn get_id(self) -> u8 {
@@ -105,6 +113,8 @@ impl Query {
             Query::Backlash(d, sense) => vec![b'P', 1, d.id(), sense.get_id(), 0, 0, 0, 1],
             Query::MotorPosition(d) => vec![b'P', 1, d.id(), GET_MOTOR_POSITION, 0, 0, 0, 3],
             Query::SlewDone(d) => vec![b'P', 1, d.id(), GET_SLEW_DONE, 0, 0, 0, 1],
+            Query::Approach(d) => vec![b'P', 1, d.id(), GET_APPROACH, 0, 0, 0, 1],
+            Query::AtIndex => vec![b'P', 1, Device::AzmMotor.id(), GET_AT_INDEX, 0, 0, 0, 1],
         }
     }
 
@@ -127,6 +137,8 @@ impl Query {
                 | Query::Backlash(..)
                 | Query::MotorPosition(_)
                 | Query::SlewDone(_)
+                | Query::Approach(_)
+                | Query::AtIndex
         )
     }
 
@@ -141,7 +153,9 @@ impl Query {
             Query::DeviceVersion(_)
             | Query::Backlash(..)
             | Query::MotorPosition(_)
-            | Query::SlewDone(_) => (1, 6),
+            | Query::SlewDone(_)
+            | Query::Approach(_)
+            | Query::AtIndex => (1, 6),
             Query::Model | Query::PreciseAzmAlt => (2, 2),
             Query::TrackingMode => (2, 3),
         }
@@ -158,6 +172,12 @@ impl Query {
             }
             Query::SlewDone(_) => {
                 "AUX command set MC_SLEW_DONE (community-documented, not in Celestron's document)"
+            }
+            Query::Approach(_) => {
+                "AUX command set MC_GET_APPROACH (community-documented, not in Celestron's document)"
+            }
+            Query::AtIndex => {
+                "AUX command set MC_AT_INDEX (community-documented, not in Celestron's document)"
             }
             _ => "Miscellaneous Commands",
         }
@@ -190,9 +210,14 @@ impl Query {
                     deg: f64::from(units) / f64::from(1u32 << 24) * 360.0,
                 }
             }
-            Query::SlewDone(_) => match payload[0] {
+            Query::SlewDone(_) | Query::AtIndex => match payload[0] {
                 0xFF => Value::Flag(true),
                 0x00 => Value::Flag(false),
+                _ => return None,
+            },
+            Query::Approach(_) => match payload[0] {
+                0 => Value::Approach(Sense::Positive),
+                1 => Value::Approach(Sense::Negative),
                 _ => return None,
             },
             Query::AzmAlt => parse_angles(payload, 4)?,
@@ -216,6 +241,8 @@ impl fmt::Display for Query {
             Query::DeviceVersion(Device::AltMotor) => f.write_str("altitude motor version"),
             Query::MotorPosition(d) => write!(f, "{} motor position", axis_name(*d)),
             Query::SlewDone(d) => write!(f, "{} slew done?", axis_name(*d)),
+            Query::Approach(d) => write!(f, "{} goto approach", axis_name(*d)),
+            Query::AtIndex => f.write_str("azimuth at index marker?"),
             Query::Backlash(d, sense) => write!(
                 f,
                 "{} backlash, {}",
@@ -278,6 +305,8 @@ pub enum Value {
         units: u32,
         deg: f64,
     },
+    /// The direction a goto finishes in.
+    Approach(Sense),
 }
 
 impl fmt::Display for Value {
@@ -296,6 +325,8 @@ impl fmt::Display for Value {
             },
             Value::Backlash(v) => write!(f, "{v}"),
             Value::MotorPosition { units, deg } => write!(f, "{units} ({deg:.5}°)"),
+            Value::Approach(Sense::Positive) => f.write_str("positive"),
+            Value::Approach(Sense::Negative) => f.write_str("negative"),
             Value::Angles {
                 azm_deg, alt_deg, ..
             } => write!(f, "azm {azm_deg:.5}°, alt {alt_deg:.5}°"),
@@ -353,6 +384,9 @@ pub fn plan(repeats: usize) -> Vec<Query> {
         Query::MotorPosition(Device::AltMotor),
         Query::SlewDone(Device::AzmMotor),
         Query::SlewDone(Device::AltMotor),
+        Query::Approach(Device::AzmMotor),
+        Query::Approach(Device::AltMotor),
+        Query::AtIndex,
         Query::AlignmentComplete,
         Query::GotoInProgress,
         Query::TrackingMode,

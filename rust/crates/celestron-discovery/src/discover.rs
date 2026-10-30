@@ -524,6 +524,31 @@ pub fn summarize(
         );
     }
 
+    let approach: Vec<String> = axes
+        .iter()
+        .map(|(name, d)| match value(Query::Approach(*d)) {
+            Some(v) => format!("{name} {v}"),
+            None => format!("{name} no answer"),
+        })
+        .collect();
+    check(
+        "Goto approach",
+        Status::Info,
+        format!(
+            "{} (the motor controllers' own setting, MC_GET_APPROACH; community-documented)",
+            approach.join(", ")
+        ),
+    );
+    check(
+        "Azimuth index",
+        Status::Info,
+        match value(Query::AtIndex) {
+            Some(Value::Flag(true)) => "at the index marker".to_string(),
+            Some(_) => "not at an index marker (MC_AT_INDEX; one may exist elsewhere)".into(),
+            None => "no answer: the mount may have no index marker".into(),
+        },
+    );
+
     let position_latency = latency(&ok(Query::PreciseAzmAlt));
     let echo_latency = latency(
         &exchanges

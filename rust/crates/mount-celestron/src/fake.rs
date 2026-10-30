@@ -29,6 +29,11 @@ use crate::adapter::Clock;
 /// The slowest variable rates, which "variable rate 0" runs at.
 pub const CREEP_POSITIVE_ARCSEC_S: f64 = 0.21;
 pub const CREEP_NEGATIVE_ARCSEC_S: f64 = 0.358;
+/// Fixed (keypad) rates 1–9 as Celestron lists them for the arrow keys: 2,
+/// 4, 8, 16 and 32 × sidereal, then 0.3, 1, 2 and 4 °/s. Unmeasured on this
+/// mount.
+pub const FIXED_RATES_DEG_S: [f64; 9] =
+    [0.00836, 0.0167, 0.0334, 0.0668, 0.1337, 0.3, 1.0, 2.0, 4.0];
 
 pub struct SimHandController {
     mount: Arc<Mutex<SimMount>>,
@@ -85,6 +90,7 @@ impl SimHandController {
                 Direction::Negative
             },
             rate_deg_s,
+            fixed_rate: None,
         };
         let motion: Vec<MountCommand> = match *cmd {
             [b'P', 3, dev, dir @ (6 | 7), hi, lo, 0, 0] => axis(dev)
@@ -110,8 +116,11 @@ impl SimHandController {
                 })
                 .map(|axis| match rate {
                     0 => MountCommand::Stop { axis },
-                    // Fixed rate 1, about twice sidereal.
-                    _ => mv(axis, dir == 36, 0.0084),
+                    _ => mv(
+                        axis,
+                        dir == 36,
+                        FIXED_RATES_DEG_S[usize::from(rate.min(9)) - 1],
+                    ),
                 })
                 .into_iter()
                 .collect(),

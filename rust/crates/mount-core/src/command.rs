@@ -57,8 +57,13 @@ pub struct MoveRequest {
     pub request_id: String,
     pub axis: Axis,
     pub direction: Direction,
+    /// The axis rate. For a fixed-rate move, the nominal speed of that rate,
+    /// used by the safety checks and for commanded travel.
     pub rate_deg_s: f64,
     pub duration_ms: u64,
+    /// A keypad rate (1–9, `MC_MOVE_POS`/`MC_MOVE_NEG`, as the hand
+    /// controller's arrow keys send) instead of a variable rate.
+    pub fixed_rate: Option<u8>,
 }
 
 /// Axis positions are counted as the motor controllers count them: 24 bits
@@ -144,6 +149,8 @@ pub enum MountCommand {
         axis: Axis,
         direction: Direction,
         rate_deg_s: f64,
+        /// Sent as this keypad rate (1–9) rather than as `rate_deg_s`.
+        fixed_rate: Option<u8>,
     },
     /// Go to `target` (axis units, see [`UNITS_PER_REV`]) and hold there.
     /// One request's legs share its ID.

@@ -21,6 +21,7 @@ fn request(id: &str, axis: Axis, direction: Direction, rate: f64, ms: u64) -> Mo
         direction,
         rate_deg_s: rate,
         duration_ms: ms,
+        fixed_rate: None,
     }
 }
 
@@ -959,4 +960,15 @@ fn a_fast_takeup_at_the_start_of_a_reversal_is_allowed_only_there() {
     let mut no_allowance = moves(Direction::Negative);
     no_allowance.config.takeup_overspeed_deg_s = 0.0;
     assert_eq!(only_fault(&run(&no_allowance)), FaultKind::Overspeed);
+}
+
+#[test]
+fn a_fixed_rate_outside_1_to_9_is_refused() {
+    let mut bad = request("f", Axis::Azimuth, Direction::Positive, 0.1, 500);
+    bad.fixed_rate = Some(10);
+    let mut scenario = one_move(SimFaults::default());
+    scenario.script[2].1 = Op::Move(bad);
+    let trace = run(&scenario);
+    assert_eq!(trace.moves_sent(), 0);
+    assert!(trace.refusals[0].1.contains("fixed rate must be 1–9"));
 }

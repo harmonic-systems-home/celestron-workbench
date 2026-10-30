@@ -289,6 +289,47 @@ fn enter_stops_a_goto_and_the_record_shows_where_it_ended() {
 }
 
 #[test]
+fn keypad_rate_moves_use_their_configured_speed() {
+    let mut sim = Sim::ready(false);
+    sim.line("az+ r5 1");
+    sim.run(2_500);
+    let sent: Vec<_> = sim
+        .runner
+        .adapter()
+        .received
+        .iter()
+        .filter_map(|(_, c)| match c {
+            MountCommand::Move {
+                rate_deg_s,
+                fixed_rate,
+                ..
+            } => Some((*rate_deg_s, *fixed_rate)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(sent, [(0.0717, Some(5))]);
+    assert!(sim.said(
+        Kind::Info,
+        "azimuth positive at keypad rate 5: Completed, commanded +0.0717°"
+    ));
+    for (line, said) in [
+        ("az+ r8", "keypad rate 8 has no speed"),
+        ("az+ r0", "must be r1 to r9"),
+        ("az+ rx", "must be r1 to r9"),
+    ] {
+        sim.line(line);
+        assert!(sim.said(Kind::Info, said), "{line}: {:#?}", sim.out);
+    }
+    // Rate 7 runs at 1.07 °/s, over the 1 °/s cap.
+    sim.line("az+ r7");
+    assert!(
+        sim.said(Kind::Alert, "rate 1.07 °/s is outside"),
+        "{:#?}",
+        sim.out
+    );
+}
+
+#[test]
 fn enter_stops_a_move_at_once() {
     let mut sim = Sim::ready(false);
     sim.line("alt+ 0.5 2");

@@ -41,10 +41,26 @@ fn a_healthy_evolution_passes_and_only_catalog_bytes_are_sent() {
     assert!(d.ready(), "{:#?}", d.checks);
     assert_eq!(status(&d, "Model"), Status::Pass);
     assert_eq!(status(&d, "Positions steady"), Status::Pass);
-    assert_eq!(d.exchanges.len(), 17 + 2 * 5);
+    assert_eq!(d.exchanges.len(), 20 + 2 * 5);
     assert_eq!(status(&d, "Anti-backlash"), Status::Pass);
     assert_eq!(status(&d, "Motor positions"), Status::Pass);
     assert_eq!(status(&d, "Slew done"), Status::Pass);
+    let detail = |name: &str| {
+        d.checks
+            .iter()
+            .find(|c| c.name == name)
+            .map(|c| c.detail.clone())
+            .unwrap()
+    };
+    assert!(
+        detail("Goto approach").starts_with("azimuth positive, altitude negative"),
+        "{}",
+        detail("Goto approach")
+    );
+    assert_eq!(
+        detail("Azimuth index"),
+        "not at an index marker (MC_AT_INDEX; one may exist elsewhere)"
+    );
     let planned: Vec<Vec<u8>> = query::plan(5).into_iter().map(Query::bytes).collect();
     assert_eq!(fake.received, planned, "sent exactly the plan");
     assert_eq!(d.identity.model.as_deref(), Some("22 (NexStar Evolution)"));

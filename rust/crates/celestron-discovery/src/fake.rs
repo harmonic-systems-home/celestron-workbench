@@ -23,6 +23,10 @@ pub struct FakeSetup {
     pub motor_offset: [i32; 2],
     /// Each motor controller's slew-done reply (0xFF done, 0x00 not).
     pub slew_done: [u8; 2],
+    /// `MC_GET_APPROACH` per axis: 0 positive, 1 negative.
+    pub approach: [u8; 2],
+    /// `MC_AT_INDEX` on azimuth: 0xFF at the marker; `None` doesn't answer.
+    pub at_index: Option<u8>,
     /// Added to each precise reading, cycling: encoder jitter.
     pub jitter: Vec<i32>,
     /// Answers nothing at all.
@@ -52,6 +56,8 @@ impl Default for FakeSetup {
             backlash: [[0, 0], [0, 0]],
             motor_offset: [0, 0],
             slew_done: [0xFF, 0xFF],
+            approach: [0, 1],
+            at_index: Some(0x00),
             jitter: vec![0, 0x100, -0x100, 0],
             silent: false,
         }
@@ -116,6 +122,14 @@ impl FakeHandController {
             [b'P', 1, dev @ (16 | 17), 0x13, 0, 0, 0, 1] => {
                 vec![setup.slew_done[usize::from(*dev - 16)]]
             }
+            [b'P', 1, dev @ (16 | 17), 0xFC, 0, 0, 0, 1] => {
+                vec![setup.approach[usize::from(*dev - 16)]]
+            }
+            [b'P', 1, 16, 0x18, 0, 0, 0, 1] => match setup.at_index {
+                Some(v) => vec![v],
+                // No answer from the device: one extra byte.
+                None => vec![0, 0],
+            },
             [b'P', 1, dev @ (16 | 17), 254, 0, 0, 0, 2] => {
                 match setup.motor_versions[usize::from(*dev - 16)] {
                     Some((major, minor)) => vec![major, minor],

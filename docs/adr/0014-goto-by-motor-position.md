@@ -65,3 +65,8 @@ The interlocks of ADR 0005 carry over, with changes for motion that has no const
 - **Anti-backlash is now a setting**, `[celestron] anti_backlash = [azm+, azm−, alt+, alt−]`, which the runner checks against the motor controllers at start, instead of requiring 0.
 - **A goto back toward its start isn't unexpected motion:** while a command runs, the travel check allows the larger of where it started and where it's headed. Counting a reversal goto's target as travel already made had latched a false `UnexpectedMotion` mid-trial.
 - **`send_deadline_ms` is 2,500** (was 1,000): a `z` read that took about 1 s (O7) held a goto past the deadline. Reading idle positions from the motor controllers (about 40 ms each) instead of `z` would remove the wait.
+
+## Keypad-rate moves (2026-10-30)
+
+- **Moves can be sent at a keypad rate**, as the arrow keys and ASIAIR's guide pulses send them: `MC_MOVE_POS`/`MC_MOVE_NEG` (`P 02 dev 24|25 rate 00 00 00`, rate 1–9; rate 0 is the existing stop) for a leased duration, ended by the usual stop. `az+ r3 2` is keypad rate 3 for 2 s. The safety checks and commanded travel use a nominal speed per rate (`[moves] fixed_rates_deg_s`, Celestron's list until measured); a rate with no speed there, or faster than `max_rate_deg_s`, is refused. Sources: [references.md](../references.md).
+
