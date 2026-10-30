@@ -125,6 +125,15 @@ Evidence paths are run logs and discovery reports under `reports/` (git-ignored,
 - **Gyroscope:** with its offset measured at 50°, the gyroscope read up and down gotos at 20° about 0.01° apart per goto (its offset shifts with tilt). Re-arming at each angle removed that.
 - **Status:** measured. A different balance (accessories moved, tube slid in the bracket) may change it; repeat after rebalancing.
 
+## O14. Fast gotos, and anti-backlash acts on timed moves but not on gotos
+
+- **Fast gotos** (`P 04 dev 02 …`, run log `2026-10-30T17-46-42`): eight per axis, 0.02–0.2° each way. All ended within ±1 unit of target, overshot at most 19 units (1.5″), and settled in 0.35–0.9 s. Over 0.2° they peak at about 0.70 °/s on both axes (about 2,650 units per 80 ms read), against about 0.5 °/s for slow gotos: over these distances both are limited by acceleration.
+- **Anti-backlash on gotos** (azimuth, twelve slow 0.15° gotos `+ + − −` per setting; run logs `2026-10-30T17-54-39` at 0, `17-56-23` at 20, `17-58-16` at 70, `18-00-00` at 99). The IMU's travel on reversal gotos was 0.086–0.102° at every setting, against 0.139–0.157° for gotos the same way as the one before: about 0.05° lost on each reversal, with or without anti-backlash.
+- **Anti-backlash on timed moves** (0.2 °/s for 0.75 s, the same pattern): at 0 (run log `18-03-21`), reversals 0.086–0.114°, same way 0.132–0.152°; at 99 (`18-00-00`), reversals 0.142–0.165°, same way 0.141–0.152°. At 99 the lost motion is gone, perhaps over-corrected by about 0.01°. The take-up on one reversal turned the axis at 0.40 °/s for a 0.2 °/s move, which latched `Overspeed` (correctly, as the check stands).
+- **Meaning:** the motor controllers apply anti-backlash to rate slews (the arrow keys, ASIAIR) and not to pass-through gotos. Gotos need the approach flag to land the same way each time.
+- **Also seen:** a `z` position read took about 1 s and held a goto past the 1 s send deadline (`17-50-56`); the deadline is now 2.5 s (O7).
+- **Status:** measured for azimuth. Next: the value between 70 and 99 that just cancels it on timed moves, the same for altitude (about 100″ of backlash, O13), and an overspeed allowance for the take-up while anti-backlash is set.
+
 ## From earlier use (not yet reproduced)
 
 Problems from about two years ago, before this project, without a known sequence. To be pinned down one at a time once basic motion is characterized; fill in details as they come back.

@@ -1056,11 +1056,16 @@ impl Controller {
 
     /// An axis that has turned further than commanded by more than the
     /// tolerance, with its observed and commanded travel.
+    /// While a command runs, the axis may be anywhere between where it
+    /// started and where it is headed: a goto back toward the start
+    /// (a reversal) mustn't count as commanded travel already undone.
     fn beyond_commanded(&self, now: Nanos) -> Option<(Axis, f64, f64)> {
         Axis::BOTH.into_iter().find_map(|axis| {
             let observed = self.tally[axis.index()].observed_deg;
             let commanded = self.commanded_travel(axis, now);
-            (observed.abs() > commanded.abs() + self.config.travel_tolerance_deg)
+            let started = self.tally[axis.index()].commanded_deg;
+            let allowed = commanded.abs().max(started.abs());
+            (observed.abs() > allowed + self.config.travel_tolerance_deg)
                 .then_some((axis, observed, commanded))
         })
     }

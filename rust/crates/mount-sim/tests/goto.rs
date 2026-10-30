@@ -485,3 +485,35 @@ fn a_goto_and_a_move_take_turns() {
     assert_eq!(g.last, Some(0));
     assert!(trace.travel_after(0)[0].abs() < 1e-9);
 }
+
+#[test]
+fn a_goto_back_toward_the_start_is_not_unexpected_motion() {
+    // Out 0.3° in two gotos, then back: as each goto back starts, the axis
+    // is still out where the last one left it, beyond the new target.
+    let config = SafetyConfig {
+        max_goto_deg: 0.2,
+        travel_tolerance_deg: 0.1,
+        ..SafetyConfig::default()
+    };
+    let mut script = vec![(100, Op::Connect), (300, Op::Arm)];
+    for (i, d) in [0.15, 0.15, -0.15, -0.15].into_iter().enumerate() {
+        script.push((
+            500 + i as u64 * 2_500,
+            Op::Goto(goto(&format!("g{i}"), Axis::Azimuth, d)),
+        ));
+    }
+    let trace = run(&Scenario {
+        config,
+        script,
+        run_ms: 11_000,
+        ..Scenario::default()
+    });
+    assert!(trace.faults.is_empty(), "{:?}", trace.faults);
+    assert_eq!(trace.records.len(), 4);
+    assert!(
+        trace
+            .records
+            .iter()
+            .all(|r| r.last_stage() == Stage::Completed)
+    );
+}

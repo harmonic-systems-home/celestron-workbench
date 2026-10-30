@@ -192,17 +192,29 @@ fn start_adapter<L: Link + Send + 'static>(
         println!("note: {note}");
     }
     let [[azp, azn], [alp, aln]] = prepared.backlash;
-    if prepared.backlash.iter().flatten().any(|v| *v != Some(0)) {
+    let want = settings.anti_backlash;
+    if [azp, azn, alp, aln] != want.map(Some) {
         let show = |v: Option<u8>| v.map_or("—".into(), |v| v.to_string());
         anyhow::bail!(
-            "anti-backlash is azm+ {}, azm- {}, alt+ {}, alt- {}: it must be 0 so it doesn't hide the backlash being measured. Run `cwb celestron backlash --port … --set-all 0`.",
+            "anti-backlash is azm+ {}, azm- {}, alt+ {}, alt- {}, but config/mount.toml expects {}, {}, {}, {} ([celestron] anti_backlash). Set it with `cwb celestron backlash --port … --set azm+=N …`, or change the config.",
             show(azp),
             show(azn),
             show(alp),
-            show(aln)
+            show(aln),
+            want[0],
+            want[1],
+            want[2],
+            want[3]
         );
     }
-    println!("anti-backlash 0 on both axes");
+    if want == [0; 4] {
+        println!("anti-backlash 0 on both axes");
+    } else {
+        println!(
+            "anti-backlash azm+ {}, azm- {}, alt+ {}, alt- {}, as configured",
+            want[0], want[1], want[2], want[3]
+        );
+    }
     Ok(CelestronAdapter::spawn(
         link,
         settings,

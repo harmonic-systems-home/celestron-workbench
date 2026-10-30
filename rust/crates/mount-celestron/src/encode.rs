@@ -31,6 +31,11 @@ pub struct CelestronSettings {
     /// once as opposite motion, which latches a fault.
     pub reverse_azimuth: bool,
     pub reverse_altitude: bool,
+    /// The anti-backlash values the motor controllers must hold, azm+,
+    /// azm−, alt+, alt− (0–99), checked when the runner starts. All 0 while
+    /// the backlash itself is measured.
+    #[serde(default)]
+    pub anti_backlash: [u8; 4],
 }
 
 impl CelestronSettings {

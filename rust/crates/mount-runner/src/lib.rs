@@ -166,8 +166,8 @@ arm | disarm        allow moves | refuse them
 az+ az- alt+ alt-   move one axis: [rate °/s] [seconds], e.g. `az+ 0.1 1`
 goto az|alt ±deg    go that far by the axis's own position: [fast] [from-|from+],
                     e.g. `goto az +0.02`. from- always arrives moving up (from
-                    below), from+ moving down; off by default: anti-backlash,
-                    once set, does that job
+                    below), from+ moving down; off by default. Anti-backlash
+                    doesn't act on these gotos (O14)
 status              state, IMU, travel and mount positions
 note <text>         put a timestamped remark in the run log (e.g. `note chatter`)
 reset               clear a fault once the mount is still

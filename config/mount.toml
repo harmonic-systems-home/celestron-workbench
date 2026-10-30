@@ -15,6 +15,10 @@ tube_axis = "+y"
 # opposite motion.
 reverse_azimuth = false
 reverse_altitude = false
+# The anti-backlash values the motor controllers must hold: azm+, azm-,
+# alt+, alt- (0-99). The runner refuses to start if they differ. All 0 while
+# measuring the backlash itself. It acts on timed moves, not on gotos (O14).
+anti_backlash = [0, 0, 0, 0]
 # Stops are always tracking off (T 00) then fixed rate 0: variable rate 0
 # creeps on this mount (docs/observations.md, O1).
 
@@ -27,7 +31,7 @@ seconds = 1.0
 max_rate_deg_s = 1.0
 min_rate_deg_s = 0.001
 max_duration_ms = 2000
-send_deadline_ms = 1000
+send_deadline_ms = 2500
 ack_deadline_ms = 300
 stop_deadline_ms = 1500
 still_hold_ms = 300
@@ -52,7 +56,7 @@ max_goto_deg = 0.2
 max_goto_rate_deg_s = 1.0
 min_goto_rate_deg_s = 0.05
 goto_settle_ms = 2000
-allow_fast_goto = false
+allow_fast_goto = true
 # The approach flag's first leg goes this far past the target; it must
 # exceed the backlash (0.068° in azimuth, O9). Within it, a servo's brief
 # reversal near the target is allowed; beyond it is an overshoot fault.
