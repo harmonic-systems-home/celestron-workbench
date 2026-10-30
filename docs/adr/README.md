@@ -18,3 +18,5 @@ Each ADR records one decision, why it was made, and what it costs. To change a d
 | [0012](0012-session-site.md) | Each session records where it took place | Accepted |
 | [0013](0013-mount-runner.md) | The Celestron motion adapter and the interactive mount runner | Accepted |
 | [0014](0014-goto-by-motor-position.md) | Gotos by motor position | Accepted |
+| [0015](0015-daytime-optical-check.md) | A daytime optical check against a terrestrial target | Accepted |
+| [0016](0016-other-controllers.md) | Other controllers on the mount | Accepted |

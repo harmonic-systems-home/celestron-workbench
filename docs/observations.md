@@ -193,7 +193,7 @@ Outside sources (Celestron, the community AUX command set, forums) are listed in
 
 Problems from about two years ago, before this project, without a known sequence. To be pinned down one at a time once basic motion is characterized; fill in details as they come back.
 
-- **H1. ASIAIR:** problems controlling or connecting to the mount (details to add).
+- **H1. ASIAIR:** problems controlling or connecting to the mount (details to add). ASIAIR was connected through the hand controller's USB port (where the Mac is now), and SkySafari may have been connected over the mount's Wi-Fi at the same time. Typical night: StarSense alignment, then ASIAIR, then the USB link hung or moves stopped, forcing a power cycle that lost the alignment. ADR 0016 sets out to reproduce it.
 - **H2. StarSense self-calibration:** problems with auto-alignment or calibration (details to add).
 - **H3. Tracking:** problems with tracking (details to add). O1's creep is a candidate for some of these.
 - **H4. Hand controller arrow keys:** unexpected behaviour of arrow-key moves (details to add). O1 may be one.
