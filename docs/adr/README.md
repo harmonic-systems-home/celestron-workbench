@@ -17,3 +17,4 @@ Each ADR records one decision, why it was made, and what it costs. To change a d
 | [0011](0011-hand-controller-time-and-location.md) | Setting the hand controller's time and location | Accepted |
 | [0012](0012-session-site.md) | Each session records where it took place | Accepted |
 | [0013](0013-mount-runner.md) | The Celestron motion adapter and the interactive mount runner | Accepted |
+| [0014](0014-goto-by-motor-position.md) | Gotos by motor position | Accepted |
