@@ -140,9 +140,9 @@ Outside sources (Celestron, the community AUX command set, forums) are listed in
 ## O15. Anti-backlash values for timed moves
 
 - **Trial:** 2026-10-30, timed moves of 0.15° (0.2 °/s for 0.75 s), `+ + − −` three times per setting, both directions of the axis set to the same value; lost motion is the IMU's travel on moves continuing the same way minus its travel on reversals (five reversals, six repeats each; scatter about ±20″). Run logs `2026-10-30T18-03-21` to `2026-10-30T19-22-14`.
-- **Azimuth:** 0 → 166″ lost, 30 → 123″, 50 → 31″, 70 → −23″ (over-corrected), 85 → −15″, 99 → −38″. Confirmed at **60: +4″**.
+- **Azimuth:** 0 → 166″ lost, 30 → 123″, 50 → 31″, 70 → −23″ (over-corrected), 85 → −15″, 99 → −38″. Confirmed at **60: +4″**. Keypad-rate moves have less slack and want 40 (O16), which the mount now holds.
 - **Altitude:** 0 → 69″, 30 → 34″, 60 → −64″. Confirmed at **40: −12″**.
-- **Not linear:** little effect below about 30, then most of it between 30 and 60. The best values are about 60 (azimuth) and 40 (altitude), in proportion to each axis's backlash (O9, O13). They apply to timed moves only (O14). The mount and `config/mount.toml` now hold 60, 60, 40, 40.
+- **Not linear:** little effect below about 30, then most of it between 30 and 60. The best values are about 60 (azimuth) and 40 (altitude), in proportion to each axis's backlash (O9, O13). They apply to timed moves only (O14). The mount and `config/mount.toml` held 60, 60, 40, 40 until O16 moved azimuth to 40 for keypad moves.
 - **Take-up:** the motor runs fast at the start of a reversal, peaking at 0.66–0.88 °/s for about 120–160 ms at 99 (gyroscope, raw). That latched `Overspeed` until the runner allowed it (`takeup_overspeed_deg_s`, `takeup_ms`): now for any move that reverses its axis, or is the first on it since the runner started, as the gears may have been left either way by whatever moved them last.
 - **Servo easing:** after a move with anti-backlash 30, the axis eased back 16 units (1.2″) about 0.6 s after the move ended; the idle-creep check now waits for two equal reads before taking its reference.
 - **Status:** chosen for timed moves. Repeat after rebalancing (O13), and at other tube angles if altitude behaviour matters there.
@@ -166,7 +166,18 @@ Outside sources (Celestron, the community AUX command set, forums) are listed in
 
     Rate 5 grows about 2.9″ per step: 60 falls a little short of the azimuth backlash (245″, O9) and about 70 would match it. Rate 6 gets 100–135″ less than rate 5 at every setting, not a fixed fraction, and doesn't reach the backlash even at 99.
   - **Rates 7–9** (with `config/trials/fast-rates.toml`, which relaxes the rate, duration, motion and stop limits): rate 7 about 1.04 °/s, rate 8 about 2.07 °/s, neither with a take-up measurable above the stop-timing noise (±50–100″ at these speeds). Rate 9's top speed isn't read directly (no reads during a move): at least 3.5 °/s, about 4 °/s on Celestron's list. A 1 s rate 9 move travels 3.4°; from the stop the axis takes 1.3–2.7 s and about 2.5° to come to rest, which trips the normal 1.5 s stop deadline. At rate 9 the phone's slight tilt shows 0.1 °/s on the altitude axis, enough to trip the unexpected-motion check (the altitude encoder didn't move).
-- **Status:** azimuth only. Next if needed: altitude, and anti-backlash 0 at the same rates.
+- **Choosing azimuth anti-backlash for keypad moves** (2026-10-30, run logs `21-58-52` (70) and `22-18-33` to `22-24-18`; reversals at rate 5 for 1.5 s and rate 3 for 2 s, `+ + − −`; over-correction is how much further the tube (IMU) moves on a reversal than on a repeat):
+
+  | Anti-backlash | Rate 5: motor extra | Rate 5: over-correction | Rate 3: motor extra | Rate 3: over-correction |
+  |---|---|---|---|---|
+  | 35 | 144″ | −28 ± 16″ | 169″ | +27 ± 19″ |
+  | 40 | 160″ | +2 ± 21″ | 186″ | +7 ± 35″ |
+  | 50 | 185″ | +7 ± 14″ | 219″ | +57 ± 16″ |
+  | 70 | 244″ | +95 ± 18″ | 287″ | +148 ± 48″ |
+
+  The slack on keypad moves is about 160–180″, less than O9's 245″ from slow variable-rate moves, so taking up 245″ (70) over-corrects, and so does 60. **40** balances both rates. The mount and `config/mount.toml` now hold azimuth 40; timed moves were best at 60 (O15), so they keep about 75″ of slack. Altitude stays at 40 (from O15, not checked for keypad moves). Each row rests on 4–7 reversals: enough to rule out 60–70, not to tell 40 from 45.
+- **Disturbances during these trials:** two false `UnexpectedMotion` faults with the encoders still. Footsteps as the operator left the room (carpet over a wood subfloor) rocked the tube about 0.1 °/s in pulses about a second apart, tilting it about 160″ before it settled. A text message to the phone showed as a jolt peaking at 7 °/s, gone within 0.5 s. Both are larger than the effects measured here: run trials with the phone on Do Not Disturb and nobody near the scope. The taped phone's angle on the tube held within about 0.02° through the rate 9 moves, but rose 0.12° between the morning's and afternoon's sessions with the altitude encoder unchanged (app restart, tape creep or the tube settling: unknown).
+- **Status:** azimuth only. Next if needed: altitude keypad moves.
 
 ## From earlier use (not yet reproduced)
 
