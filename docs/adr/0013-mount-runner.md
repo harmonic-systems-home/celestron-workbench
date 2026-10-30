@@ -120,3 +120,12 @@ A stale-IMU fault 8 s after arming, with the phone streaming normally, came from
 - **The phone app holds clock pings after a reconnect** until the Mac has acknowledged everything recorded up to the reconnect, so they don't queue behind the resent backlog. It starts them anyway after 60 s, so a stalled resend can't leave the Mac without a clock; the fit then drops any delayed ones.
 - **`arm` is refused while the clock is uncertain by more than ±100 ms,** or there is no clock model; the alert says to wait for a few exchanges.
 - **An observation more than `imu_max_age_ms` ahead of now isn't fresh,** just as one that much behind isn't; `status` shows `AHEAD (clock model wrong)`. Before, a sample mapped seconds into the future counted as fresh for its whole lead, so the phone could have gone silent unnoticed for that long.
+
+## A move's lease runs from when it left (2026-10-29)
+
+The altitude sign trial (run log `2026-10-30T02-03-33`) reached the serial port 63 ms after it was handed over, queued behind a position read; the stop, 1 s after the hand-over, wasn't delayed. The mount turned 0.0970° and the record said 0.100° commanded.
+
+- **The acknowledgement carries the move's send time** (`MountReport::Acknowledged { id, sent_ns }`): the adapter reports when its first transaction went out.
+- **The controller restarts the lease from then,** so the move gets its full duration; commanded travel and the record's `Transmitted` stage use it too. The send time is clamped between the hand-over and the acknowledgement, so the lease can run at most the acknowledgement deadline (300 ms) past its hand-over.
+- **The acknowledgement deadline still runs from the hand-over,** so a move stuck behind a read that never finishes still faults.
+- **The simulated mount takes a `send_delay_ms` fault** to test this; the random fault search includes it, and its window is now 15 s so the travel check can catch the slowest move left running by an ignored stop.

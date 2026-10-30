@@ -133,6 +133,30 @@ fn a_normal_move_completes_and_rearms() {
 }
 
 #[test]
+fn a_move_delayed_on_its_way_still_runs_its_full_lease() {
+    // 2026-10-29: a move waited 63 ms behind a position read, the stop
+    // didn't, and the mount turned 0.097° for a 0.100° record. The lease
+    // and commanded travel now run from when the move actually left.
+    let trace = run(&one_move(SimFaults {
+        send_delay_ms: 60,
+        ..SimFaults::default()
+    }));
+    assert!(trace.faults.is_empty(), "{:?}", trace.faults);
+    let record = &trace.records[0];
+    let at = |stage| record.stages.iter().find(|s| s.0 == stage).unwrap().1;
+    assert_eq!(at(Stage::Requested), 500 * MS);
+    assert_eq!(at(Stage::Transmitted), 560 * MS);
+    assert_eq!(at(Stage::StopSent), 1_560 * MS);
+    assert!((record.commanded_deg.unwrap() - 0.5).abs() < 1e-9);
+    let travel = trace.travel_after(0);
+    assert!(
+        (travel[0] - 0.5).abs() < 0.03,
+        "azimuth travel {}",
+        travel[0]
+    );
+}
+
+#[test]
 fn a_late_acknowledgement_stops_and_latches() {
     let trace = run(&one_move(SimFaults {
         ack_delay_ms: 1_000,
@@ -698,6 +722,7 @@ fn safety_invariants_hold_across_random_fault_combinations() {
             reverse: rng.chance(10),
             stall: rng.chance(10),
             speed_factor: if rng.chance(10) { 2.5 } else { 1.0 },
+            send_delay_ms: if rng.chance(20) { rng.next() % 250 } else { 0 },
             disconnect_at_ms: rng.chance(10).then(|| 500 + rng.next() % 3_000),
             keep_moving_when_disconnected: rng.chance(50),
             imu_stops_at_ms: rng.chance(10).then(|| 500 + rng.next() % 3_000),
@@ -739,7 +764,10 @@ fn safety_invariants_hold_across_random_fault_combinations() {
         let scenario = Scenario {
             faults: faults.clone(),
             script,
-            run_ms: t + 6_000,
+            // Long enough for the travel check to catch the slowest random
+            // move (0.02 °/s, below the IMU's motion threshold) left
+            // running by an ignored stop: 0.25° beyond commanded takes 12.5 s.
+            run_ms: t + 15_000,
             seed,
             ..Scenario::default()
         };

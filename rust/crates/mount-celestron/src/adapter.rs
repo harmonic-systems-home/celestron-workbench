@@ -41,7 +41,8 @@ pub struct Transaction {
 }
 
 enum Event {
-    Ack(CommandId),
+    /// A move went out at this time and every transaction succeeded.
+    Ack(CommandId, Nanos),
     Transaction(Transaction),
     Lost(String),
     Position(Position),
@@ -148,7 +149,7 @@ impl MountAdapter for CelestronAdapter {
         let mut reports = Vec::new();
         while let Ok(event) = self.events.try_recv() {
             match event {
-                Event::Ack(id) => reports.push(MountReport::Acknowledged(id)),
+                Event::Ack(id, sent_ns) => reports.push(MountReport::Acknowledged { id, sent_ns }),
                 Event::Lost(why) => {
                     if !self.lost {
                         self.lost = true;
@@ -212,8 +213,10 @@ impl<L: Link> Worker<L> {
     fn execute(&mut self, command: &MountCommand) {
         self.moving = matches!(command, MountCommand::Move { .. });
         let mut all_ok = true;
+        let mut first_sent = None;
         for tx in transactions(command, self.signs) {
             let sent_ns = (self.clock)();
+            first_sent.get_or_insert(sent_ns);
             let (outcome, _) = transact(&mut self.link, &tx.bytes, 0, tx.pass_through);
             let bytes = tx.bytes;
             let _ = self.events.send(Event::Transaction(Transaction {
@@ -225,8 +228,11 @@ impl<L: Link> Worker<L> {
             all_ok &= outcome == Outcome::Ok;
             self.outcome(outcome, command);
         }
-        if all_ok && let MountCommand::Move { id, .. } = command {
-            let _ = self.events.send(Event::Ack(*id));
+        if all_ok
+            && let MountCommand::Move { id, .. } = command
+            && let Some(sent_ns) = first_sent
+        {
+            let _ = self.events.send(Event::Ack(*id, sent_ns));
         }
     }
 

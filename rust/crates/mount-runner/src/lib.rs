@@ -505,7 +505,9 @@ impl<A: RunnerAdapter> Runner<A> {
                 json!({ "report": format!("{report:?}") }),
             );
             let actions = match report {
-                MountReport::Acknowledged(id) => self.controller.acknowledged(id, now),
+                MountReport::Acknowledged { id, sent_ns } => {
+                    self.controller.acknowledged(id, sent_ns, now)
+                }
                 MountReport::TransportLost => self.controller.transport_lost(now),
             };
             self.carry_out(actions, now, &mut out);

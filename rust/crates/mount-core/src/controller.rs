@@ -64,8 +64,15 @@ struct Active {
     axis: Axis,
     direction: Direction,
     rate_deg_s: f64,
+    /// When the command was handed to the adapter; the acknowledgement
+    /// deadline runs from here.
+    requested: Nanos,
+    /// When it actually left for the mount: handed over until acknowledged,
+    /// then the adapter's own send time. The lease and commanded travel run
+    /// from here.
     transmitted: Nanos,
     acked: Option<Nanos>,
+    duration: Nanos,
     lease_end: Nanos,
     stop_sent: Option<Nanos>,
     /// Stopped by the operator rather than at the end of its lease.
@@ -343,8 +350,10 @@ impl Controller {
             axis: request.axis,
             direction: request.direction,
             rate_deg_s: request.rate_deg_s,
+            requested: now,
             transmitted: now,
             acked: None,
+            duration: request.duration_ms as Nanos * MS,
             lease_end: now + request.duration_ms as Nanos * MS,
             stop_sent: None,
             cancelled: false,
@@ -360,13 +369,25 @@ impl Controller {
         })])
     }
 
-    /// The mount acknowledged a command. Late or unknown acknowledgements are ignored.
-    pub fn acknowledged(&mut self, id: CommandId, now: Nanos) -> Vec<Action> {
+    /// The mount acknowledged a command that left for it at `sent_ns`. The
+    /// lease restarts from then, so a command delayed on its way still gets
+    /// its full duration (never more than the acknowledgement deadline
+    /// later). Late or unknown acknowledgements are ignored.
+    pub fn acknowledged(&mut self, id: CommandId, sent_ns: Nanos, now: Nanos) -> Vec<Action> {
         if let Some(a) = &mut self.active
             && a.id == id
             && a.acked.is_none()
         {
             a.acked = Some(now);
+            if a.stop_sent.is_none() {
+                a.transmitted = sent_ns.clamp(a.requested, now);
+                a.lease_end = a.transmitted + a.duration;
+                for stage in &mut self.records[a.record].stages {
+                    if stage.0 == Stage::Transmitted {
+                        stage.1 = a.transmitted;
+                    }
+                }
+            }
             self.records[a.record]
                 .stages
                 .push((Stage::Acknowledged, now));
@@ -446,7 +467,7 @@ impl Controller {
         if !self.fresh(now) {
             return self.fault(FaultKind::StaleImu, now, "IMU data stale during motion");
         }
-        if a.acked.is_none() && now - a.transmitted > c.ack_deadline_ms as Nanos * MS {
+        if a.acked.is_none() && now - a.requested > c.ack_deadline_ms as Nanos * MS {
             return self.fault(
                 FaultKind::AcknowledgementMissing,
                 now,

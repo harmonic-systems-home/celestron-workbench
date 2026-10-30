@@ -184,7 +184,10 @@ fn a_move_is_acknowledged_runs_and_stops() {
         .send(&mv(Axis::Azimuth, Direction::Positive, 0.5), 0)
         .unwrap();
     let reports = rig.run(150);
-    assert_eq!(reports, [MountReport::Acknowledged(7)]);
+    assert!(
+        matches!(reports[..], [MountReport::Acknowledged { id: 7, sent_ns }] if sent_ns < 150_000_000),
+        "{reports:?}"
+    );
     rig.run(400);
     assert!((rig.rates()[0] - 0.5).abs() < 1e-6, "{:?}", rig.rates());
     rig.adapter
