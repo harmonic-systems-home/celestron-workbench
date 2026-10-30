@@ -101,6 +101,14 @@ Evidence paths are run logs and discovery reports under `reports/` (git-ignored,
 - **A new goto ends it** (same run log). A slow −0.199° goto was stopped at 327 ms, 4,585 units in: the adapter read the position and sent a slow goto there first, then tracking off and fixed rate 0. The axis decelerated (about 2 °/s² from 0.5 °/s), read done at 544 ms and settled at 7,457 units: 2,872 units (0.062°) past the re-aim point and 1,817 units (0.039°) short of its target. It didn't come back to the re-aim point: a target behind it seems to mean "stop now". An earlier try that re-aimed after the 100 ms of tracking off and fixed rate 0 came too late to show anything (`2026-10-30T17-04-33`).
 - **Status:** worked around: a stop for an axis with a goto running first re-aims the goto at the position just read (ADR 0014). It ends within about 0.06° and 0.2 s from slow-goto speed. Gotos are capped at 0.2° for now.
 
+## O12. Altitude encoder scale checked against gravity
+
+- **Trial:** 2026-10-30 (run log `2026-10-30T17-07-19`, phone session `6e390138`): ten altitude moves of 2° (1 °/s for 2 s), five up and five down, about 6 s apart, tube from 50.5° to 60.6° and back. For each pause, the mount's own altitude against the angle the phone's gravity vector turned about the rotation axis (found from the gyroscope, 1.4° from horizontal, so mount levelling and phone alignment don't matter).
+- **Result:** the tube turned 0.996 (fused gravity) to 0.998 (raw accelerometer) of what the encoder reported, so 46,690–46,790 units per tube degree against the nominal 46,603 (2²⁴/360). That 0.2–0.4% is about what the phone's accelerometer can resolve over 10° (residuals 35–70″), so the nominal scale holds to about 0.3%. Fitting the up and down legs separately, the down leg sits 0.02–0.04° above the up leg: the altitude backlash, larger than O9's first estimate.
+- **Leading edge:** at the estimated 285 mm from the axis, 1 mm is about 9,370 units (0.20°) and one unit about 0.11 µm, to the same 0.3%.
+- **Pitfall:** each runner process starts its own Mac clock near 0, so samples must be placed by their phone timestamps through the clock exchanges of the runner in question (its `mac_clock_boot_id`), not by receive time: a first pass that windowed by receive time mixed sessions and gave a false scale of 0.5.
+- **Status:** measured for altitude. Azimuth needs another reference (the gyroscope's own scale, or a known angle).
+
 ## From earlier use (not yet reproduced)
 
 Problems from about two years ago, before this project, without a known sequence. To be pinned down one at a time once basic motion is characterized; fill in details as they come back.
