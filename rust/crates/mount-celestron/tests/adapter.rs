@@ -538,14 +538,27 @@ fn positions_are_not_read_between_a_move_and_its_stop() {
         )
         .unwrap();
     rig.run(200);
-    let sent: Vec<u8> = rig.received.lock().unwrap().iter().map(|c| c[0]).collect();
-    let text = String::from_utf8_lossy(&sent).into_owned();
-    let (before, after) = text.split_at(text.find('P').unwrap());
-    assert!(before.contains('z'), "read while idle: {text}");
-    let between = &after[..after.rfind('P').unwrap()];
-    assert!(!between.contains('z'), "no reads during the move: {text}");
+    // R: a position read from a motor controller; M: the move; S: the stop's
+    // fixed rate 0; T: tracking off.
+    let text: String = rig
+        .received
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|c| match c[..] {
+            [b'P', 1, 16 | 17, 0x01, 0, 0, 0, 3] => 'R',
+            [b'P', 3, ..] => 'M',
+            [b'P', 2, ..] => 'S',
+            [b'T', _] => 'T',
+            _ => '?',
+        })
+        .collect();
+    let (before, after) = text.split_at(text.find('M').unwrap());
+    assert!(before.contains("RR"), "both axes read while idle: {text}");
+    let between = &after[..after.find('S').unwrap()];
+    assert!(!between.contains('R'), "no reads during the move: {text}");
     assert!(
-        after[after.rfind('P').unwrap()..].contains('z'),
+        after[after.find('S').unwrap()..].contains('R'),
         "reads resume: {text}"
     );
 }

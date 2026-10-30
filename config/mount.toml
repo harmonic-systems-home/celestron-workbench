@@ -18,7 +18,7 @@ reverse_altitude = false
 # The anti-backlash values the motor controllers must hold: azm+, azm-,
 # alt+, alt- (0-99). The runner refuses to start if they differ. All 0 while
 # measuring the backlash itself. It acts on timed moves, not on gotos (O14).
-anti_backlash = [0, 0, 0, 0]
+anti_backlash = [60, 60, 40, 40]
 # Stops are always tracking off (T 00) then fixed rate 0: variable rate 0
 # creeps on this mount (docs/observations.md, O1).
 
@@ -63,3 +63,9 @@ allow_fast_goto = true
 approach_margin_deg = 0.15
 # A goto that settles further than this from its target latches a fault.
 goto_tolerance_deg = 0.01
+# With anti-backlash set, a move that reverses its axis starts by taking up
+# the slack fast (peaks of 0.9 deg/s at 99, O14): for takeup_ms after it
+# leaves, the overspeed limit rises by takeup_overspeed_deg_s. The runner
+# uses 0 while anti_backlash is all 0.
+takeup_overspeed_deg_s = 1.0
+takeup_ms = 1000

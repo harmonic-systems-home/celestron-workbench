@@ -912,3 +912,51 @@ fn safety_invariants_hold_across_random_fault_combinations() {
         }
     }
 }
+
+#[test]
+fn a_fast_takeup_at_the_start_of_a_reversal_is_allowed_only_there() {
+    // Anti-backlash takes up the slack at 0.8 °/s for 150 ms, 300 ms into a
+    // 0.2 °/s move (O14): a burst like that on the reversal only.
+    let config = SafetyConfig {
+        takeup_overspeed_deg_s: 1.0,
+        takeup_ms: 1_000,
+        ..SafetyConfig::default()
+    };
+    let moves = |second: Direction| Scenario {
+        config: config.clone(),
+        faults: SimFaults {
+            bump: Some((Axis::Azimuth, 0.8 * second.sign(), 3_800, 3_950)),
+            ..SimFaults::default()
+        },
+        script: vec![
+            (100, Op::Connect),
+            (300, Op::Arm),
+            (
+                500,
+                Op::Move(request("m1", Axis::Azimuth, Direction::Positive, 0.2, 750)),
+            ),
+            (
+                3_500,
+                Op::Move(request("m2", Axis::Azimuth, second, 0.2, 750)),
+            ),
+        ],
+        ..Scenario::default()
+    };
+    let trace = run(&moves(Direction::Negative));
+    assert!(trace.faults.is_empty(), "{:?}", trace.faults);
+    assert_eq!(trace.records[1].last_stage(), Stage::Completed);
+    // The same burst on a move that doesn't reverse is overspeed.
+    let trace = run(&moves(Direction::Positive));
+    assert_eq!(only_fault(&trace), FaultKind::Overspeed);
+    // The first move on an axis may be a reversal too: the gears were left
+    // by whatever moved it last.
+    let mut first = moves(Direction::Negative);
+    first.faults.bump = Some((Axis::Azimuth, 0.8, 800, 950));
+    first.script.truncate(3);
+    let trace = run(&first);
+    assert!(trace.faults.is_empty(), "{:?}", trace.faults);
+    // And without the allowance, the reversal's burst is too.
+    let mut no_allowance = moves(Direction::Negative);
+    no_allowance.config.takeup_overspeed_deg_s = 0.0;
+    assert_eq!(only_fault(&run(&no_allowance)), FaultKind::Overspeed);
+}

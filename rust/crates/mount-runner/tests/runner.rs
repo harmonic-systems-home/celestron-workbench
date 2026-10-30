@@ -920,6 +920,30 @@ fn latched_with_the_positions_holding_drift_raises_no_alarm() {
 }
 
 #[test]
+fn a_servo_easing_onto_its_position_is_not_a_creep() {
+    // 2026-10-30: after a move, the first read was 16 units (0.0003°) from
+    // where the axis then stayed.
+    let (mut runner, mut out) = reporting_runner(false);
+    let mut now = 0;
+    feed(&mut runner, &mut now, 500, |_| [0.25, 0.03], &mut out);
+    out.extend(runner.line("arm", now));
+    assert_eq!(runner.state(), MountState::Armed);
+    let unit = 360.0 / 16_777_216.0;
+    let start = now;
+    feed(
+        &mut runner,
+        &mut now,
+        3_000,
+        move |t| {
+            let easing = t - start <= 10 * MS;
+            [0.25 + if easing { 16.0 * unit } else { 0.0 }, 0.03]
+        },
+        &mut out,
+    );
+    assert_eq!(runner.state(), MountState::Armed, "{out:#?}");
+}
+
+#[test]
 fn a_creep_during_the_offset_window_refuses_arming() {
     let (mut runner, mut out) = reporting_runner(true);
     let now = 10_000 * MS;

@@ -96,6 +96,9 @@ struct Active {
     observed_at_start: f64,
     /// Set for a goto; `direction` is then its current leg's.
     goto: Option<GotoRun>,
+    /// A move reversing the axis's last direction, or the first on it:
+    /// anti-backlash may take up the slack fast at its start.
+    reversal: bool,
 }
 
 /// A goto in progress. Positions are axis units.
@@ -194,6 +197,8 @@ pub struct Controller {
     /// that axis unchanged. Cleared by a command on the axis, a reset of its
     /// tally, and positions that moved.
     still_mark: [Option<f64>; 2],
+    /// Per axis: the direction it was last commanded to move.
+    last_direction: [Option<Direction>; 2],
 }
 
 impl Controller {
@@ -219,6 +224,7 @@ impl Controller {
             tally: [Tally::default(); 2],
             integrated_to: None,
             still_mark: [None; 2],
+            last_direction: [None; 2],
         })
     }
 
@@ -458,7 +464,11 @@ impl Controller {
             cancelled: false,
             observed_at_start: self.tally[request.axis.index()].observed_deg,
             goto: None,
+            // Unknown before the first command: the gears may have been
+            // left either way.
+            reversal: self.last_direction[request.axis.index()] != Some(request.direction),
         });
+        self.last_direction[request.axis.index()] = Some(request.direction);
         self.still_since = None;
         self.still_mark[request.axis.index()] = None;
         self.go(MountEvent::MotionCommandSent);
@@ -574,7 +584,9 @@ impl Controller {
             cancelled: false,
             observed_at_start: self.tally[request.axis.index()].observed_deg,
             goto: Some(run),
+            reversal: false,
         });
+        self.last_direction[request.axis.index()] = Some(direction_of(delta));
         self.still_since = None;
         self.still_mark[request.axis.index()] = None;
         self.go(MountEvent::MotionCommandSent);
@@ -788,7 +800,14 @@ impl Controller {
                 ),
             );
         }
-        if rate.abs() > a.rate_deg_s * (1.0 + c.overspeed_fraction) + c.motion_deg_s {
+        // Anti-backlash takes up the slack fast at the start of a reversal.
+        let takeup = a.reversal && a.sent.is_some_and(|s| now - s <= c.takeup_ms as Nanos * MS);
+        let allowance = if takeup {
+            c.takeup_overspeed_deg_s
+        } else {
+            0.0
+        };
+        if rate.abs() > a.rate_deg_s * (1.0 + c.overspeed_fraction) + c.motion_deg_s + allowance {
             return self.fault(
                 FaultKind::Overspeed,
                 now,

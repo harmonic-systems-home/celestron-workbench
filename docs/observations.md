@@ -60,7 +60,8 @@ Evidence paths are run logs and discovery reports under `reports/` (git-ignored,
 - **Seen:** 2026-10-29, in all three runner logs that evening. Position reads normally come every ~310 ms (a 250 ms pause plus a ~60 ms answer); about every 3.2 s the gap is 840 ms, so one answer takes ~600 ms. They aren't timeouts (those are 3.5 s) and the reply is good. Occasionally longer gaps (1.3–1.7 s) coincide with moves.
 - **Effect:** a command handed over during a slow read waits for it. One move went out 63 ms late (run log `2026-10-30T02-03-33`); another wasn't sent within the then 300 ms acknowledgement deadline, which latched with nothing moved (`2026-10-30T02-12-03`).
 - **Unknown:** what the hand controller is doing every 3.2 s (display, StarSense camera, motor polling?), and whether other commands are slow at the same moments.
-- **Status:** worked around: a move's lease and acknowledgement deadline run from when it actually leaves, with a separate 1 s send deadline (ADR 0013). Logging every position read's round trip would show the pattern directly.
+- **Status:** worked around: a move's lease and acknowledgement deadline run from when it actually leaves, with a separate send deadline (ADR 0013), now 2.5 s after a read of about 1 s held a goto past 1 s (O14).
+- **2026-10-30:** idle positions are now read from the motor controllers (`P 01 10|11 01`) instead of `z`. The usual gap fell from about 340 to 260 ms, but the stalls remain: every few seconds a read takes 0.5 or 1 s more (gaps of 760 or 1,260 ms then 80 ms). Pass-through goes through the hand controller too, so the stall is the hand controller's, not `z`'s.
 
 ## O8. Axis positions back at 0 between sessions, without a power cycle
 
@@ -133,6 +134,16 @@ Evidence paths are run logs and discovery reports under `reports/` (git-ignored,
 - **Meaning:** the motor controllers apply anti-backlash to rate slews (the arrow keys, ASIAIR) and not to pass-through gotos. Gotos need the approach flag to land the same way each time.
 - **Also seen:** a `z` position read took about 1 s and held a goto past the 1 s send deadline (`17-50-56`); the deadline is now 2.5 s (O7).
 - **Status:** measured for azimuth. Next: the value between 70 and 99 that just cancels it on timed moves, the same for altitude (about 100″ of backlash, O13), and an overspeed allowance for the take-up while anti-backlash is set.
+
+## O15. Anti-backlash values for timed moves
+
+- **Trial:** 2026-10-30, timed moves of 0.15° (0.2 °/s for 0.75 s), `+ + − −` three times per setting, both directions of the axis set to the same value; lost motion is the IMU's travel on moves continuing the same way minus its travel on reversals (five reversals, six repeats each; scatter about ±20″). Run logs `2026-10-30T18-03-21` to `2026-10-30T19-22-14`.
+- **Azimuth:** 0 → 166″ lost, 30 → 123″, 50 → 31″, 70 → −23″ (over-corrected), 85 → −15″, 99 → −38″. Confirmed at **60: +4″**.
+- **Altitude:** 0 → 69″, 30 → 34″, 60 → −64″. Confirmed at **40: −12″**.
+- **Not linear:** little effect below about 30, then most of it between 30 and 60. The best values are about 60 (azimuth) and 40 (altitude), in proportion to each axis's backlash (O9, O13). They apply to timed moves only (O14). The mount and `config/mount.toml` now hold 60, 60, 40, 40.
+- **Take-up:** the motor runs fast at the start of a reversal, peaking at 0.66–0.88 °/s for about 120–160 ms at 99 (gyroscope, raw). That latched `Overspeed` until the runner allowed it (`takeup_overspeed_deg_s`, `takeup_ms`): now for any move that reverses its axis, or is the first on it since the runner started, as the gears may have been left either way by whatever moved them last.
+- **Servo easing:** after a move with anti-backlash 30, the axis eased back 16 units (1.2″) about 0.6 s after the move ended; the idle-creep check now waits for two equal reads before taking its reference.
+- **Status:** chosen for timed moves. Repeat after rebalancing (O13), and at other tube angles if altitude behaviour matters there.
 
 ## From earlier use (not yet reproduced)
 

@@ -43,6 +43,8 @@ const BIAS_STILL_DEG: f64 = 0.0001;
 /// While armed and idle, the mount's own positions moving this far from
 /// where they settled is unexplained motion.
 const IDLE_CREEP_DEG: f64 = 0.0003;
+/// Two reads this close (two units) count as the same position.
+const STEADY_DEG: f64 = 2.0 * 360.0 / 16_777_216.0;
 /// Arming and moving need a position read this recently: proof the hand
 /// controller link is alive (positions are read every 250 ms while idle, but
 /// a read sometimes takes over a second: O7).
@@ -216,6 +218,11 @@ pub struct Runner<A: RunnerAdapter> {
     /// Where the mount settled since it was last busy or armed; idle
     /// positions are compared with it.
     settled: Option<Position>,
+    /// The previous position read since the mount was last busy: `settled`
+    /// is the first read that repeats it, as a servo may still be easing
+    /// onto its position after a command (16 units 0.6 s after a move with
+    /// anti-backlash 30).
+    previous_idle: Option<Position>,
     /// The newest position read already compared with `settled`.
     compared: Option<Nanos>,
     /// The previous position read with no command active, kept across
@@ -236,6 +243,11 @@ impl<A: RunnerAdapter> Runner<A> {
         now: Nanos,
     ) -> Result<(Self, Vec<Out>), String> {
         let mapper = AxisMapper::new(config.tube()?)?;
+        let mut config = config;
+        // The take-up allowance is for anti-backlash; without it, none.
+        if config.celestron.anti_backlash == [0; 4] {
+            config.safety.takeup_overspeed_deg_s = 0.0;
+        }
         let controller = Controller::new(config.safety.clone()).map_err(|p| p.join("; "))?;
         log.write(
             now,
@@ -266,6 +278,7 @@ impl<A: RunnerAdapter> Runner<A> {
             bias: None,
             last_busy: now,
             settled: None,
+            previous_idle: None,
             compared: None,
             idle_ref: None,
             config,
@@ -448,6 +461,7 @@ impl<A: RunnerAdapter> Runner<A> {
         self.last_position = None;
         self.positions.clear();
         self.settled = None;
+        self.previous_idle = None;
         self.idle_ref = None;
         self.log.write(now, "link_restored", json!({}));
         let actions = self.controller.transport_restored(now);
@@ -618,6 +632,7 @@ impl<A: RunnerAdapter> Runner<A> {
             MountState::Moving | MountState::Stopping => {
                 self.last_busy = now;
                 self.settled = None;
+                self.previous_idle = None;
             }
             MountState::Armed if self.adapter.reports_positions() => {
                 out.extend(self.check_creep(now));
@@ -640,7 +655,10 @@ impl<A: RunnerAdapter> Runner<A> {
                 out.extend(self.check_creep(now));
             }
             // Not armed: the next arming settles afresh.
-            _ => self.settled = None,
+            _ => {
+                self.settled = None;
+                self.previous_idle = None;
+            }
         }
         let actions = self.controller.tick(now);
         self.carry_out(actions, now, &mut out);
@@ -661,7 +679,21 @@ impl<A: RunnerAdapter> Runner<A> {
             return out;
         }
         self.compared = Some(p.t_ns);
-        let settled = *self.settled.get_or_insert(p);
+        let previous = self.previous_idle.replace(p);
+        let settled = match self.settled {
+            Some(s) => s,
+            None if previous.is_some_and(|q| {
+                [0, 1]
+                    .iter()
+                    .all(|&i| wrap_deg(p.deg[i] - q.deg[i]).abs() <= STEADY_DEG)
+            }) =>
+            {
+                self.settled = Some(p);
+                p
+            }
+            // Still easing onto its position.
+            None => p,
+        };
         let moved = [0, 1].map(|i| wrap_deg(p.deg[i] - settled.deg[i]));
         let still = moved.iter().all(|m| m.abs() <= IDLE_CREEP_DEG);
         let unchanged = [0, 1].map(|i| {

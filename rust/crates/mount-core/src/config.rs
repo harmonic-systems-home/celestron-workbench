@@ -74,6 +74,12 @@ pub struct SafetyConfig {
     pub approach_margin_deg: f64,
     /// A goto that settles further than this from its target missed it.
     pub goto_tolerance_deg: f64,
+    /// With anti-backlash set, a move that reverses its axis starts by taking
+    /// up the slack fast (0.9 °/s peaks at 99, O14): for `takeup_ms` after
+    /// it leaves, the overspeed limit rises by this much. 0 without
+    /// anti-backlash.
+    pub takeup_overspeed_deg_s: f64,
+    pub takeup_ms: u64,
 }
 
 impl Default for SafetyConfig {
@@ -106,6 +112,8 @@ impl Default for SafetyConfig {
             allow_fast_goto: false,
             approach_margin_deg: 0.15,
             goto_tolerance_deg: 0.01,
+            takeup_overspeed_deg_s: 0.0,
+            takeup_ms: 0,
         }
     }
 }
@@ -154,6 +162,9 @@ impl SafetyConfig {
         }
         if self.still_deg_s >= self.motion_deg_s {
             p.push("still_deg_s must be below motion_deg_s".into());
+        }
+        if !(self.takeup_overspeed_deg_s.is_finite() && self.takeup_overspeed_deg_s >= 0.0) {
+            p.push("takeup_overspeed_deg_s must be 0 or more".into());
         }
         if self.min_goto_rate_deg_s > self.max_goto_rate_deg_s {
             p.push("min_goto_rate_deg_s exceeds max_goto_rate_deg_s".into());

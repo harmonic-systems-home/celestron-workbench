@@ -37,8 +37,8 @@ use crate::encode::{CelestronSettings, Tx, goto_motor, transactions};
 /// adapter can stay up while the hand controller or its cable is gone.
 pub const TIMEOUTS_UNTIL_LOST: u32 = 3;
 
-/// The mount's own axis angles (`z`), relative to power-on until aligned:
-/// an independent motion record beside the IMU, not used for safety.
+/// The mount's own axis angles, read from the motor controllers (the same
+/// counts the hand controller's `z` reports), relative to power-on.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Position {
     /// Mac time the reply arrived.
@@ -435,28 +435,36 @@ impl<L: Link> Worker<L> {
         }
     }
 
+    /// Both axes' positions from the motor controllers (about 40 ms each),
+    /// not the hand controller's `z`, which sometimes takes a second (O7)
+    /// and holds up any command queued behind it. The same counts: `z`
+    /// reports the motors' positions (ADR 0010).
     fn read_position(&mut self) {
-        let query = Query::PreciseAzmAlt;
-        let (outcome, reply) = transact(&mut self.link, &query.bytes(), query.reply_len(), false);
-        let decoded = (outcome == Outcome::Ok)
-            .then(|| query.decode(&reply[..query.reply_len()]))
-            .flatten();
-        match decoded {
-            Some(Value::Angles {
-                azm_deg, alt_deg, ..
-            }) => {
-                self.timeouts = 0;
-                let _ = self.events.send(Event::Position(Position {
-                    t_ns: (self.clock)(),
-                    deg: [azm_deg, alt_deg],
-                }));
+        let mut deg = [0.0; 2];
+        for axis in Axis::BOTH {
+            let query = Query::MotorPosition(device_of(axis));
+            let (outcome, reply) =
+                transact(&mut self.link, &query.bytes(), query.reply_len(), true);
+            match (outcome == Outcome::Ok)
+                .then(|| query.decode(&reply[..query.reply_len()]))
+                .flatten()
+            {
+                Some(Value::MotorPosition { deg: d, .. }) => deg[axis.index()] = d,
+                _ => {
+                    self.link_health(if outcome == Outcome::Ok {
+                        Outcome::Malformed
+                    } else {
+                        outcome
+                    });
+                    return;
+                }
             }
-            _ => self.link_health(if outcome == Outcome::Ok {
-                Outcome::Malformed
-            } else {
-                outcome
-            }),
         }
+        self.timeouts = 0;
+        let _ = self.events.send(Event::Position(Position {
+            t_ns: (self.clock)(),
+            deg,
+        }));
     }
 }
 

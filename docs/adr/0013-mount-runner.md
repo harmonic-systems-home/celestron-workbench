@@ -147,3 +147,9 @@ With the safety interlocks in place the runner drove the first characterization 
 - **Per axis, across moves (same day):** the backlash trials at several tube angles latched a false `UnexpectedMotion` on azimuth while only altitude moved: gyro drift during the moves themselves, plus leakage of altitude motion into the azimuth rate (the altitude axis is 1.4° from horizontal, O12, so each degree of altitude reads as about 0.024° of azimuth). The discard is now per axis: an axis whose own positions are unchanged since the previous idle read, even across a command on the other axis, has its IMU travel since then discarded. The moving axis keeps its IMU checks.
 - **Tilt changes the gyroscope's offset:** measured at 50°, the offset was wrong by about 0.005 °/s at 20° (g-sensitivity), enough to latch a false altitude fault after a few reversals. Re-arm after a large change of tube angle, which measures the offset again.
 - **Position reads can take over a second (O7):** a goto was refused for a read 1.2 s old. Arming and commands now need a read within 2 s (was 1 s), and an idle armed link counts as lost after 3 s of silence (was 1.5 s).
+
+## Anti-backlash in use (2026-10-30)
+
+- **The runner checks the configured anti-backlash** (`[celestron] anti_backlash`) instead of requiring 0, and allows a fast take-up at the start of a reversing move (`takeup_overspeed_deg_s` = 1 °/s for `takeup_ms` = 1 s, O15), only while anti-backlash isn't all 0. The first move on an axis counts as a reversal.
+- **Idle positions come from the motor controllers** rather than `z` (same counts); the hand controller's periodic stalls remain (O7).
+- **The idle-creep reference** is the first read that repeats the one before it, so a servo easing onto its position after a command isn't creep.
