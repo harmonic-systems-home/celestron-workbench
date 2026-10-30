@@ -18,10 +18,9 @@ reverse_altitude = false
 # The anti-backlash values the motor controllers must hold: azm+, azm-,
 # alt+, alt- (0-99). The runner refuses to start if they differ. All 0 while
 # measuring the backlash itself. It acts on timed and keypad-rate moves, not
-# on gotos (O14). Azimuth 40 suits keypad rates 1-5 (arrow keys, ASIAIR
-# guiding, O16); timed moves would want 60 (O15). Altitude 40 is from timed
-# moves only.
-anti_backlash = [40, 40, 40, 40]
+# on gotos (O14). Chosen for keypad rates 1-5 (arrow keys, ASIAIR guiding,
+# O16): azimuth 40, altitude 20. Timed moves would want 60 and 40 (O15).
+anti_backlash = [40, 40, 20, 20]
 # Stops are always tracking off (T 00) then fixed rate 0: variable rate 0
 # creeps on this mount (docs/observations.md, O1).
 
