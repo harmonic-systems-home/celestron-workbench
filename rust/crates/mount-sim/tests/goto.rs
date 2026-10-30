@@ -413,6 +413,15 @@ fn gotos_outside_the_rules_are_refused_and_recorded() {
     let default = SafetyConfig::default;
     let why = refused(default(), 30.0, goto("g", Axis::Azimuth, 0.06));
     assert!(why.contains("max_goto_deg"), "{why}");
+    // Exactly the cap is allowed, though it rounds to a unit just over it.
+    let trace = run(&Scenario {
+        config: SafetyConfig {
+            max_goto_deg: 0.2,
+            ..default()
+        },
+        ..one_goto(goto("g", Axis::Azimuth, 0.2), SimFaults::default())
+    });
+    assert_eq!(trace.gotos_sent().len(), 1, "{:?}", trace.refusals);
     let mut fast = goto("g", Axis::Azimuth, 0.03);
     fast.speed = GotoSpeed::Fast;
     let why = refused(default(), 30.0, fast);

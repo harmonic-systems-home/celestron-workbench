@@ -328,14 +328,16 @@ fn the_watch_outlasts_a_stop_during_a_goto() {
     // rate 0 during a goto: the re-aimed goto is what stopped it short.
     let travel = rig.angles()[0];
     assert!((0.01..0.035).contains(&travel), "{travel}");
+    // The re-aim goes before the usual stop.
     let sent = rig.received.lock().unwrap().clone();
-    let stop_at = sent.iter().position(|c| c == b"T\0").unwrap();
-    let after: Vec<&Vec<u8>> = sent[stop_at..]
+    let commands: Vec<&Vec<u8>> = sent
         .iter()
-        .filter(|c| c[0] == b'P' && [2, 4].contains(&c[1]))
+        .filter(|c| c[0] == b'T' || (c[0] == b'P' && [2, 4].contains(&c[1])))
         .collect();
-    assert_eq!(after[0], &vec![b'P', 2, 16, 36, 0, 0, 0, 0]);
-    assert_eq!(after[1][..4], [b'P', 4, 16, 0x17], "{after:?}");
+    assert_eq!(commands[0][..4], [b'P', 4, 16, 0x17], "{commands:?}");
+    assert_eq!(commands[1][..4], [b'P', 4, 16, 0x17], "{commands:?}");
+    assert_eq!(commands[2], &b"T\0".to_vec());
+    assert_eq!(commands[3], &vec![b'P', 2, 16, 36, 0, 0, 0, 0]);
     assert!(
         reports
             .iter()

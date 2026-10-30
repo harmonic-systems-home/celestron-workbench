@@ -268,9 +268,9 @@ fn goto_words_are_checked_and_the_rules_apply() {
     }
     sim.line("goto az 0.03 fast");
     assert!(sim.said(Kind::Alert, "fast gotos are off"));
-    // The approach leg would go 0.18°, past the 0.05° cap.
-    sim.line("goto az 0.03 from+");
-    assert!(sim.said(Kind::Alert, "a goto leg of 0.1800° exceeds max_goto_deg"));
+    // The approach leg would go 0.25°, past the 0.2° cap.
+    sim.line("goto az 0.1 from+");
+    assert!(sim.said(Kind::Alert, "a goto leg of 0.2500° exceeds max_goto_deg"));
     assert!(sim.gotos_sent().is_empty());
     assert_eq!(sim.runner.state(), MountState::Armed);
 }

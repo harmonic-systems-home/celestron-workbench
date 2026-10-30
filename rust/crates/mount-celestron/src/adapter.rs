@@ -11,7 +11,7 @@
 //!
 //! Tracking off and fixed rate 0 don't end a goto on these motor controllers
 //! (docs/observations.md, O11), so a stop for an axis with a goto still
-//! running also re-aims the goto, slowly, at the position just read there.
+//! running first re-aims the goto, slowly, at the position just read there.
 
 use std::{
     sync::{
@@ -270,6 +270,11 @@ impl<L: Link> Worker<L> {
         if !command.is_stop() {
             self.watch = None;
         }
+        // The re-aim goes first: tracking off and fixed rate 0 take about
+        // 100 ms and don't end a goto (O11).
+        if command.is_stop() {
+            self.retarget(command);
+        }
         let mut all_ok = true;
         let mut first = true;
         for tx in transactions(command, self.signs) {
@@ -281,9 +286,6 @@ impl<L: Link> Worker<L> {
         }
         if all_ok && let Some(id) = motion_id {
             let _ = self.events.send(Event::Ack(id));
-        }
-        if command.is_stop() {
-            self.retarget(command);
         }
         if let MountCommand::Goto { axis, .. } = *command {
             self.watch = Some(Watch {

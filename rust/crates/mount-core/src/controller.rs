@@ -505,7 +505,7 @@ impl Controller {
                 "goto of {}° is less than one position unit",
                 request.delta_deg
             ))
-        } else if units_to_deg(longest) > c.max_goto_deg {
+        } else if longest > deg_to_units(c.max_goto_deg) {
             Some(format!(
                 "a goto leg of {:.4}° exceeds max_goto_deg {}°",
                 units_to_deg(longest),

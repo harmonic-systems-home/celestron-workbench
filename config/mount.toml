@@ -43,11 +43,12 @@ verify_travel_deg = 1.0
 min_observed_fraction = 0.5
 travel_tolerance_deg = 0.25
 # Gotos by motor position (ADR 0014). Until the stop-during-goto trial shows
-# a stop ends a goto, max_goto_deg stays at about 1 s of slow-goto travel.
+# a stop ends a goto, max_goto_deg stays at about 1 s of slow-goto travel:
+# slow gotos run at about 0.29 °/s (O11), so 0.2° ends on its own in ~0.7 s.
 # Fast gotos stay off until their speed is measured and max_goto_rate_deg_s
 # is set from it. min_goto_rate_deg_s and goto_settle_ms set each leg's
 # deadline: distance / min rate + settle.
-max_goto_deg = 0.05
+max_goto_deg = 0.2
 max_goto_rate_deg_s = 1.0
 min_goto_rate_deg_s = 0.05
 goto_settle_ms = 2000
