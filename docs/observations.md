@@ -62,6 +62,13 @@ Evidence paths are run logs and discovery reports under `reports/` (git-ignored,
 - **Unknown:** what the hand controller is doing every 3.2 s (display, StarSense camera, motor polling?), and whether other commands are slow at the same moments.
 - **Status:** worked around: a move's lease and acknowledgement deadline run from when it actually leaves, with a separate 1 s send deadline (ADR 0013). Logging every position read's round trip would show the pattern directly.
 
+## O8. Axis positions back at 0 between sessions, without a power cycle
+
+- **Seen:** 2026-10-29, twice. Run log `2026-10-30T02-03-33` ended at azimuth 0.1990°, altitude 0.0970°; the next session (`2026-10-30T02-12-03`, 7 minutes later) started at exactly 0.0000°, 0.0000°. Run log `2026-10-30T02-40-58` ended at azimuth −93, altitude −46 units (359.9980°, 359.9990°); discovery 15 minutes later (`2026-10-30T02-58-00`) read −1 and +1 units. Both times both axes went back to the power-on position, and nothing of ours touched the port in between. No power cycle, and nothing else connected to the mount.
+- **Not reproduced (same evening):** positions held through a 15-minute continuous watch after a runner session (`2026-10-30T03-22-24`); 10 minutes with the port closed (`03-32-55`); a runner session then 15 minutes with the port untouched (`03-49-21`); an altitude move, then a 5-minute watch a minute later (`03-56-46`), then 15 minutes untouched (`04-12-02`). Both resets had followed a session that moved altitude; the repeat with an altitude move didn't reset.
+- **Unknown:** whether the mount drove back (a goto to 0) or only the counters were reset; no receiver was running during either gap, so there is no phone data. Whether anyone touched the hand controller then.
+- **Status:** open. Until explained, every session should compare its starting positions with where the last one ended.
+
 ## From earlier use (not yet reproduced)
 
 Problems from about two years ago, before this project, without a known sequence. To be pinned down one at a time once basic motion is characterized; fill in details as they come back.
