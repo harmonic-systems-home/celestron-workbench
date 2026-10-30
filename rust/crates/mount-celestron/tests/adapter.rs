@@ -185,7 +185,11 @@ fn a_move_is_acknowledged_runs_and_stops() {
         .unwrap();
     let reports = rig.run(150);
     assert!(
-        matches!(reports[..], [MountReport::Acknowledged { id: 7, sent_ns }] if sent_ns < 150_000_000),
+        matches!(
+            reports[..],
+            [MountReport::Sent { id: 7, sent_ns }, MountReport::Acknowledged(7)]
+                if sent_ns < 150_000_000
+        ),
         "{reports:?}"
     );
     rig.run(400);
@@ -247,7 +251,14 @@ fn a_dropped_link_is_reported_once_and_stops_are_still_attempted() {
         .send(&mv(Axis::Azimuth, Direction::Positive, 0.1), 0)
         .unwrap();
     let reports = rig.run(100);
-    assert_eq!(reports, [MountReport::TransportLost]);
+    // The move was written before the failure showed: sent, never acknowledged.
+    assert!(
+        matches!(
+            reports[..],
+            [MountReport::Sent { id: 7, .. }, MountReport::TransportLost]
+        ),
+        "{reports:?}"
+    );
     assert!(
         rig.adapter
             .send(&mv(Axis::Azimuth, Direction::Positive, 0.1), 0)

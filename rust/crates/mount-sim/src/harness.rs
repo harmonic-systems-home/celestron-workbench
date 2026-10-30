@@ -147,9 +147,8 @@ pub fn run(scenario: &Scenario) -> Trace {
         // Mount reports.
         for report in mount.poll(now) {
             let actions = match report {
-                MountReport::Acknowledged { id, sent_ns } => {
-                    controller.acknowledged(id, sent_ns, now)
-                }
+                MountReport::Sent { id, sent_ns } => controller.sent(id, sent_ns, now),
+                MountReport::Acknowledged(id) => controller.acknowledged(id, now),
                 MountReport::TransportLost => controller.transport_lost(now),
             };
             carry_out(actions, now, &mut controller, &mut mount, &mut trace);

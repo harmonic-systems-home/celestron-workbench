@@ -23,9 +23,9 @@ const MS: Nanos = 1_000_000;
 pub struct SimFaults {
     /// Time from command to acknowledgement.
     pub ack_delay_ms: u64,
-    /// A move reaches the motors this long after it was handed over, as when
-    /// a serial adapter is mid-way through a position read. Its
-    /// acknowledgement reports the later send time.
+    /// A move leaves for the motors this long after it was handed over, as
+    /// when a serial adapter is mid-way through a position read; it is
+    /// reported sent then. A stop before then cancels it.
     pub send_delay_ms: u64,
     pub drop_acks: bool,
     pub ignore_stop: bool,
@@ -75,10 +75,12 @@ pub struct SimMount {
     axes: [SimAxis; 2],
     connected: bool,
     link_lost_reported: bool,
-    /// Due time, command, and when it was sent.
-    acks: VecDeque<(Nanos, CommandId, Nanos)>,
-    /// Moves on their way to the motors: when they arrive, axis, target rate.
-    arriving: Vec<(Nanos, Axis, f64)>,
+    /// Acknowledgements due: when, and for which command.
+    acks: VecDeque<(Nanos, CommandId)>,
+    /// Moves on their way: when they leave (and are reported sent), command, axis.
+    sends: VecDeque<(Nanos, CommandId, Axis)>,
+    /// Delayed moves' target rates: when they reach the motors, command, axis, rate.
+    arriving: Vec<(Nanos, CommandId, Axis, f64)>,
     /// How fast an axis changes rate, °/s².
     accel_deg_s2: f64,
     start_altitude_deg: f64,
@@ -95,6 +97,7 @@ impl SimMount {
             connected: true,
             link_lost_reported: false,
             acks: VecDeque::new(),
+            sends: VecDeque::new(),
             arriving: Vec::new(),
             accel_deg_s2: 5.0,
             start_altitude_deg,
@@ -110,7 +113,7 @@ impl SimMount {
                 axis.target_deg_s = 0.0;
             }
         }
-        self.arriving.retain(|(at, axis, target)| {
+        self.arriving.retain(|(at, _, axis, target)| {
             if *at <= now {
                 self.axes[axis.index()].target_deg_s = *target;
             }
@@ -130,6 +133,22 @@ impl SimMount {
             axis.rate_deg_s += change;
             axis.angle_deg += axis.rate_deg_s * dt;
         }
+    }
+
+    /// A stop overtakes moves that haven't left yet, as the serial adapter's
+    /// does: they are never sent, reach the motors or get acknowledged.
+    fn cancel_unsent(&mut self, now: Nanos, axis: Option<Axis>) {
+        let hit = |t: Nanos, a: Axis| t > now && axis.is_none_or(|x| x == a);
+        let cancelled: Vec<CommandId> = self
+            .sends
+            .iter()
+            .filter(|(t, _, a)| hit(*t, *a))
+            .map(|(_, id, _)| *id)
+            .collect();
+        self.sends.retain(|(_, id, _)| !cancelled.contains(id));
+        self.arriving
+            .retain(|(_, id, _, _)| !cancelled.contains(id));
+        self.acks.retain(|(_, id)| !cancelled.contains(id));
     }
 
     /// False once the simulated link has dropped.
@@ -190,25 +209,26 @@ impl MountAdapter for SimMount {
             } => {
                 let sign = direction.sign() * if self.faults.reverse { -1.0 } else { 1.0 };
                 let sent = now + self.faults.send_delay_ms as Nanos * MS;
+                self.sends.push_back((sent, id, axis));
                 if !self.faults.stall {
                     let target = sign * rate_deg_s * self.faults.speed_factor;
                     if sent > now {
-                        self.arriving.push((sent, axis, target));
+                        self.arriving.push((sent, id, axis, target));
                     } else {
                         self.axes[axis.index()].target_deg_s = target;
                     }
                 }
                 if !self.faults.drop_acks {
                     self.acks
-                        .push_back((sent + self.faults.ack_delay_ms as Nanos * MS, id, sent));
+                        .push_back((sent + self.faults.ack_delay_ms as Nanos * MS, id));
                 }
             }
             MountCommand::Stop { axis } if !ignore_stop => {
-                self.arriving.retain(|(_, a, _)| *a != axis);
+                self.cancel_unsent(now, Some(axis));
                 self.axes[axis.index()].target_deg_s = 0.0;
             }
             MountCommand::StopAll if !ignore_stop => {
-                self.arriving.clear();
+                self.cancel_unsent(now, None);
                 for axis in &mut self.axes {
                     axis.target_deg_s = 0.0;
                 }
@@ -227,15 +247,21 @@ impl MountAdapter for SimMount {
         {
             self.connected = false;
             self.acks.clear();
+            self.sends.clear();
             if !self.link_lost_reported {
                 self.link_lost_reported = true;
                 reports.push(MountReport::TransportLost);
             }
             return reports;
         }
-        while self.acks.front().is_some_and(|(t, _, _)| *t <= now) {
-            if let Some((_, id, sent_ns)) = self.acks.pop_front() {
-                reports.push(MountReport::Acknowledged { id, sent_ns });
+        while self.sends.front().is_some_and(|(t, _, _)| *t <= now) {
+            if let Some((sent_ns, id, _)) = self.sends.pop_front() {
+                reports.push(MountReport::Sent { id, sent_ns });
+            }
+        }
+        while self.acks.front().is_some_and(|(t, _)| *t <= now) {
+            if let Some((_, id)) = self.acks.pop_front() {
+                reports.push(MountReport::Acknowledged(id));
             }
         }
         reports

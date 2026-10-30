@@ -28,10 +28,14 @@ pub use state::{FaultKind, InvalidTransition, MountEvent, MountState, transition
 /// What the mount reports back.
 #[derive(Debug, Clone, PartialEq)]
 pub enum MountReport {
-    /// A move command was accepted. `sent_ns` is when it actually left for
-    /// the mount, which can be later than when it was handed over: a serial
-    /// adapter may be mid-way through a position read (ADR 0013).
-    Acknowledged { id: CommandId, sent_ns: Nanos },
+    /// A move command left for the mount at `sent_ns`, which can be later
+    /// than when it was handed over: a serial adapter may be mid-way through
+    /// a position read (ADR 0013).
+    Sent {
+        id: CommandId,
+        sent_ns: Nanos,
+    },
+    Acknowledged(CommandId),
     /// The link to the mount is gone.
     TransportLost,
 }

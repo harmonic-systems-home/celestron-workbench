@@ -125,7 +125,8 @@ A stale-IMU fault 8 s after arming, with the phone streaming normally, came from
 
 The altitude sign trial (run log `2026-10-30T02-03-33`) reached the serial port 63 ms after it was handed over, queued behind a position read; the stop, 1 s after the hand-over, wasn't delayed. The mount turned 0.0970° and the record said 0.100° commanded.
 
-- **The acknowledgement carries the move's send time** (`MountReport::Acknowledged { id, sent_ns }`): the adapter reports when its first transaction went out.
-- **The controller restarts the lease from then,** so the move gets its full duration; commanded travel and the record's `Transmitted` stage use it too. The send time is clamped between the hand-over and the acknowledgement, so the lease can run at most the acknowledgement deadline (300 ms) past its hand-over.
-- **The acknowledgement deadline still runs from the hand-over,** so a move stuck behind a read that never finishes still faults.
-- **The simulated mount takes a `send_delay_ms` fault** to test this; the random fault search includes it, and its window is now 15 s so the travel check can catch the slowest move left running by an ignored stop.
+- **The adapter reports when a move leaves** (`MountReport::Sent { id, sent_ns }`, when its first transaction goes out), separately from the acknowledgement.
+- **The controller starts the lease from then,** so the move gets its full duration; commanded travel and the record's `Transmitted` stage use it too. Until then the lease doesn't run.
+- **Two deadlines.** `send_deadline_ms` (1 s) runs from the hand-over: a move not sent by then latches `CommandTimeout`, catching a stuck adapter. `ack_deadline_ms` (300 ms) runs from the send, so it measures only the mount's answer. The first version of this change kept the acknowledgement deadline from the hand-over; the next trial's move arrived during a ~600 ms position read, wasn't sent within 300 ms, and latched `AcknowledgementMissing` with nothing moved (run log `2026-10-30T02-12-03`, O7).
+- **A move overtaken by its stop** (the operator pressed Enter before it left) never left: no send deadline, nothing commanded.
+- **The simulated mount takes a `send_delay_ms` fault**, reports `Sent` when the move leaves, and drops a move a stop overtakes. Tests cover 60 ms and 600 ms delays and a move that never leaves; the random fault search includes delays up to 1.5 s, and its window is now 15 s so the travel check can catch the slowest move left running by an ignored stop.

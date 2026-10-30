@@ -55,6 +55,13 @@ Evidence paths are run logs and discovery reports under `reports/` (git-ignored,
 - **Evidence:** run log `2026-10-30T01-37-21`; session `f9ba0dec`'s exchanges 19–41 in the database. Replaying them through the fit reproduces the status line's −6119 ms and ±26402 ms exactly.
 - **Status:** fixed. The fit drops exchanges more than 250 ms slower than the fastest (on the replay, right to 0.4 ms from the first prompt exchange); arming needs the clock known to ±100 ms; samples more than 1 s ahead aren't fresh; and the phone app holds clock pings after a reconnect until the resent backlog is acknowledged, starting anyway after 60 s (ADR 0013).
 
+## O7. Some position reads take about 600 ms
+
+- **Seen:** 2026-10-29, in all three runner logs that evening. Position reads normally come every ~310 ms (a 250 ms pause plus a ~60 ms answer); about every 3.2 s the gap is 840 ms, so one answer takes ~600 ms. They aren't timeouts (those are 3.5 s) and the reply is good. Occasionally longer gaps (1.3–1.7 s) coincide with moves.
+- **Effect:** a command handed over during a slow read waits for it. One move went out 63 ms late (run log `2026-10-30T02-03-33`); another wasn't sent within the then 300 ms acknowledgement deadline, which latched with nothing moved (`2026-10-30T02-12-03`).
+- **Unknown:** what the hand controller is doing every 3.2 s (display, StarSense camera, motor polling?), and whether other commands are slow at the same moments.
+- **Status:** worked around: a move's lease and acknowledgement deadline run from when it actually leaves, with a separate 1 s send deadline (ADR 0013). Logging every position read's round trip would show the pattern directly.
+
 ## From earlier use (not yet reproduced)
 
 Problems from about two years ago, before this project, without a known sequence. To be pinned down one at a time once basic motion is characterized; fill in details as they come back.

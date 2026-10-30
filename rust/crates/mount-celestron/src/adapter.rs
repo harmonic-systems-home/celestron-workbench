@@ -41,8 +41,10 @@ pub struct Transaction {
 }
 
 enum Event {
-    /// A move went out at this time and every transaction succeeded.
-    Ack(CommandId, Nanos),
+    /// A move's first transaction is going out now.
+    Sent(CommandId, Nanos),
+    /// Every transaction of a move succeeded.
+    Ack(CommandId),
     Transaction(Transaction),
     Lost(String),
     Position(Position),
@@ -149,7 +151,8 @@ impl MountAdapter for CelestronAdapter {
         let mut reports = Vec::new();
         while let Ok(event) = self.events.try_recv() {
             match event {
-                Event::Ack(id, sent_ns) => reports.push(MountReport::Acknowledged { id, sent_ns }),
+                Event::Sent(id, sent_ns) => reports.push(MountReport::Sent { id, sent_ns }),
+                Event::Ack(id) => reports.push(MountReport::Acknowledged(id)),
                 Event::Lost(why) => {
                     if !self.lost {
                         self.lost = true;
@@ -213,10 +216,13 @@ impl<L: Link> Worker<L> {
     fn execute(&mut self, command: &MountCommand) {
         self.moving = matches!(command, MountCommand::Move { .. });
         let mut all_ok = true;
-        let mut first_sent = None;
+        let mut first = true;
         for tx in transactions(command, self.signs) {
             let sent_ns = (self.clock)();
-            first_sent.get_or_insert(sent_ns);
+            if first && let MountCommand::Move { id, .. } = command {
+                let _ = self.events.send(Event::Sent(*id, sent_ns));
+            }
+            first = false;
             let (outcome, _) = transact(&mut self.link, &tx.bytes, 0, tx.pass_through);
             let bytes = tx.bytes;
             let _ = self.events.send(Event::Transaction(Transaction {
@@ -228,11 +234,8 @@ impl<L: Link> Worker<L> {
             all_ok &= outcome == Outcome::Ok;
             self.outcome(outcome, command);
         }
-        if all_ok
-            && let MountCommand::Move { id, .. } = command
-            && let Some(sent_ns) = first_sent
-        {
-            let _ = self.events.send(Event::Ack(*id, sent_ns));
+        if all_ok && let MountCommand::Move { id, .. } = command {
+            let _ = self.events.send(Event::Ack(*id));
         }
     }
 

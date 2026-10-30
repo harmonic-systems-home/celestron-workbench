@@ -27,6 +27,7 @@ seconds = 1.0
 max_rate_deg_s = 1.0
 min_rate_deg_s = 0.001
 max_duration_ms = 2000
+send_deadline_ms = 1000
 ack_deadline_ms = 300
 stop_deadline_ms = 1500
 still_hold_ms = 300

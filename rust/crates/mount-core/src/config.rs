@@ -14,7 +14,10 @@ pub struct SafetyConfig {
     pub min_rate_deg_s: f64,
     /// Longest lease for one command; the controller stops the axis when it ends.
     pub max_duration_ms: u64,
-    /// The mount must acknowledge a command within this time.
+    /// A move must leave for the mount within this time of being handed to
+    /// the adapter, which may first finish a position read in progress.
+    pub send_deadline_ms: u64,
+    /// The mount must acknowledge a command within this time of its leaving.
     pub ack_deadline_ms: u64,
     /// After a stop, both axes must be still within this time.
     pub stop_deadline_ms: u64,
@@ -60,6 +63,7 @@ impl Default for SafetyConfig {
             max_rate_deg_s: 1.0,
             min_rate_deg_s: 0.001,
             max_duration_ms: 2_000,
+            send_deadline_ms: 1_000,
             ack_deadline_ms: 300,
             stop_deadline_ms: 1_500,
             still_hold_ms: 300,
@@ -97,6 +101,7 @@ impl SafetyConfig {
         }
         for (name, v) in [
             ("max_duration_ms", self.max_duration_ms),
+            ("send_deadline_ms", self.send_deadline_ms),
             ("ack_deadline_ms", self.ack_deadline_ms),
             ("stop_deadline_ms", self.stop_deadline_ms),
             ("imu_max_age_ms", self.imu_max_age_ms),

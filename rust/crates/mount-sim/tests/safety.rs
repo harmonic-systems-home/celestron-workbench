@@ -157,6 +157,39 @@ fn a_move_delayed_on_its_way_still_runs_its_full_lease() {
 }
 
 #[test]
+fn a_move_held_up_behind_a_slow_position_read_still_runs_normally() {
+    // 2026-10-29: about every 3.2 s the hand controller takes ~600 ms to
+    // answer a position read. The acknowledgement deadline (300 ms) runs
+    // from the send, not the hand-over, so this is no fault.
+    let trace = run(&one_move(SimFaults {
+        send_delay_ms: 600,
+        ..SimFaults::default()
+    }));
+    assert!(trace.faults.is_empty(), "{:?}", trace.faults);
+    let record = &trace.records[0];
+    let at = |stage| record.stages.iter().find(|s| s.0 == stage).unwrap().1;
+    assert_eq!(at(Stage::Transmitted), 1_100 * MS);
+    assert_eq!(at(Stage::StopSent), 2_100 * MS);
+    assert!((record.commanded_deg.unwrap() - 0.5).abs() < 1e-9);
+}
+
+#[test]
+fn a_move_that_never_leaves_times_out_and_latches() {
+    let trace = run(&one_move(SimFaults {
+        send_delay_ms: 60_000,
+        ..SimFaults::default()
+    }));
+    assert_eq!(only_fault(&trace), FaultKind::CommandTimeout);
+    assert_eq!(trace.first_fault_ns(), Some(1_505 * MS));
+    assert_stopped_and_latched(&trace);
+    assert!(trace.is_still_at_end());
+    assert_eq!(trace.travel_after(0), [0.0, 0.0]);
+    let record = &trace.records[0];
+    assert_eq!(record.last_stage(), Stage::TimedOut);
+    assert!(!record.has(Stage::Acknowledged));
+}
+
+#[test]
 fn a_late_acknowledgement_stops_and_latches() {
     let trace = run(&one_move(SimFaults {
         ack_delay_ms: 1_000,
@@ -722,7 +755,11 @@ fn safety_invariants_hold_across_random_fault_combinations() {
             reverse: rng.chance(10),
             stall: rng.chance(10),
             speed_factor: if rng.chance(10) { 2.5 } else { 1.0 },
-            send_delay_ms: if rng.chance(20) { rng.next() % 250 } else { 0 },
+            send_delay_ms: if rng.chance(20) {
+                rng.next() % 1_500
+            } else {
+                0
+            },
             disconnect_at_ms: rng.chance(10).then(|| 500 + rng.next() % 3_000),
             keep_moving_when_disconnected: rng.chance(50),
             imu_stops_at_ms: rng.chance(10).then(|| 500 + rng.next() % 3_000),

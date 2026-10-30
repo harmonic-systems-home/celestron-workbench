@@ -64,12 +64,13 @@ struct Active {
     axis: Axis,
     direction: Direction,
     rate_deg_s: f64,
-    /// When the command was handed to the adapter; the acknowledgement
-    /// deadline runs from here.
-    requested: Nanos,
-    /// When it actually left for the mount: handed over until acknowledged,
-    /// then the adapter's own send time. The lease and commanded travel run
+    /// When the command was handed to the adapter; the send deadline runs
     /// from here.
+    requested: Nanos,
+    /// When it left for the mount, once the adapter says so.
+    sent: Option<Nanos>,
+    /// The lease and commanded travel run from here: the hand-over until the
+    /// adapter reports the send.
     transmitted: Nanos,
     acked: Option<Nanos>,
     duration: Nanos,
@@ -351,6 +352,7 @@ impl Controller {
             direction: request.direction,
             rate_deg_s: request.rate_deg_s,
             requested: now,
+            sent: None,
             transmitted: now,
             acked: None,
             duration: request.duration_ms as Nanos * MS,
@@ -369,25 +371,43 @@ impl Controller {
         })])
     }
 
-    /// The mount acknowledged a command that left for it at `sent_ns`. The
-    /// lease restarts from then, so a command delayed on its way still gets
-    /// its full duration (never more than the acknowledgement deadline
-    /// later). Late or unknown acknowledgements are ignored.
-    pub fn acknowledged(&mut self, id: CommandId, sent_ns: Nanos, now: Nanos) -> Vec<Action> {
+    /// A command left for the mount at `sent_ns`. The lease restarts from
+    /// then, so a command delayed on its way (by at most the send deadline)
+    /// still gets its full duration, and the acknowledgement deadline starts.
+    pub fn sent(&mut self, id: CommandId, sent_ns: Nanos, now: Nanos) -> Vec<Action> {
+        if let Some(a) = &mut self.active
+            && a.id == id
+            && a.sent.is_none()
+        {
+            let at = sent_ns.clamp(a.requested, now);
+            a.sent = Some(at);
+            a.transmitted = at;
+            a.lease_end = at + a.duration;
+            for stage in &mut self.records[a.record].stages {
+                if stage.0 == Stage::Transmitted {
+                    stage.1 = at;
+                }
+            }
+        }
+        Vec::new()
+    }
+
+    /// The mount acknowledged a command. One with no send report counts as
+    /// sent when it was handed over. Late or unknown acknowledgements are
+    /// ignored.
+    pub fn acknowledged(&mut self, id: CommandId, now: Nanos) -> Vec<Action> {
+        if let Some(a) = &self.active
+            && a.id == id
+            && a.sent.is_none()
+        {
+            let requested = a.requested;
+            self.sent(id, requested, now);
+        }
         if let Some(a) = &mut self.active
             && a.id == id
             && a.acked.is_none()
         {
             a.acked = Some(now);
-            if a.stop_sent.is_none() {
-                a.transmitted = sent_ns.clamp(a.requested, now);
-                a.lease_end = a.transmitted + a.duration;
-                for stage in &mut self.records[a.record].stages {
-                    if stage.0 == Stage::Transmitted {
-                        stage.1 = a.transmitted;
-                    }
-                }
-            }
             self.records[a.record]
                 .stages
                 .push((Stage::Acknowledged, now));
@@ -467,12 +487,28 @@ impl Controller {
         if !self.fresh(now) {
             return self.fault(FaultKind::StaleImu, now, "IMU data stale during motion");
         }
-        if a.acked.is_none() && now - a.requested > c.ack_deadline_ms as Nanos * MS {
-            return self.fault(
-                FaultKind::AcknowledgementMissing,
-                now,
-                "the mount did not acknowledge the command",
-            );
+        match a.sent {
+            // A stop sent first overtakes the move, which then never leaves.
+            None if a.stop_sent.is_none()
+                && now - a.requested > c.send_deadline_ms as Nanos * MS =>
+            {
+                return self.fault(
+                    FaultKind::CommandTimeout,
+                    now,
+                    &format!(
+                        "the command wasn't sent to the mount within {} ms",
+                        c.send_deadline_ms
+                    ),
+                );
+            }
+            Some(sent) if a.acked.is_none() && now - sent > c.ack_deadline_ms as Nanos * MS => {
+                return self.fault(
+                    FaultKind::AcknowledgementMissing,
+                    now,
+                    "the mount did not acknowledge the command",
+                );
+            }
+            _ => {}
         }
         let rate = self.smoothed(a.axis).unwrap_or(0.0);
         let signed = rate * a.direction.sign();
@@ -514,7 +550,9 @@ impl Controller {
 
         match self.state {
             MountState::Moving => {
-                if now >= a.lease_end {
+                // The lease runs only once the move has left; until then
+                // the send deadline applies.
+                if a.sent.is_some() && now >= a.lease_end {
                     return self.begin_stop(now, false);
                 }
                 Vec::new()
@@ -608,8 +646,12 @@ impl Controller {
             return Vec::new();
         };
         let stop_sent = a.stop_sent.unwrap_or(now);
-        let commanded =
-            a.rate_deg_s * a.direction.sign() * (stop_sent - a.transmitted) as f64 / 1e9;
+        // A move overtaken by its stop never left: nothing was commanded.
+        let commanded = if a.sent.is_some() {
+            a.rate_deg_s * a.direction.sign() * (stop_sent - a.transmitted).max(0) as f64 / 1e9
+        } else {
+            0.0
+        };
         let observed = self.tally[a.axis.index()].observed_deg - a.observed_at_start;
         let record = &mut self.records[a.record];
         record.commanded_deg = Some(commanded);
@@ -632,7 +674,7 @@ impl Controller {
         let active = self
             .active
             .as_ref()
-            .filter(|a| a.axis == axis)
+            .filter(|a| a.axis == axis && a.sent.is_some())
             .map_or(0.0, |a| {
                 let end = a.stop_sent.unwrap_or(now);
                 a.rate_deg_s * a.direction.sign() * (end - a.transmitted) as f64 / 1e9
