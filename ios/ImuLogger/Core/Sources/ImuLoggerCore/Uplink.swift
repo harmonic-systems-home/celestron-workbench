@@ -4,7 +4,10 @@ import Network
 /// Streams a session to the Mac receiver over TCP (ADR 0004): handshake,
 /// acknowledgements, reconnect with backoff, and resend after interruptions.
 /// While connected it runs four-timestamp clock exchanges (ADR 0001): a
-/// burst after each connect, then one every `clockInterval`.
+/// burst after each connect, then one every `clockInterval`. After a
+/// reconnect they wait until the resent backlog is acknowledged: a ping
+/// queued behind it would be delayed seconds one way, which reads as clock
+/// offset (docs/observations.md O6).
 ///
 /// All state is confined to a private serial queue. Callers may use it from
 /// any thread; status updates arrive on that queue.
@@ -34,6 +37,7 @@ public final class Uplink: @unchecked Sendable {
     private let logURL: URL?
     private let clockInterval: TimeInterval
     private let connectTimeout: TimeInterval
+    private let catchUpTimeout: TimeInterval
     private let now: @Sendable () -> Nanos
     private let onClockResult: @Sendable (ClockResult) -> Void
     private let onStatus: @Sendable (Status) -> Void
@@ -54,6 +58,10 @@ public final class Uplink: @unchecked Sendable {
     private var pingsThisConnection = 0
     /// Pings awaiting a pong on this connection: exchange index -> send time.
     private var outstandingPings: [UInt64: Nanos] = [:]
+    /// Clock exchanges wait until the Mac acknowledges this sequence number,
+    /// the last one recorded when the connection was accepted.
+    private var catchUpTo: Seq?
+    private var pinging = false
 
     /// Pings 1 s apart right after connecting, so a model exists quickly.
     static let clockBurst = 5
@@ -65,11 +73,15 @@ public final class Uplink: @unchecked Sendable {
     ///   - connectTimeout: a connection not ready by then is retried. A Bonjour
     ///     endpoint that isn't advertised never fails on its own; it waits to
     ///     resolve, so without this the uplink would sit at its first attempt.
+    ///   - catchUpTimeout: clock exchanges start after this even if the
+    ///     resent backlog isn't acknowledged, so a stalled resend can't leave
+    ///     the Mac without a clock model.
     ///   - now: the phone clock; the same one that stamps samples.
     ///   - onClockResult: a completed exchange, to be logged and sent back.
     public init(
         endpoint: NWEndpoint, hello: Hello, logURL: URL?, maxPendingBatches: Int = 600,
         clockInterval: TimeInterval = 5, connectTimeout: TimeInterval = 5,
+        catchUpTimeout: TimeInterval = 60,
         now: @escaping @Sendable () -> Nanos = PhoneClock.nowNs,
         onClockResult: @escaping @Sendable (ClockResult) -> Void = { _ in },
         onStatus: @escaping @Sendable (Status) -> Void
@@ -79,6 +91,7 @@ public final class Uplink: @unchecked Sendable {
         self.logURL = logURL
         self.clockInterval = clockInterval
         self.connectTimeout = connectTimeout
+        self.catchUpTimeout = catchUpTimeout
         self.now = now
         self.onClockResult = onClockResult
         self.tracker = DeliveryTracker(maxPendingBatches: maxPendingBatches)
@@ -227,10 +240,17 @@ public final class Uplink: @unchecked Sendable {
             backlog.forEach(transmit)
             pingsThisConnection = 0
             outstandingPings.removeAll()
-            ping(generation: generation)
+            pinging = false
+            catchUpTo = tracker.unacknowledgedSamples > 0 ? tracker.recorded : nil
+            let current = generation
+            queue.asyncAfter(deadline: .now() + catchUpTimeout) { [weak self] in
+                self?.startPinging(generation: current)
+            }
+            startPingingIfCaughtUp()
             sendByeIfReady()
         case .batchAck(let ack):
             tracker.acknowledge(ack.highestContiguousSeq)
+            startPingingIfCaughtUp()
             sendByeIfReady()
         case .error(let error):
             switch error.code {
@@ -255,6 +275,21 @@ public final class Uplink: @unchecked Sendable {
             break
         }
         publish()
+    }
+
+    private func startPingingIfCaughtUp() {
+        guard !pinging, state == .streaming else { return }
+        if let target = catchUpTo {
+            guard let acknowledged = tracker.acknowledged, acknowledged >= target else { return }
+        }
+        startPinging(generation: generation)
+    }
+
+    private func startPinging(generation current: Int) {
+        guard current == generation, state == .streaming, !pinging else { return }
+        pinging = true
+        catchUpTo = nil
+        ping(generation: current)
     }
 
     /// Sends a clock ping and schedules the next, for as long as this

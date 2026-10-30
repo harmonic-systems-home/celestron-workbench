@@ -8,11 +8,15 @@
 //! plus drift, through them. There is one model per Mac clock domain, since a
 //! receiver restart starts a new Mac clock.
 //!
+//! The median alone fails when most exchanges are delayed, as when pings
+//! queue behind a backlog of samples resent after a reconnect (seconds each
+//! way, docs/observations.md O6). So the fit also drops any exchange more
+//! than [`MAX_EXCESS_ROUND_TRIP_NS`] slower than the fastest.
+//!
 //! Uncertainty: no exchange can see a constant difference between the outbound
 //! and return delays, so the true offset lies within half the round trip of
 //! the measured one. The fit averages every kept exchange, so its bound is
-//! half the longest kept round trip (the median), plus twice the RMS
-//! residual of the fit.
+//! half the longest kept round trip, plus twice the RMS residual of the fit.
 
 use cwb_protocol::Nanos;
 use rusqlite::{Connection, params};
@@ -20,11 +24,13 @@ use serde::Serialize;
 
 use crate::{StorageError, clock::utc_now};
 
-pub const METHOD: &str = "min_rtt_linear_v1";
+pub const METHOD: &str = "min_rtt_linear_v2";
 /// Drift is fitted only over at least this span of kept exchanges...
 pub const MIN_DRIFT_SPAN_NS: Nanos = 30_000_000_000;
 /// ...and with at least this many; otherwise it is reported as zero.
 pub const MIN_DRIFT_EXCHANGES: usize = 3;
+/// Exchanges whose round trip exceeds the fastest by more than this are dropped.
+pub const MAX_EXCESS_ROUND_TRIP_NS: Nanos = 250_000_000;
 
 /// One completed exchange, in its two clock domains.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,10 +105,12 @@ pub fn fit(
     let mut round_trips: Vec<Nanos> = exchanges.iter().map(Exchange::round_trip_ns).collect();
     round_trips.sort_unstable();
     let median = round_trips[(round_trips.len() - 1) / 2];
+    let bound = median.min(round_trips[0].saturating_add(MAX_EXCESS_ROUND_TRIP_NS));
     let kept: Vec<&Exchange> = exchanges
         .iter()
-        .filter(|e| e.round_trip_ns() <= median)
+        .filter(|e| e.round_trip_ns() <= bound)
         .collect();
+    let longest_kept = kept.iter().map(|e| e.round_trip_ns()).max().unwrap_or(0);
 
     let points: Vec<(f64, f64)> = kept
         .iter()
@@ -141,7 +149,7 @@ pub fn fit(
         offset_ns: intercept.round() as Nanos,
         drift_ppb: slope * 1e9,
         drift_fitted,
-        uncertainty_ns: (median.max(0) as f64 / 2.0 + 2.0 * residual_rms).ceil() as Nanos,
+        uncertainty_ns: (longest_kept.max(0) as f64 / 2.0 + 2.0 * residual_rms).ceil() as Nanos,
         exchanges: exchanges.len(),
         used: kept.len(),
         round_trip_min_ns: round_trips[0],

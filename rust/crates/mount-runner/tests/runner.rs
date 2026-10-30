@@ -748,3 +748,58 @@ fn commands_are_case_insensitive() {
     sim.line("AZ+ 0.2 0.5");
     assert_eq!(sim.moves_sent(), 1);
 }
+
+#[test]
+fn arming_needs_the_phone_clock_known_to_100_ms() {
+    // docs/observations.md O6: a ping that waited 2 s behind a resent backlog.
+    let mut sim = Sim::new(true, SimFaults::default());
+    sim.line("yes");
+    sim.now = 10_000 * MS;
+    tap(&mut sim, hello());
+    let now = sim.now;
+    let Message::ClockResult(mut late) = clock_result(0, now) else {
+        unreachable!()
+    };
+    late.phone_send_ns -= 2_000 * MS;
+    tap(&mut sim, Message::ClockResult(late));
+    stream(&mut sim, 3_500, 0.0, 0.0);
+    sim.line("arm");
+    assert!(
+        sim.said(Kind::Alert, "only known to ±1002 ms"),
+        "{:#?}",
+        sim.out
+    );
+    assert_eq!(sim.runner.state(), MountState::ConnectedReadOnly);
+
+    let now = sim.now;
+    tap(&mut sim, clock_result(1, now));
+    stream(&mut sim, 3_500, 0.0, 0.0);
+    sim.line("arm");
+    assert_eq!(sim.runner.state(), MountState::Armed, "{:#?}", sim.out);
+}
+
+#[test]
+fn samples_mapped_seconds_ahead_are_not_fresh() {
+    // A clock model 5 s out that claims to be good: samples land in the
+    // future, which must not count as fresh (docs/observations.md O6).
+    let mut sim = Sim::new(true, SimFaults::default());
+    sim.line("yes");
+    sim.now = 10_000 * MS;
+    tap(&mut sim, hello());
+    let now = sim.now;
+    let Message::ClockResult(mut wrong) = clock_result(0, now) else {
+        unreachable!()
+    };
+    wrong.phone_send_ns -= 5_000 * MS;
+    wrong.phone_receive_ns -= 5_000 * MS;
+    tap(&mut sim, Message::ClockResult(wrong));
+    stream(&mut sim, 3_500, 0.0, 0.0);
+    sim.line("status");
+    assert!(
+        sim.said(Kind::Info, "AHEAD (clock model wrong)"),
+        "{:#?}",
+        sim.out
+    );
+    sim.line("arm");
+    assert_eq!(sim.runner.state(), MountState::ConnectedReadOnly);
+}

@@ -47,6 +47,9 @@ const IDLE_CREEP_DEG: f64 = 0.0003;
 const POSITION_MAX_AGE_MS: Nanos = 1_000;
 /// While armed and idle, a link silent this long is lost.
 const POSITION_LOST_MS: Nanos = 1_500;
+/// Arming needs the phone's clock known this well: an error of seconds
+/// makes fresh samples look stale or from the future (docs/observations.md O6).
+const MAX_CLOCK_UNCERTAINTY_MS: Nanos = 100;
 
 /// What the runner needs from a mount adapter beyond [`MountAdapter`].
 pub trait RunnerAdapter: MountAdapter {
@@ -324,6 +327,10 @@ impl<A: RunnerAdapter> Runner<A> {
                     return out;
                 }
                 if self.session.is_some() {
+                    if let Err(why) = self.clock_known() {
+                        out.push(alert(format!("refused: {why}")));
+                        return out;
+                    }
                     match self.measure_bias(now) {
                         Ok(text) => out.push(info(text)),
                         Err(why) => {
@@ -735,6 +742,17 @@ impl<A: RunnerAdapter> Runner<A> {
         out
     }
 
+    fn clock_known(&self) -> Result<(), String> {
+        match self.clock.model() {
+            None => Err("no clock model for the phone yet: wait for a clock exchange".into()),
+            Some(m) if m.uncertainty_ns > MAX_CLOCK_UNCERTAINTY_MS * MS => Err(format!(
+                "the phone's clock is only known to ±{:.0} ms (arming needs ±{MAX_CLOCK_UNCERTAINTY_MS} ms): wait for a few clock exchanges, one every 5 s, and try again",
+                m.uncertainty_ns as f64 / 1e6
+            )),
+            Some(_) => Ok(()),
+        }
+    }
+
     /// Measures the raw gyroscope's offset over the last [`BIAS_WINDOW_MS`],
     /// which must be still: the mount's own positions must not change. A
     /// steady slow rotation looks just like an offset to a gyroscope, so this
@@ -791,8 +809,10 @@ impl<A: RunnerAdapter> Runner<A> {
         let imu = match self.last_observation {
             Some(o) => format!(
                 "IMU {} ({:.0} ms old): azimuth {:+.3} °/s, altitude {:+.3} °/s, tube at {:.1}°",
-                if now - o.t_ns <= self.config.safety.imu_max_age_ms as Nanos * MS {
+                if (now - o.t_ns).abs() <= self.config.safety.imu_max_age_ms as Nanos * MS {
                     "fresh"
+                } else if o.t_ns > now {
+                    "AHEAD (clock model wrong)"
                 } else {
                     "STALE"
                 },

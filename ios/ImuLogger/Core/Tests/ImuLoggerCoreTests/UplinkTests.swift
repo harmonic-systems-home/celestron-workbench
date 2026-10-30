@@ -135,6 +135,60 @@ import Testing
         uplink.cancel()
     }
 
+    @Test func clockExchangesWaitForTheResentBacklogAfterAReconnect() async throws {
+        // A ping queued behind a resent backlog is delayed one way, which
+        // reads as clock offset (docs/observations.md O6).
+        let receiver = try FakeReceiver()
+        defer { receiver.stop() }
+        let box = StatusBox()
+        let uplink = Uplink(
+            endpoint: await receiver.endpoint, hello: testHello(), logURL: nil,
+            clockInterval: 0.05
+        ) { status in box.latest.withLock { $0 = status } }
+        uplink.start()
+        #expect(await eventually { receiver.state.withLock { $0.pings } >= 2 })
+
+        // Five batches go unacknowledged, then the connection drops: they
+        // are resent on reconnect and held there.
+        receiver.state.withLock { $0.holdBatches = true }
+        for start in stride(from: Seq(0), to: 50, by: 10) {
+            uplink.send(batch: batch(start...(start + 9)))
+        }
+        #expect(await eventually { receiver.state.withLock { $0.held.count } == 5 })
+        receiver.dropConnection()
+        #expect(
+            await eventually {
+                receiver.state.withLock { $0.hellos >= 2 && $0.held.count == 5 }
+            })
+        let before = receiver.state.withLock { $0.pings }
+        try await Task.sleep(for: .milliseconds(500))
+        #expect(receiver.state.withLock { $0.pings } == before)
+
+        receiver.release()
+        #expect(await eventually { receiver.state.withLock { $0.pings } >= before + 2 })
+        #expect(receiver.state.withLock { $0.stored } == Set(0..<50))
+        uplink.cancel()
+    }
+
+    @Test func clockExchangesStartAnywayIfTheBacklogStalls() async throws {
+        let receiver = try FakeReceiver()
+        defer { receiver.stop() }
+        let uplink = Uplink(
+            endpoint: await receiver.endpoint, hello: testHello(), logURL: nil,
+            clockInterval: 0.05, catchUpTimeout: 0.3
+        ) { _ in }
+        uplink.start()
+        #expect(await eventually { receiver.state.withLock { $0.pings } >= 1 })
+        receiver.state.withLock { $0.holdBatches = true }
+        uplink.send(batch: batch(0...9))
+        #expect(await eventually { receiver.state.withLock { $0.held.count } == 1 })
+        receiver.dropConnection()
+        #expect(await eventually { receiver.state.withLock { $0.hellos } >= 2 })
+        let before = receiver.state.withLock { $0.pings }
+        #expect(await eventually { receiver.state.withLock { $0.pings } >= before + 2 })
+        uplink.cancel()
+    }
+
     @Test func stopsWhenTheReceiverRejectsTheSession() async throws {
         let receiver = try FakeReceiver()
         defer { receiver.stop() }

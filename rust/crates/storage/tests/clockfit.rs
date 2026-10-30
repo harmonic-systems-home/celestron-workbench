@@ -123,3 +123,29 @@ fn one_exchange_gives_an_offset_and_its_round_trip_bound() {
     assert!(model.resolves(-4 * MS));
     assert!(fit("mac", None, &[]).is_none());
 }
+
+#[test]
+fn pings_queued_behind_a_resent_backlog_are_dropped_even_when_most_are() {
+    // docs/observations.md O6: 15 pings sent 5 s apart wait behind a resent
+    // backlog and all reach the Mac when it drains, 75 s after the first;
+    // then four get through promptly. Before the cap, the median kept the
+    // queued ones and the fit was seconds out.
+    let list = exchanges(19, 5.0, 0.0, |i| {
+        let outbound = if i < 15 {
+            (75 - 5 * i as Nanos) * 1_000 * MS
+        } else {
+            3 * MS
+        };
+        (outbound, 3 * MS)
+    });
+    let model = fit("mac", None, &list).unwrap();
+    assert_eq!(model.used, 4);
+    let phone = PHONE_T0 + 90_000_000_000;
+    let error = model.to_mac_ns(phone) - mac_at(phone, 0.0);
+    assert!(error.abs() <= MS, "error {error} ns");
+    assert!(
+        model.uncertainty_ns <= 4 * MS,
+        "uncertainty {} ns",
+        model.uncertainty_ns
+    );
+}

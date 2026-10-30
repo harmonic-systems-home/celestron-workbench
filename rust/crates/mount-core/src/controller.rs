@@ -729,10 +729,14 @@ impl Controller {
         }
     }
 
+    /// The newest observation is at most `imu_max_age_ms` old, and no more
+    /// than that ahead of `now`: one stamped seconds ahead by a wrong clock
+    /// model would otherwise stay "fresh" after the phone went silent.
     fn fresh(&self, now: Nanos) -> bool {
+        let max = self.config.imu_max_age_ms as Nanos * MS;
         self.window
             .back()
-            .is_some_and(|o| now - o.t_ns <= self.config.imu_max_age_ms as Nanos * MS)
+            .is_some_and(|o| (now - o.t_ns).abs() <= max)
     }
 
     fn smoothed(&self, axis: Axis) -> Option<f64> {

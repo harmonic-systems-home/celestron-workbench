@@ -17,6 +17,9 @@ final class FakeReceiver: @unchecked Sendable {
         var clockResults: [ClockResult] = []
         var others: [Message] = []
         var acceptSessions = true
+        /// While true, sample batches are held unprocessed, as if still in transit.
+        var holdBatches = false
+        var held: [Message] = []
         var connection: NWConnection?
 
         var highestContiguous: Seq? {
@@ -64,6 +67,20 @@ final class FakeReceiver: @unchecked Sendable {
         state.withLock { $0.stored = $0.stored.filter { $0 <= seq } }
     }
 
+    /// Processes held batches and acknowledges them.
+    func release() {
+        let (held, connection) = state.withLock { state in
+            state.holdBatches = false
+            defer { state.held.removeAll() }
+            return (state.held, state.connection)
+        }
+        for message in held {
+            if let reply = handle(message) {
+                connection?.send(content: try! Framing.encode(reply), completion: .idempotent)
+            }
+        }
+    }
+
     func stop() {
         listener.cancel()
         dropConnection()
@@ -73,6 +90,7 @@ final class FakeReceiver: @unchecked Sendable {
         state.withLock {
             $0.connection?.cancel()
             $0.connection = connection
+            $0.held.removeAll()  // lost with the old connection
         }
         connection.start(queue: queue)
         var decoder = FrameDecoder()
@@ -94,6 +112,10 @@ final class FakeReceiver: @unchecked Sendable {
 
     private func handle(_ message: Message) -> Message? {
         state.withLock { state in
+            if state.holdBatches, case .sampleBatch = message {
+                state.held.append(message)
+                return nil
+            }
             switch message {
             case .hello(let hello):
                 state.hellos += 1

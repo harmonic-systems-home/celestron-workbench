@@ -48,6 +48,13 @@ Evidence paths are run logs and discovery reports under `reports/` (git-ignored,
 - **Seen:** 2026-10-29, when the Mac's receiver was restarted during a recording.
 - **Status:** fixed: the app retries a connection that isn't ready within 5 s.
 
+## O6. Stale-IMU fault while the phone was streaming normally
+
+- **Seen:** 2026-10-29, 18:38. `status` showed the IMU "fresh" at −6119 ms (from the future) with the clock at ±26 s; 8 s after `arm`, with no move sent, the runner latched `StaleImu`. The phone sent about 300 samples a second throughout.
+- **Sequence:** the phone kept recording in one session for 1.5 hours across two runner runs. When it reconnected to the new runner it resent about 70 s of backlog, and its clock pings, stamped when sent, waited behind it: 15 exchanges with round trips of 1–54 s against 5 ms for good ones. With most exchanges bad, the fit's median cut kept bad ones (offset seconds out). When the span of kept exchanges reached 30 s the fit solved for a drift of −39 %, moving fresh samples from 6 s ahead to 3 s behind: stale.
+- **Evidence:** run log `2026-10-30T01-37-21`; session `f9ba0dec`'s exchanges 19–41 in the database. Replaying them through the fit reproduces the status line's −6119 ms and ±26402 ms exactly.
+- **Status:** fixed. The fit drops exchanges more than 250 ms slower than the fastest (on the replay, right to 0.4 ms from the first prompt exchange); arming needs the clock known to ±100 ms; samples more than 1 s ahead aren't fresh; and the phone app holds clock pings after a reconnect until the resent backlog is acknowledged, starting anyway after 60 s (ADR 0013).
+
 ## From earlier use (not yet reproduced)
 
 Problems from about two years ago, before this project, without a known sequence. To be pinned down one at a time once basic motion is characterized; fill in details as they come back.

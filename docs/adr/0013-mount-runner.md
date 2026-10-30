@@ -110,4 +110,13 @@ Night sessions run on a laptop in the dark, where a silent port failure is easy 
 - **The stop-form setting is gone.**
 - **Preparation always sends `T 00`,** clearing any rate left on the motors by earlier software (it reads "tracking off" regardless).
 - **The simulated hand controller now behaves like these motors:** variable rate 0 creeps, fixed rate 0 doesn't cancel a variable rate, tracking off does. A simulated move ends with no creep afterwards.
-- **Still to confirm on hardware:** that `T 00` ends a real variable-rate move as cleanly, and how fast. The runner's serial timing and idle-creep check measure both.
+- **Still to confirm on hardware:** that `T 00` ends a real variable-rate move as cleanly, and how fast. The runner's serial timing and idle-creep check measure both. (Confirmed: run log `2026-10-30T00-06-19`, O1.)
+
+## The phone's clock must be known before arming (2026-10-29)
+
+A stale-IMU fault 8 s after arming, with the phone streaming normally, came from a clock model seconds out (docs/observations.md, O6): pings queued behind a resent backlog made most exchanges bad, and the median cut kept some.
+
+- **The fit drops exchanges more than 250 ms slower than the fastest** (ADR 0001, `min_rtt_linear_v2`).
+- **The phone app holds clock pings after a reconnect** until the Mac has acknowledged everything recorded up to the reconnect, so they don't queue behind the resent backlog. It starts them anyway after 60 s, so a stalled resend can't leave the Mac without a clock; the fit then drops any delayed ones.
+- **`arm` is refused while the clock is uncertain by more than ±100 ms,** or there is no clock model; the alert says to wait for a few exchanges.
+- **An observation more than `imu_max_age_ms` ahead of now isn't fresh,** just as one that much behind isn't; `status` shows `AHEAD (clock model wrong)`. Before, a sample mapped seconds into the future counted as fresh for its whole lead, so the phone could have gone silent unnoticed for that long.
