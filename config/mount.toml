@@ -29,9 +29,10 @@ seconds = 1.0
 # Keypad rates 1-9 (`az+ r3 2`): the arrow keys' fixed rates, sent as
 # MC_MOVE_POS/NEG. Speeds measured in azimuth (O16): rates 1-5 run at about
 # half Celestron's list. They set the overspeed check and commanded travel.
-# 0 refuses a rate (8 and 9 unmeasured); rate 7 (1.07 deg/s) is above
-# max_rate_deg_s, so refused too.
-fixed_rates_deg_s = [0.0022, 0.0045, 0.0179, 0.0358, 0.0717, 0.2865, 1.07, 0.0, 0.0]
+# 0 would refuse a rate. Rates 7-9 are above max_rate_deg_s, so refused here;
+# config/trials/fast-rates.toml runs them. Rate 9 (top speed not measured
+# directly, about 4 deg/s) takes 1.3-2.7 s and about 2.5 deg to stop.
+fixed_rates_deg_s = [0.0022, 0.0045, 0.0179, 0.0358, 0.0717, 0.2865, 1.07, 2.07, 4.0]
 
 [safety]
 max_rate_deg_s = 1.0

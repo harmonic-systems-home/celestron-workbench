@@ -1,0 +1,88 @@
+# Trial config: config/mount.toml with caps relaxed to measure keypad rates
+# 7-9 in azimuth (O16). Run with `cwb mount run --config` while the operator
+# watches with the power at hand; rate 9 for 2 s swings about 8 deg. Changed:
+# - max_rate_deg_s 1.0 -> 5.0 and max_duration_ms 2000 -> 3000.
+# - motion_deg_s 0.1 -> 0.2: at rate 9 the phone's slight tilt shows 0.1 deg/s
+#   on the other axis, a false unexpected-motion fault (the altitude encoder
+#   didn't move).
+# - stop_deadline_ms 1500 -> 3000: from rate 9 an axis takes 1.3-2.7 s and
+#   about 2.5 deg to stop.
+#
+# Mount runner settings for `cwb mount run` (plan Prompt 8, ADR 0013).
+# Nothing here is private. The [safety] section is the session's safety
+# configuration (ADR 0005): review it before every session; the run log
+# records it.
+
+[phone]
+# The phone body axis that points toward the tube's sky end. "+y" when the
+# top of the phone points that way. Roll about the tube doesn't matter.
+tube_axis = "+y"
+
+[celestron]
+# Set by the axis-sign trial: true when the hand controller's "positive"
+# slew turns that axis the other way from the IMU's convention (azimuth
+# clockwise from above, altitude up). A wrong value faults at once as
+# opposite motion.
+reverse_azimuth = false
+reverse_altitude = false
+# The anti-backlash values the motor controllers must hold: azm+, azm-,
+# alt+, alt- (0-99). The runner refuses to start if they differ. All 0 while
+# measuring the backlash itself. It acts on timed moves, not on gotos (O14).
+anti_backlash = [60, 60, 40, 40]
+# Stops are always tracking off (T 00) then fixed rate 0: variable rate 0
+# creeps on this mount (docs/observations.md, O1).
+
+[moves]
+# Used when a move command gives no rate or duration.
+rate_deg_s = 0.1
+seconds = 1.0
+# Keypad rates 1-9 (`az+ r3 2`): the arrow keys' fixed rates, sent as
+# MC_MOVE_POS/NEG. Speeds measured in azimuth (O16): rates 1-5 run at about
+# half Celestron's list. They set the overspeed check and commanded travel.
+# 0 would refuse a rate. Rates 7-9 are above max_rate_deg_s, so refused here;
+# config/trials/fast-rates.toml runs them. Rate 9 (top speed not measured
+# directly, about 4 deg/s) takes 1.3-2.7 s and about 2.5 deg to stop.
+fixed_rates_deg_s = [0.0022, 0.0045, 0.0179, 0.0358, 0.0717, 0.2865, 1.07, 2.07, 4.0]
+
+[safety]
+max_rate_deg_s = 5.0
+min_rate_deg_s = 0.001
+max_duration_ms = 3000
+send_deadline_ms = 2500
+ack_deadline_ms = 300
+stop_deadline_ms = 3000
+still_hold_ms = 300
+imu_max_age_ms = 1000
+smoothing_ms = 200
+motion_deg_s = 0.2
+still_deg_s = 0.05
+overspeed_fraction = 0.5
+min_altitude_deg = 5.0
+max_altitude_deg = 85.0
+stop_resend_ms = 250
+verify_travel_deg = 1.0
+min_observed_fraction = 0.5
+travel_tolerance_deg = 0.25
+# Gotos by motor position (ADR 0014). Until the stop-during-goto trial shows
+# a stop ends a goto, max_goto_deg stays at about 1 s of slow-goto travel:
+# slow gotos run at about 0.29 °/s (O11), so 0.2° ends on its own in ~0.7 s.
+# Fast gotos stay off until their speed is measured and max_goto_rate_deg_s
+# is set from it. min_goto_rate_deg_s and goto_settle_ms set each leg's
+# deadline: distance / min rate + settle.
+max_goto_deg = 0.2
+max_goto_rate_deg_s = 1.0
+min_goto_rate_deg_s = 0.05
+goto_settle_ms = 2000
+allow_fast_goto = true
+# The approach flag's first leg goes this far past the target; it must
+# exceed the backlash (0.068° in azimuth, O9). Within it, a servo's brief
+# reversal near the target is allowed; beyond it is an overshoot fault.
+approach_margin_deg = 0.15
+# A goto that settles further than this from its target latches a fault.
+goto_tolerance_deg = 0.01
+# With anti-backlash set, a move that reverses its axis starts by taking up
+# the slack fast (peaks of 0.9 deg/s at 99, O14): for takeup_ms after it
+# leaves, the overspeed limit rises by takeup_overspeed_deg_s. The runner
+# uses 0 while anti_backlash is all 0.
+takeup_overspeed_deg_s = 1.0
+takeup_ms = 1000

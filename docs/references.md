@@ -20,7 +20,7 @@ Outside sources this project relies on, what each established, and where it is u
 
 ## Checked on this mount
 
-- The keypad rates' speeds: rates 1–5 run at about half Celestron's list (O16). Anti-backlash acts on keypad moves at rates 1–5, partly at 6, not at 7 (O16); on variable-rate moves (O15); not on pass-through gotos (O14).
+- The keypad rates' speeds: rates 1–5 run at about half Celestron's list, 6–8 match it, and rate 9 takes 1.3–2.7 s to stop (O16). Anti-backlash acts on keypad moves at rates 1–5, partly at 6 (a fixed amount less than at 5), not at 7 or 8 (O16); on variable-rate moves (O15); not on pass-through gotos (O14).
 - The motor controllers' approach setting reads positive on both axes, but pass-through gotos don't use it (O14, O16).
 - `MC_AT_INDEX` gets no answer from azimuth: apparently no index marker (O16).
 

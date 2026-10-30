@@ -313,20 +313,20 @@ fn keypad_rate_moves_use_their_configured_speed() {
         "azimuth positive at keypad rate 5: Completed, commanded +0.0717°"
     ));
     for (line, said) in [
-        ("az+ r8", "keypad rate 8 has no speed"),
         ("az+ r0", "must be r1 to r9"),
         ("az+ rx", "must be r1 to r9"),
     ] {
         sim.line(line);
         assert!(sim.said(Kind::Info, said), "{line}: {:#?}", sim.out);
     }
-    // Rate 7 runs at 1.07 °/s, over the 1 °/s cap.
-    sim.line("az+ r7");
-    assert!(
-        sim.said(Kind::Alert, "rate 1.07 °/s is outside"),
-        "{:#?}",
-        sim.out
-    );
+    // Rates 7 and 8 run at 1.07 and 2.07 °/s, over the 1 °/s cap.
+    for (line, said) in [
+        ("az+ r7", "rate 1.07 °/s is outside"),
+        ("az+ r8", "rate 2.07 °/s is outside"),
+    ] {
+        sim.line(line);
+        assert!(sim.said(Kind::Alert, said), "{line}: {:#?}", sim.out);
+    }
 }
 
 #[test]
