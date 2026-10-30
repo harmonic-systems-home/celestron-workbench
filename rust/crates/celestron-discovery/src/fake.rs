@@ -19,6 +19,10 @@ pub struct FakeSetup {
     pub position: [u32; 2],
     /// Anti-backlash settings: [azimuth, altitude] × [positive, negative].
     pub backlash: [[u8; 2]; 2],
+    /// Added to the motor controllers' own positions (24 bits), against `z`'s.
+    pub motor_offset: [i32; 2],
+    /// Each motor controller's slew-done reply (0xFF done, 0x00 not).
+    pub slew_done: [u8; 2],
     /// Added to each precise reading, cycling: encoder jitter.
     pub jitter: Vec<i32>,
     /// Answers nothing at all.
@@ -46,6 +50,8 @@ impl Default for FakeSetup {
             tracking_mode: 0,
             position: [0x1234_5600, 0x0800_0000],
             backlash: [[0, 0], [0, 0]],
+            motor_offset: [0, 0],
+            slew_done: [0xFF, 0xFF],
             jitter: vec![0, 0x100, -0x100, 0],
             silent: false,
         }
@@ -100,6 +106,15 @@ impl FakeHandController {
             }
             [b'P', 1, dev @ (16 | 17), id @ (0x40 | 0x41), 0, 0, 0, 1] => {
                 vec![setup.backlash[usize::from(*dev - 16)][usize::from(*id - 0x40)]]
+            }
+            [b'P', 1, dev @ (16 | 17), 0x01, 0, 0, 0, 3] => {
+                let axis = usize::from(*dev - 16);
+                let units =
+                    (setup.position[axis] >> 8).wrapping_add_signed(setup.motor_offset[axis]);
+                units.to_be_bytes()[1..].to_vec()
+            }
+            [b'P', 1, dev @ (16 | 17), 0x13, 0, 0, 0, 1] => {
+                vec![setup.slew_done[usize::from(*dev - 16)]]
             }
             [b'P', 1, dev @ (16 | 17), 254, 0, 0, 0, 2] => {
                 match setup.motor_versions[usize::from(*dev - 16)] {

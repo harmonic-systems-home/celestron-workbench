@@ -63,6 +63,13 @@ pub enum Query {
     /// A motor controller's anti-backlash setting (0–99), by pass-through.
     /// Not in Celestron's document: from libnexstar's `tc_get_backlash`.
     Backlash(Device, Sense),
+    /// A motor controller's own axis position, 24 bits per revolution, by
+    /// pass-through (`MC_GET_POSITION`). Not in Celestron's document: from
+    /// the community-documented AUX command set.
+    MotorPosition(Device),
+    /// Whether a motor controller's goto has finished (`MC_SLEW_DONE`):
+    /// 0xFF done, 0x00 not. Same source as [`Query::MotorPosition`].
+    SlewDone(Device),
 }
 
 /// Pass-through message ID for "get version".
@@ -70,6 +77,9 @@ pub const GET_DEVICE_VERSION: u8 = 254;
 /// Pass-through message IDs for "get backlash" (libnexstar).
 pub const GET_BACKLASH_POSITIVE: u8 = 0x40;
 pub const GET_BACKLASH_NEGATIVE: u8 = 0x41;
+/// Pass-through message IDs from the AUX command set.
+pub const GET_MOTOR_POSITION: u8 = 0x01;
+pub const GET_SLEW_DONE: u8 = 0x13;
 
 impl Sense {
     pub fn get_id(self) -> u8 {
@@ -93,6 +103,8 @@ impl Query {
             Query::PreciseAzmAlt => vec![b'z'],
             Query::DeviceVersion(d) => vec![b'P', 1, d.id(), GET_DEVICE_VERSION, 0, 0, 0, 2],
             Query::Backlash(d, sense) => vec![b'P', 1, d.id(), sense.get_id(), 0, 0, 0, 1],
+            Query::MotorPosition(d) => vec![b'P', 1, d.id(), GET_MOTOR_POSITION, 0, 0, 0, 3],
+            Query::SlewDone(d) => vec![b'P', 1, d.id(), GET_SLEW_DONE, 0, 0, 0, 1],
         }
     }
 
@@ -100,6 +112,7 @@ impl Query {
     pub fn reply_len(self) -> usize {
         match self {
             Query::Version | Query::DeviceVersion(_) => 2,
+            Query::MotorPosition(_) => 3,
             Query::AzmAlt => 9,
             Query::PreciseAzmAlt => 17,
             _ => 1,
@@ -108,7 +121,13 @@ impl Query {
 
     /// Pass-through commands flag a missing device with one extra byte.
     pub fn is_pass_through(self) -> bool {
-        matches!(self, Query::DeviceVersion(_) | Query::Backlash(..))
+        matches!(
+            self,
+            Query::DeviceVersion(_)
+                | Query::Backlash(..)
+                | Query::MotorPosition(_)
+                | Query::SlewDone(_)
+        )
     }
 
     /// Lowest hand control version the document lists for this command.
@@ -119,7 +138,10 @@ impl Query {
             | Query::AlignmentComplete
             | Query::GotoInProgress
             | Query::AzmAlt => (1, 2),
-            Query::DeviceVersion(_) | Query::Backlash(..) => (1, 6),
+            Query::DeviceVersion(_)
+            | Query::Backlash(..)
+            | Query::MotorPosition(_)
+            | Query::SlewDone(_) => (1, 6),
             Query::Model | Query::PreciseAzmAlt => (2, 2),
             Query::TrackingMode => (2, 3),
         }
@@ -131,6 +153,12 @@ impl Query {
             Query::AzmAlt | Query::PreciseAzmAlt => "Get Position Commands",
             Query::TrackingMode => "Tracking Commands: Get Tracking Mode",
             Query::Backlash(..) => "libnexstar tc_get_backlash (not in Celestron's document)",
+            Query::MotorPosition(_) => {
+                "AUX command set MC_GET_POSITION (community-documented, not in Celestron's document)"
+            }
+            Query::SlewDone(_) => {
+                "AUX command set MC_SLEW_DONE (community-documented, not in Celestron's document)"
+            }
             _ => "Miscellaneous Commands",
         }
     }
@@ -155,6 +183,18 @@ impl Query {
             },
             Query::TrackingMode => Value::TrackingMode(payload[0]),
             Query::Backlash(..) => Value::Backlash(payload[0]),
+            Query::MotorPosition(_) => {
+                let units = u32::from_be_bytes([0, payload[0], payload[1], payload[2]]);
+                Value::MotorPosition {
+                    units,
+                    deg: f64::from(units) / f64::from(1u32 << 24) * 360.0,
+                }
+            }
+            Query::SlewDone(_) => match payload[0] {
+                0xFF => Value::Flag(true),
+                0x00 => Value::Flag(false),
+                _ => return None,
+            },
             Query::AzmAlt => parse_angles(payload, 4)?,
             Query::PreciseAzmAlt => parse_angles(payload, 8)?,
         })
@@ -174,6 +214,8 @@ impl fmt::Display for Query {
             Query::PreciseAzmAlt => f.write_str("precise azm-alt position"),
             Query::DeviceVersion(Device::AzmMotor) => f.write_str("azimuth motor version"),
             Query::DeviceVersion(Device::AltMotor) => f.write_str("altitude motor version"),
+            Query::MotorPosition(d) => write!(f, "{} motor position", axis_name(*d)),
+            Query::SlewDone(d) => write!(f, "{} slew done?", axis_name(*d)),
             Query::Backlash(d, sense) => write!(
                 f,
                 "{} backlash, {}",
@@ -187,6 +229,13 @@ impl fmt::Display for Query {
                 }
             ),
         }
+    }
+}
+
+fn axis_name(d: Device) -> &'static str {
+    match d {
+        Device::AzmMotor => "azimuth",
+        Device::AltMotor => "altitude",
     }
 }
 
@@ -224,6 +273,11 @@ pub enum Value {
         alt_deg: f64,
         raw: [u32; 2],
     },
+    /// 24 bits per revolution.
+    MotorPosition {
+        units: u32,
+        deg: f64,
+    },
 }
 
 impl fmt::Display for Value {
@@ -241,6 +295,7 @@ impl fmt::Display for Value {
                 None => write!(f, "{m} (unknown)"),
             },
             Value::Backlash(v) => write!(f, "{v}"),
+            Value::MotorPosition { units, deg } => write!(f, "{units} ({deg:.5}°)"),
             Value::Angles {
                 azm_deg, alt_deg, ..
             } => write!(f, "azm {azm_deg:.5}°, alt {alt_deg:.5}°"),
@@ -294,6 +349,10 @@ pub fn plan(repeats: usize) -> Vec<Query> {
         Query::Backlash(Device::AzmMotor, Sense::Negative),
         Query::Backlash(Device::AltMotor, Sense::Positive),
         Query::Backlash(Device::AltMotor, Sense::Negative),
+        Query::MotorPosition(Device::AzmMotor),
+        Query::MotorPosition(Device::AltMotor),
+        Query::SlewDone(Device::AzmMotor),
+        Query::SlewDone(Device::AltMotor),
         Query::AlignmentComplete,
         Query::GotoInProgress,
         Query::TrackingMode,

@@ -440,6 +440,90 @@ pub fn summarize(
         );
     }
 
+    // The motor controllers' own positions, which a goto by pass-through
+    // targets, against the hand controller's (upper 24 bits of `z`).
+    let axes = [
+        ("azimuth", Device::AzmMotor),
+        ("altitude", Device::AltMotor),
+    ];
+    let motor: Vec<Option<u32>> = axes
+        .iter()
+        .map(|(_, d)| match value(Query::MotorPosition(*d)) {
+            Some(Value::MotorPosition { units, .. }) => Some(units),
+            _ => None,
+        })
+        .collect();
+    if motor.iter().any(Option::is_none) {
+        check(
+            "Motor positions",
+            Status::Warn,
+            "not every motor controller answered (the query is from the community-documented AUX command set): gotos by motor position can't be used".into(),
+        );
+    } else {
+        let listed: Vec<String> = axes
+            .iter()
+            .zip(&motor)
+            .map(|((name, _), units)| format!("{name} {}", units.unwrap()))
+            .collect();
+        let differences = readings.first().map(|first| {
+            [0, 1].map(|axis| {
+                // Signed, so a wrap through 0° reads as a small difference.
+                let hc = first[axis] >> 8;
+                ((motor[axis].unwrap().wrapping_sub(hc) << 8) as i32) >> 8
+            })
+        });
+        match differences {
+            Some(d) if d.iter().all(|x| x.abs() <= 2) => check(
+                "Motor positions",
+                Status::Pass,
+                format!(
+                    "{} (24 bits per revolution): the same as the hand controller's precise positions",
+                    listed.join(", ")
+                ),
+            ),
+            Some([azm, alt]) => check(
+                "Motor positions",
+                Status::Info,
+                format!(
+                    "{}: the hand controller's precise positions differ by azimuth {azm:+}, altitude {alt:+} units, so it applies an offset; gotos must use the motor controllers' own positions",
+                    listed.join(", ")
+                ),
+            ),
+            None => check(
+                "Motor positions",
+                Status::Info,
+                format!("{} (no precise positions to compare)", listed.join(", ")),
+            ),
+        }
+    }
+    let done: Vec<Option<Value>> = axes
+        .iter()
+        .map(|(_, d)| value(Query::SlewDone(*d)))
+        .collect();
+    let named = |v: &Option<Value>| match v {
+        Some(Value::Flag(true)) => "done",
+        Some(_) => "in progress",
+        None => "no answer",
+    };
+    let listed = format!("azimuth {}, altitude {}", named(&done[0]), named(&done[1]));
+    if done.iter().all(|v| *v == Some(Value::Flag(true))) {
+        check("Slew done", Status::Pass, listed);
+    } else if done.iter().any(Option::is_none) {
+        check(
+            "Slew done",
+            Status::Warn,
+            format!(
+                "{listed} (the query is from the community-documented AUX command set): a goto's end can't be detected"
+            ),
+        );
+    } else {
+        check(
+            "Slew done",
+            Status::Warn,
+            format!("{listed}: a motor controller reports a goto still running"),
+        );
+    }
+
     let position_latency = latency(&ok(Query::PreciseAzmAlt));
     let echo_latency = latency(
         &exchanges

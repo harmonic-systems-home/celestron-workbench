@@ -41,8 +41,10 @@ fn a_healthy_evolution_passes_and_only_catalog_bytes_are_sent() {
     assert!(d.ready(), "{:#?}", d.checks);
     assert_eq!(status(&d, "Model"), Status::Pass);
     assert_eq!(status(&d, "Positions steady"), Status::Pass);
-    assert_eq!(d.exchanges.len(), 13 + 2 * 5);
+    assert_eq!(d.exchanges.len(), 17 + 2 * 5);
     assert_eq!(status(&d, "Anti-backlash"), Status::Pass);
+    assert_eq!(status(&d, "Motor positions"), Status::Pass);
+    assert_eq!(status(&d, "Slew done"), Status::Pass);
     let planned: Vec<Vec<u8>> = query::plan(5).into_iter().map(Query::bytes).collect();
     assert_eq!(fake.received, planned, "sent exactly the plan");
     assert_eq!(d.identity.model.as_deref(), Some("22 (NexStar Evolution)"));
@@ -122,6 +124,50 @@ fn a_low_version_number_is_information_when_the_newer_queries_answer() {
     );
     assert!(d.ready(), "{:#?}", d.checks);
     assert_eq!(status(&d, "Hand controller version"), Status::Info);
+}
+
+#[test]
+fn motor_positions_offset_from_the_hand_controller_are_reported_across_zero() {
+    let (d, _) = run(
+        FakeSetup {
+            position: [0x0000_0100, 0x0800_0000],
+            jitter: vec![0],
+            motor_offset: [-3, 5],
+            ..FakeSetup::default()
+        },
+        1,
+    );
+    assert!(d.ready());
+    assert_eq!(status(&d, "Motor positions"), Status::Info);
+    let detail = &d
+        .checks
+        .iter()
+        .find(|c| c.name == "Motor positions")
+        .unwrap()
+        .detail;
+    assert!(
+        detail.contains("azimuth 16777214") && detail.contains("azimuth -3, altitude +5"),
+        "{detail}"
+    );
+}
+
+#[test]
+fn a_goto_still_running_on_a_motor_controller_warns() {
+    let (d, _) = run(
+        FakeSetup {
+            slew_done: [0xFF, 0x00],
+            ..FakeSetup::default()
+        },
+        1,
+    );
+    assert_eq!(status(&d, "Slew done"), Status::Warn);
+    let detail = &d
+        .checks
+        .iter()
+        .find(|c| c.name == "Slew done")
+        .unwrap()
+        .detail;
+    assert!(detail.contains("altitude in progress"), "{detail}");
 }
 
 #[test]

@@ -3,7 +3,7 @@
 
 use cwb_celestron_discovery::query::{
     self, ALLOWED_FIRST_BYTES, Device, GET_BACKLASH_NEGATIVE, GET_BACKLASH_POSITIVE,
-    GET_DEVICE_VERSION, Query, Value,
+    GET_DEVICE_VERSION, GET_MOTOR_POSITION, GET_SLEW_DONE, Query, Value,
 };
 
 fn every_query() -> Vec<Query> {
@@ -29,10 +29,15 @@ fn every_sendable_command_is_a_documented_get() {
             assert_eq!(bytes.len(), 8, "{q}");
             assert_eq!(bytes[1], 1, "{q}: one data byte, a get");
             assert!([16, 17].contains(&bytes[2]), "{q}: motors only");
-            // Gets only: version (2-byte reply) or backlash (1-byte reply).
+            // Gets only: version (2-byte reply), backlash or slew done
+            // (1 byte), position (3 bytes). Goto (0x02, 0x17) and set
+            // position (0x04) must never appear.
             match bytes[3] {
                 GET_DEVICE_VERSION => assert_eq!(bytes[7], 2, "{q}"),
-                GET_BACKLASH_POSITIVE | GET_BACKLASH_NEGATIVE => assert_eq!(bytes[7], 1, "{q}"),
+                GET_BACKLASH_POSITIVE | GET_BACKLASH_NEGATIVE | GET_SLEW_DONE => {
+                    assert_eq!(bytes[7], 1, "{q}")
+                }
+                GET_MOTOR_POSITION => assert_eq!(bytes[7], 3, "{q}"),
                 other => panic!("{q}: pass-through message {other:#x}"),
             }
             assert_eq!(bytes[4..7], [0, 0, 0], "{q}: no data sent");
@@ -92,4 +97,23 @@ fn replies_decode_as_documented() {
         Query::Model.decode(&[22]).unwrap().to_string(),
         "22 (NexStar Evolution)"
     );
+
+    // AUX command set: a 24-bit big-endian position, and 0xFF for done.
+    let Value::MotorPosition { units, deg } = Query::MotorPosition(Device::AltMotor)
+        .decode(&[0x40, 0x00, 0x00])
+        .unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(units, 0x40_0000);
+    assert!((deg - 90.0).abs() < 1e-9, "{deg}");
+    assert_eq!(
+        Query::SlewDone(Device::AzmMotor).decode(&[0xFF]),
+        Some(Value::Flag(true))
+    );
+    assert_eq!(
+        Query::SlewDone(Device::AzmMotor).decode(&[0x00]),
+        Some(Value::Flag(false))
+    );
+    assert_eq!(Query::SlewDone(Device::AzmMotor).decode(&[0x01]), None);
 }
