@@ -21,9 +21,11 @@
 //! motion too slow for the rate checks (a slow move whose stop was ignored)
 //! is caught once it exceeds the commanded travel by `travel_tolerance_deg`.
 //! The phone's gyroscope offset wanders by a few thousandths of a degree a
-//! second, so that integral drifts too; while the mount's own positions show
-//! it hasn't moved ([`Controller::mount_still`]), what the IMU integrated
-//! meanwhile is discarded as drift.
+//! second, so that integral drifts too, and an altitude axis that isn't quite
+//! horizontal leaks altitude motion into the azimuth rate. An axis whose own
+//! positions haven't changed ([`Controller::mount_still`]), even across a
+//! command on the other axis, has what the IMU integrated for it meanwhile
+//! discarded.
 //!
 //! A goto (ADR 0014) has no lease: it ends when the axis's goto-finished
 //! flag is set and two position readings in a row agree on the target, and
@@ -188,10 +190,10 @@ pub struct Controller {
     tally: [Tally; 2],
     /// Time of the last observation integrated into the tallies.
     integrated_to: Option<Nanos>,
-    /// Observed travel when the mount's own positions last confirmed it
-    /// still, while idle or latched; cleared by any change of state or
-    /// tally, and by positions that moved.
-    still_mark: Option<[f64; 2]>,
+    /// Per axis: observed travel when the mount's own positions last showed
+    /// that axis unchanged. Cleared by a command on the axis, a reset of its
+    /// tally, and positions that moved.
+    still_mark: [Option<f64>; 2],
 }
 
 impl Controller {
@@ -216,7 +218,7 @@ impl Controller {
             confirmed_still: false,
             tally: [Tally::default(); 2],
             integrated_to: None,
-            still_mark: None,
+            still_mark: [None; 2],
         })
     }
 
@@ -305,6 +307,7 @@ impl Controller {
             return Err(Refused("altitude is outside the envelope".into()));
         }
         self.tally = [Tally::default(); 2];
+        self.still_mark = [None; 2];
         self.go(MountEvent::OperatorArm);
         Ok(Vec::new())
     }
@@ -328,6 +331,7 @@ impl Controller {
             return Err(Refused("the mount is still moving".into()));
         }
         self.tally = [Tally::default(); 2];
+        self.still_mark = [None; 2];
         self.go(MountEvent::OperatorReset);
         if !self.transport_up {
             self.go(MountEvent::TransportClosed);
@@ -351,7 +355,7 @@ impl Controller {
     /// explains (a creep too slow for the IMU). Latches unexpected motion
     /// unless the session is disarmed or already latched.
     pub fn mount_moved(&mut self, now: Nanos, detail: &str) -> Vec<Action> {
-        self.still_mark = None;
+        self.still_mark = [None; 2];
         match self.state {
             MountState::Armed | MountState::Moving | MountState::Stopping => {
                 self.fault(FaultKind::UnexpectedMotion, now, detail)
@@ -360,33 +364,32 @@ impl Controller {
         }
     }
 
-    /// The mount's own positions read the same as when it settled, with no
-    /// command active (armed and idle, or latched). Observed travel since the
-    /// previous call is gyroscope drift and is discarded, so it can't build
-    /// up into a false unexpected-motion fault. The rate checks still apply.
-    /// Tube motion the motor encoders can't see (a slipping clutch) slower
-    /// than `motion_deg_s` then goes unnoticed while idle.
-    pub fn mount_still(&mut self, now: Nanos) -> Vec<Action> {
+    /// A position read with no command active (armed and idle, or latched):
+    /// `unchanged` per axis, since the previous such read, even if the other
+    /// axis moved in between. For an unchanged axis, observed travel since
+    /// its previous call is gyroscope drift or leakage from the other axis
+    /// and is discarded, so it can't build up into a false unexpected-motion
+    /// fault. The rate checks still apply. Tube motion the motor encoders
+    /// can't see (a slipping clutch) slower than `motion_deg_s` then goes
+    /// unnoticed.
+    pub fn mount_still(&mut self, now: Nanos, unchanged: [bool; 2]) -> Vec<Action> {
         let idle = match self.state {
             MountState::Armed => self.active.is_none(),
             MountState::FaultLatched => self.still_since.is_some(),
             _ => false,
         };
-        if !idle {
-            self.still_mark = None;
-            return Vec::new();
-        }
-        match self.still_mark {
-            Some(mark) => {
-                for axis in Axis::BOTH {
-                    self.tally[axis.index()].observed_deg = mark[axis.index()];
-                }
+        for axis in Axis::BOTH {
+            let i = axis.index();
+            if !idle || !unchanged[i] {
+                self.still_mark[i] = None;
+                continue;
             }
-            None => {
-                self.still_mark = Some([self.tally[0].observed_deg, self.tally[1].observed_deg]);
+            match self.still_mark[i] {
+                Some(mark) => self.tally[i].observed_deg = mark,
+                None => self.still_mark[i] = Some(self.tally[i].observed_deg),
             }
         }
-        self.evaluate(now)
+        if idle { self.evaluate(now) } else { Vec::new() }
     }
 
     pub fn emergency_stop(&mut self, now: Nanos) -> Vec<Action> {
@@ -457,6 +460,7 @@ impl Controller {
             goto: None,
         });
         self.still_since = None;
+        self.still_mark[request.axis.index()] = None;
         self.go(MountEvent::MotionCommandSent);
         Ok(vec![Action::Send(MountCommand::Move {
             id,
@@ -572,6 +576,7 @@ impl Controller {
             goto: Some(run),
         });
         self.still_since = None;
+        self.still_mark[request.axis.index()] = None;
         self.go(MountEvent::MotionCommandSent);
         Ok(vec![Action::Send(command)])
     }
@@ -938,7 +943,7 @@ impl Controller {
                 // Coasting after the stop is over: measure creep from here.
                 self.still_since = Some(now);
                 self.tally = [Tally::default(); 2];
-                self.still_mark = None;
+                self.still_mark = [None; 2];
             }
         } else {
             self.still_since = None;
@@ -1091,7 +1096,7 @@ impl Controller {
         let needed = c.min_observed_fraction * want.abs();
         if along >= needed {
             *tally = Tally::default();
-            self.still_mark = None;
+            self.still_mark[axis.index()] = None;
             return Vec::new();
         }
         let detail = format!(
@@ -1138,6 +1143,7 @@ impl Controller {
         self.confirmed_still = false;
         // Unconfirmed travel is meaningless after a fault: start afresh.
         self.tally = [Tally::default(); 2];
+        self.still_mark = [None; 2];
         let mut actions = Vec::new();
         if was != MountState::Disconnected {
             actions.push(Action::Send(MountCommand::StopAll));
@@ -1149,7 +1155,6 @@ impl Controller {
     }
 
     fn go(&mut self, event: MountEvent) {
-        self.still_mark = None;
         self.state = match transition(self.state, event) {
             Ok(next) => next,
             // Never expected: treat as a fault rather than ignore it.

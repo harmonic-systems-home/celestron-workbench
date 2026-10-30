@@ -109,6 +109,22 @@ Evidence paths are run logs and discovery reports under `reports/` (git-ignored,
 - **Pitfall:** each runner process starts its own Mac clock near 0, so samples must be placed by their phone timestamps through the clock exchanges of the runner in question (its `mac_clock_boot_id`), not by receive time: a first pass that windowed by receive time mixed sessions and gave a false scale of 0.5.
 - **Status:** measured for altitude. Azimuth needs another reference (the gyroscope's own scale, or a known angle).
 
+## O13. Altitude backlash at different tube angles
+
+- **Trial:** 2026-10-30 (run logs `2026-10-30T17-07-19` for 45°, `2026-10-30T17-26-24` for 20°, 70° and 84°; phone session `6e390138`). At each angle, twelve slow altitude gotos of 0.15° (`+ + − −` three times), 6.5 s apart, re-arming at each angle so the gyroscope's offset was measured at that tilt. Tube motion per goto from the gravity vector's turn about the rotation axis, averaged over the still pause after each goto; the encoder from the mount's own positions.
+- **Result** (lost motion on a reversal, encoder minus tube; two or three reversals each way per angle, scatter about ±20″):
+
+  | Tube angle | Up after down | Down after up |
+  |---|---|---|
+  | 20° | 116″ (and 117″ in an earlier partial set) | 92″ (112″) |
+  | 45° | 80″ | 70″ |
+  | 70° | 108″ | 104″ |
+  | 84° | 99″ | 81″ |
+
+  Gotos in the same direction as the one before lost 0–20″. So the altitude backlash is 70–120″ (0.02–0.03°), about the same both ways and at every angle tried: with the balance of the day, gravity doesn't hold the gears to one side anywhere from 20° to 84°. It is about 40% of azimuth's (245″, O9). At 285 mm from the axis, 100″ is about 0.14 mm at the leading edge.
+- **Gyroscope:** with its offset measured at 50°, the gyroscope read up and down gotos at 20° about 0.01° apart per goto (its offset shifts with tilt). Re-arming at each angle removed that.
+- **Status:** measured. A different balance (accessories moved, tube slid in the bracket) may change it; repeat after rebalancing.
+
 ## From earlier use (not yet reproduced)
 
 Problems from about two years ago, before this project, without a known sequence. To be pinned down one at a time once basic motion is characterized; fill in details as they come back.

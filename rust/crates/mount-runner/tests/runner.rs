@@ -643,7 +643,7 @@ fn arming_needs_a_recent_position_read_and_a_silent_link_is_dropped() {
     out.extend(runner.line("arm", t));
     assert_eq!(runner.state(), MountState::Armed, "{out:#?}");
     // The reads stop while armed and idle: the link is treated as lost.
-    step(&mut runner, 2_000, false, &mut out);
+    step(&mut runner, 3_500, false, &mut out);
     assert_eq!(runner.state(), MountState::FaultLatched);
     assert!(
         out.iter()
@@ -870,6 +870,40 @@ fn gyroscope_drift_while_the_positions_hold_is_not_motion() {
 }
 
 #[test]
+fn drift_on_an_axis_whose_positions_hold_is_discarded_across_moves_of_the_other() {
+    // Azimuth drifts 0.02 °/s while altitude moves every 3 s: the azimuth
+    // drift during each move is discarded too, since its positions held.
+    let (mut runner, mut out) = drifting_runner();
+    let mut now = 0;
+    feed(&mut runner, &mut now, 600, |_| [0.25, 0.03], &mut out);
+    out.extend(runner.line("arm", now));
+    for i in 0..8 {
+        let way = if i % 2 == 0 { "alt+" } else { "alt-" };
+        out.extend(runner.line(&format!("{way} 0.5 2"), now));
+        // The altitude really moves; positions are read only when idle.
+        for _ in 0..400 {
+            now += 10 * MS;
+            let mount = &mut runner.adapter_mut().mount;
+            mount.step(now, 10 * MS);
+            let alt = 0.03 + mount.angles_deg()[1];
+            if runner.state() == MountState::Armed {
+                runner.adapter_mut().positions.push(Position {
+                    t_ns: now,
+                    deg: [0.25, alt],
+                });
+            }
+            let o = runner.adapter_mut().mount.observation(now).unwrap();
+            out.extend(runner.observation(o, now));
+            out.extend(runner.tick(now));
+        }
+    }
+    assert_eq!(runner.state(), MountState::Armed, "{out:#?}");
+    let records = runner.controller().records();
+    assert_eq!(records.len(), 8);
+    assert!(records.iter().all(|r| r.last_stage() == Stage::Completed));
+}
+
+#[test]
 fn latched_with_the_positions_holding_drift_raises_no_alarm() {
     let (mut runner, mut out) = drifting_runner();
     let mut now = 0;
@@ -933,7 +967,7 @@ fn a_replaced_adapter_restores_the_link_and_reset_then_arm_works() {
     out.extend(runner.line("arm", now));
     assert_eq!(runner.state(), MountState::Armed);
     // Position reads stop: the link is treated as lost and latched.
-    for _ in 0..200 {
+    for _ in 0..350 {
         now += 10 * MS;
         let o = runner.adapter_mut().mount.observation(now).unwrap();
         out.extend(runner.observation(o, now));

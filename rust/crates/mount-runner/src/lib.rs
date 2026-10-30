@@ -44,10 +44,11 @@ const BIAS_STILL_DEG: f64 = 0.0001;
 /// where they settled is unexplained motion.
 const IDLE_CREEP_DEG: f64 = 0.0003;
 /// Arming and moving need a position read this recently: proof the hand
-/// controller link is alive (positions are read every 250 ms while idle).
-const POSITION_MAX_AGE_MS: Nanos = 1_000;
+/// controller link is alive (positions are read every 250 ms while idle, but
+/// a read sometimes takes over a second: O7).
+const POSITION_MAX_AGE_MS: Nanos = 2_000;
 /// While armed and idle, a link silent this long is lost.
-const POSITION_LOST_MS: Nanos = 1_500;
+const POSITION_LOST_MS: Nanos = 3_000;
 /// Arming needs the phone's clock known this well: an error of seconds
 /// makes fresh samples look stale or from the future (docs/observations.md O6).
 const MAX_CLOCK_UNCERTAINTY_MS: Nanos = 100;
@@ -217,6 +218,10 @@ pub struct Runner<A: RunnerAdapter> {
     settled: Option<Position>,
     /// The newest position read already compared with `settled`.
     compared: Option<Nanos>,
+    /// The previous position read with no command active, kept across
+    /// commands: an axis unchanged since then didn't move, even if the
+    /// other one did.
+    idle_ref: Option<Position>,
 }
 
 impl<A: RunnerAdapter> Runner<A> {
@@ -262,6 +267,7 @@ impl<A: RunnerAdapter> Runner<A> {
             last_busy: now,
             settled: None,
             compared: None,
+            idle_ref: None,
             config,
         };
         let mut out = vec![info("Mount-session checklist:")];
@@ -442,6 +448,7 @@ impl<A: RunnerAdapter> Runner<A> {
         self.last_position = None;
         self.positions.clear();
         self.settled = None;
+        self.idle_ref = None;
         self.log.write(now, "link_restored", json!({}));
         let actions = self.controller.transport_restored(now);
         let mut out = Vec::new();
@@ -657,16 +664,21 @@ impl<A: RunnerAdapter> Runner<A> {
         let settled = *self.settled.get_or_insert(p);
         let moved = [0, 1].map(|i| wrap_deg(p.deg[i] - settled.deg[i]));
         let still = moved.iter().all(|m| m.abs() <= IDLE_CREEP_DEG);
+        let unchanged = [0, 1].map(|i| {
+            self.idle_ref
+                .is_some_and(|r| wrap_deg(p.deg[i] - r.deg[i]).abs() <= IDLE_CREEP_DEG)
+        });
+        self.idle_ref = Some(p);
         if self.controller.state() == MountState::FaultLatched {
             if still {
-                let actions = self.controller.mount_still(now);
+                let actions = self.controller.mount_still(now, unchanged);
                 self.carry_out(actions, now, &mut out);
             } else {
                 self.controller.mount_moved(now, "");
                 self.settled = Some(p);
             }
         } else if still {
-            let actions = self.controller.mount_still(now);
+            let actions = self.controller.mount_still(now, unchanged);
             self.carry_out(actions, now, &mut out);
         } else {
             let detail = format!(
