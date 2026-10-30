@@ -69,6 +69,30 @@ Evidence paths are run logs and discovery reports under `reports/` (git-ignored,
 - **Unknown:** whether the mount drove back (a goto to 0) or only the counters were reset; no receiver was running during either gap, so there is no phone data. Whether anyone touched the hand controller then.
 - **Status:** open. Until explained, every session should compare its starting positions with where the last one ended.
 
+## O9. Lost motion on reversal (gear backlash), anti-backlash 0
+
+- **Seen:** 2026-10-29. On a reversal the motor encoder turns the commanded amount but the tube turns less. Measured with the mount's positions (motor side) against the phone's raw gyroscope (tube side), integrated through each move and 3 s of settling, with the gyroscope's offset taken from the 2.8 s of stillness just before each move.
+- **Trial** (run log `2026-10-30T04-55-22`, phone session `e7bb941e`): per axis, six 0.2° moves at 0.2 °/s, `+ + − − + +`, 7 s apart.
+
+  | Move | Azimuth: tube − encoder | Altitude: tube − encoder |
+  |---|---|---|
+  | + | −0.001° | −0.021° |
+  | + | +0.007° | +0.006° |
+  | − (reversal) | **+0.070°** | **+0.008°** |
+  | − | +0.020° | −0.004° |
+  | + (reversal) | **−0.065°** | **−0.037°** |
+  | + | −0.003° | +0.018° |
+
+- **Azimuth:** about 0.068° (245″, about 3,200 encoder units) each way, consistent with the 0.1° trial earlier (0.072°, run log `2026-10-30T02-40-58`). Moves without a reversal agree to about ±0.01°.
+- **Altitude:** 0.008° down after up, 0.037° up after down, against ±0.02° scatter without a reversal: small, possibly asymmetric, not yet resolved. The tube's weight likely keeps the altitude gears loaded on one side.
+- **Status:** measured (first estimates). Next: repeated reversals to average down the ±0.01–0.02° per-move noise, then the same with anti-backlash values set, to find the values that cancel it.
+
+## O10. Altitude variable-rate moves run about 3% fast
+
+- **Seen:** 2026-10-29. Every altitude move turned the encoder 2–3% more than rate × time: 0.204–0.208° for 0.200° (run log `2026-10-30T04-55-22`), 0.515° for 0.503° (`2026-10-30T03-50-17`), 0.102–0.103° for 0.100°. The gyroscope agrees, so the tube moves that far; it isn't the encoder. Azimuth stays within about 1% (0.196–0.200° for 0.200°).
+- **Unknown:** whether it's a fixed scale (the altitude motor controller's rate units or gearing differ from azimuth's) or depends on load or direction.
+- **Status:** measured. Gotos by position would sidestep it; timed moves need a per-axis rate scale if precise travel matters.
+
 ## From earlier use (not yet reproduced)
 
 Problems from about two years ago, before this project, without a known sequence. To be pinned down one at a time once basic motion is characterized; fill in details as they come back.

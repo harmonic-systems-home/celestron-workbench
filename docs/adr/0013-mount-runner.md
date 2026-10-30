@@ -130,3 +130,11 @@ The altitude sign trial (run log `2026-10-30T02-03-33`) reached the serial port 
 - **Two deadlines.** `send_deadline_ms` (1 s) runs from the hand-over: a move not sent by then latches `CommandTimeout`, catching a stuck adapter. `ack_deadline_ms` (300 ms) runs from the send, so it measures only the mount's answer. The first version of this change kept the acknowledgement deadline from the hand-over; the next trial's move arrived during a ~600 ms position read, wasn't sent within 300 ms, and latched `AcknowledgementMissing` with nothing moved (run log `2026-10-30T02-12-03`, O7).
 - **A move overtaken by its stop** (the operator pressed Enter before it left) never left: no send deadline, nothing commanded.
 - **The simulated mount takes a `send_delay_ms` fault**, reports `Sent` when the move leaves, and drops a move a stop overtakes. Tests cover 60 ms and 600 ms delays and a move that never leaves; the random fault search includes delays up to 1.5 s, and its window is now 15 s so the travel check can catch the slowest move left running by an ignored stop.
+
+## Reversal trials (2026-10-29)
+
+With the safety interlocks in place the runner drove the first characterization trials: 0.1° and 0.2° moves on both axes with reversals, and 0.5° moves, all at anti-backlash 0. Results are in docs/observations.md: about 0.068° of lost motion on an azimuth reversal and a small, unresolved amount in altitude (O9), and altitude timed moves about 3% long (O10).
+
+- **Measuring the tube's travel** uses the phone's raw gyroscope integrated through each move and 3 s of settling, with the offset measured from the stillness just before each move, not the runner's offset from arming. That is good to about ±0.01–0.02° per move; the runner's own IMU figure is coarser.
+- **Disarm and re-arm every few moves** for now: the runner's integrated IMU travel drifts with the residual gyroscope offset and latched a false `UnexpectedMotion` after about a minute armed (+0.25° with the encoder unchanged).
+- **Next:** gotos by motor position (ADR 0014), so travel doesn't depend on timing or the rate scale.
