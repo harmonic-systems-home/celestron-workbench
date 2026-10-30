@@ -737,3 +737,14 @@ fn a_note_goes_into_the_run_log() {
     assert!(sim.said(Kind::Info, "noted"));
     assert!(sim.log.events().iter().any(|e| e == "note"));
 }
+
+#[test]
+fn commands_are_case_insensitive() {
+    let mut sim = Sim::new(false, SimFaults::default());
+    sim.line("YES");
+    sim.run(500);
+    sim.line("ARM");
+    assert_eq!(sim.runner.state(), MountState::Armed, "{:#?}", sim.out);
+    sim.line("AZ+ 0.2 0.5");
+    assert_eq!(sim.moves_sent(), 1);
+}

@@ -283,7 +283,9 @@ impl<A: RunnerAdapter> Runner<A> {
             return out;
         }
         let words: Vec<&str> = text.split_whitespace().collect();
-        match (self.stage, words[0]) {
+        // Commands are case-insensitive (`ARM`, `Az+`); a note keeps its case.
+        let command = words[0].to_lowercase();
+        match (self.stage, command.as_str()) {
             (Stage::Done, _) => {}
             (_, "quit" | "q") => out.extend(self.quit(now)),
             (_, "help" | "h" | "?") => out.push(info(HELP)),

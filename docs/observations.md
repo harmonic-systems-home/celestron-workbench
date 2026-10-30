@@ -23,8 +23,8 @@ Evidence paths are run logs and discovery reports under `reports/` (git-ignored,
   - variable rate 0 negative (`P 03 10 07 00 00 00 00`): creep −0.358″/s (`…23-31-48…_variable-_azm.json`).
   - On these motor controllers (7.17) a variable-rate command with rate 0 means "the slowest variable rate in that direction", not stop; the two directions run at different speeds. `StopAll` sent variable 0 and then fixed 0 and still left both axes creeping, so fixed 0 doesn't seem to cancel it.
 - **Cancel found (`cwb celestron cancel-sweep`, `reports/stop-test/2026-10-29T23-40-59…_cancel-sweep.json`):** from still, variable rate 0 started a +0.212″/s azimuth creep. Fixed rate 0 positive, then fixed rate 0 negative: still creeping (+0.210″/s). **`T 00` (tracking off): still.** This fits variable-rate commands setting the motor controllers' guide/tracking rate, which fixed-rate commands don't touch and the hand controller's tracking off resets.
-- **Open:** whether `T 00` ends a real variable-rate move as cleanly, and how fast.
-- **Status:** explained, with a cancel. Stops become `T 00` then fixed rate 0; variable rate 0 is never sent. The runner now latches unexpected motion if the mount's own positions drift while armed and idle (ADR 0013).
+- **Confirmed on a real move (run log `2026-10-30T00-06-19`):** `az+ 0.1 1` stopped with `T 00` (answered in 66 ms) then fixed rate 0. The mount's own position went 0.00000° → 0.10001° (0.1003° commanded) and stayed exactly there for the next 60 s; the idle-creep check never fired.
+- **Status:** fixed. Stops are `T 00` then fixed rate 0; variable rate 0 is never sent (ADR 0013). The runner now latches unexpected motion if the mount's own positions drift while armed and idle (ADR 0013).
 
 ## O2. Hand controller's USB serial port can't be opened after the hand controller restarts
 
