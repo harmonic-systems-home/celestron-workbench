@@ -197,6 +197,8 @@ swift test                                # runs against the simulated mount
 
 Its sessions are encoder-only (no phone): gotos only, with the motors' positions as feedback (`mount-core`'s `EncoderObserver`).
 
+The camera is driven through ZWO's ASICamera2 library, loaded at run time. ASIStudio's copy is Intel-only, so on Apple silicon `scripts/zwo-camera-lib.sh` installs ZWO's arm64 build (as INDI ships it, pinned by commit and SHA-256, linked to Homebrew's `libusb`, signed ad hoc) in `~/Library/Application Support/MoonMosaic/lib/`, where the app looks first. Run it once on each Mac. Nothing from it is committed.
+
 ## Swift (phone side)
 
 `ios/ImuLogger/` has two parts:
