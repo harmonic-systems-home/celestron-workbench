@@ -45,6 +45,10 @@ public enum MosaicEvent: Sendable {
 
 public struct MosaicError: Error, CustomStringConvertible {
     public let description: String
+
+    public init(description: String) {
+        self.description = description
+    }
 }
 
 /// The Moon mosaic workflow (ADR 0019): centre by hand, *Here*, calibrate,
@@ -178,11 +182,14 @@ public final class MosaicSession: @unchecked Sendable {
                 (s1, PixelOffset(x: r1.dx, y: r1.dy)), (s2, PixelOffset(x: r2.dx, y: r2.dy)))
         else {
             throw MosaicError(
-                description:
-                    "Calibration failed: the frames didn't match (is the Moon in view and in focus?)."
-            )
+                description: String(
+                    format:
+                        "Calibration failed: the frames didn't match (is the Moon in view and in focus?). Moves (%.0f″, %.0f″) → (%.0f, %.0f) px, match %.2f; (%.0f″, %.0f″) → (%.0f, %.0f) px, match %.2f.",
+                    s1.x, s1.y, r1.dx, r1.dy, r1.peak, s2.x, s2.y, r2.dx, r2.dy, r2.peak))
         }
         calibration = cal
+        // Back to the Moon's centre, where it started.
+        try await goToSky(SkyOffset(x: 0, y: 0))
         onEvent(
             .message(
                 String(
@@ -198,7 +205,7 @@ public final class MosaicSession: @unchecked Sendable {
 
     /// The change in pointing relative to the Moon between two moments, from
     /// the mount's own positions and the Moon's computed motion.
-    func relativeMove(from a: (Date, [Double]), to b: (Date, [Double])) -> SkyOffset {
+    public func relativeMove(from a: (Date, [Double]), to b: (Date, [Double])) -> SkyOffset {
         let ma = Ephemeris.moon(at: a.0, from: settings.site).horizontal
         let mb = Ephemeris.moon(at: b.0, from: settings.site).horizontal
         let dAz = wrap180(b.1[0] - a.1[0]) - wrap180(mb.azDeg - ma.azDeg)
@@ -396,9 +403,10 @@ public final class MosaicSession: @unchecked Sendable {
         try await Task.sleep(for: .seconds(settings.settleSeconds))
         for _ in 0..<20 {
             if let f = try camera.frame(timeoutMs: 1_000) {
-                // The session's clock, not the camera's: the Moon's motion is
-                // computed on it.
-                return (f, clock(), try await freshPosition())
+                // The frame's own time (the camera's wall clock), carried onto
+                // the session's clock, on which the Moon's motion is computed.
+                let taken = clock().addingTimeInterval(f.time.timeIntervalSinceNow)
+                return (f, taken, try await freshPosition())
             }
         }
         throw MosaicError(description: "No frames from the camera.")

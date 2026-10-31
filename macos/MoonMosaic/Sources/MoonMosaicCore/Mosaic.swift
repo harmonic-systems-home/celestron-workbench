@@ -103,17 +103,20 @@ public enum MosaicPlanner {
         let radius = moonDiameterDeg / 2 * 3600 / calibration.arcsecPerPixel
         let reach = radius * (1 + margin)
         let (sx, sy) = (w * (1 - overlap), h * (1 - overlap))
-        // Enough steps each way that the outermost tile's far edge passes the limb.
-        let nx = Int(((reach - w / 2) / sx).rounded(.up))
-        let ny = Int(((reach - h / 2) / sy).rounded(.up))
+        // Each tile's own share of the grid is its step, sx × sy, around its
+        // centre; the shares fit together without gaps, so the tiles whose
+        // shares reach the Moon cover it, and the overlap beyond each share
+        // takes up aiming error. Enough steps each way to pass the limb.
+        let nx = Int(((reach - sx / 2) / sx).rounded(.up))
+        let ny = Int(((reach - sy / 2) / sy).rounded(.up))
         var tiles: [Tile] = []
         for (r, j) in (-ny...ny).enumerated() {
             let columns = Array(-nx...nx)
             for i in r.isMultiple(of: 2) ? columns : columns.reversed() {
                 let center = PixelOffset(x: Double(i) * sx, y: Double(j) * sy)
-                // The rectangle's nearest point to the Moon's centre.
-                let nearX = max(abs(center.x) - w / 2, 0)
-                let nearY = max(abs(center.y) - h / 2, 0)
+                // The share's nearest point to the Moon's centre.
+                let nearX = max(abs(center.x) - sx / 2, 0)
+                let nearY = max(abs(center.y) - sy / 2, 0)
                 guard nearX * nearX + nearY * nearY < reach * reach else { continue }
                 // To bring this part of the Moon to the frame's centre, the
                 // image must move by minus its position.

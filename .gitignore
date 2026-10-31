@@ -53,3 +53,4 @@ xcuserdata/
 
 # --- AUX Listener app bundle ---
 /macos/AuxListener/build/
+/macos/MoonMosaic/build/

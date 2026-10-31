@@ -15,8 +15,10 @@ public final class FakeCamera: Camera, @unchecked Sendable {
     private let lock = NSLock()
     private var _pointing: (x: Double, y: Double) = (0, 0)
     private var running = false
-    /// Craters by 100″ cell, so each pixel checks only its neighbourhood.
-    private let craters: [Int: [(x: Double, y: Double, r: Double, depth: Double)]]
+    /// Craters by 100″ cell in a flat grid, so each pixel checks only its
+    /// neighbourhood, cheaply.
+    private let craters: [[(x: Double, y: Double, r: Double, depth: Double)]]
+    private let cells: Int
     private static let cell = 100.0
 
     /// Where the mount points relative to the Moon, set directly or, with a
@@ -45,19 +47,21 @@ public final class FakeCamera: Camera, @unchecked Sendable {
             rng = rng &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
             return Double(rng >> 11) / Double(1 << 53)
         }
-        var cells: [Int: [(x: Double, y: Double, r: Double, depth: Double)]] = [:]
+        // Cells from −n to n−1 on each axis, plus a border of empty ones.
+        let n = Int((moonRadiusArcsec / Self.cell).rounded(.up)) + 2
+        cells = n
+        var grid = [[(x: Double, y: Double, r: Double, depth: Double)]](
+            repeating: [], count: 4 * n * n)
         for _ in 0..<900 {
             let c = (
                 x: (next() * 2 - 1) * moonRadiusArcsec, y: (next() * 2 - 1) * moonRadiusArcsec,
                 r: 8 + 40 * pow(next(), 3), depth: 0.2 + 0.5 * next()
             )
-            cells[Self.key(c.x, c.y), default: []].append(c)
+            let i = Int((c.x / Self.cell).rounded(.down)) + n
+            let j = Int((c.y / Self.cell).rounded(.down)) + n
+            grid[i * 2 * n + j].append(c)
         }
-        craters = cells
-    }
-
-    private static func key(_ x: Double, _ y: Double) -> Int {
-        Int((x / cell).rounded(.down)) &* 10_007 &+ Int((y / cell).rounded(.down))
+        craters = grid
     }
 
     public func configure(exposureUs: Int, gain: Int) throws {}
@@ -81,12 +85,19 @@ public final class FakeCamera: Camera, @unchecked Sendable {
         let (w, h) = (info.width, info.height)
         var pixels = [UInt8](repeating: 0, count: w * h)
         let r2 = moonRadiusArcsec * moonRadiusArcsec
-        // One pointing for the whole frame.
+        // One pointing for the whole frame, and the frame stamped then: that
+        // is the moment it shows, however long it takes to draw.
+        let taken = Date()
         let p = pointing
         lock.withLock { history.append(p) }
+        let t = rotationDeg * .pi / 180
+        let (ct, st) = (cos(t), sin(t))
+        let n = cells
         for y in 0..<h {
+            let v = Double(y) - Double(h) / 2
             for x in 0..<w {
-                let q = sky(u: Double(x) - Double(w) / 2, v: Double(y) - Double(h) / 2, pointing: p)
+                let u = Double(x) - Double(w) / 2
+                let q = (x: p.x + scale * (u * ct - v * st), y: p.y - scale * (u * st + v * ct))
                 let d2 = q.x * q.x + q.y * q.y
                 guard d2 < r2 else {
                     pixels[y * w + x] = 6
@@ -94,10 +105,11 @@ public final class FakeCamera: Camera, @unchecked Sendable {
                 }
                 // Maria and highlands, then craters.
                 var b = 0.62 + 0.18 * sin(q.x / 210) * cos(q.y / 170) + 0.08 * sin((q.x + q.y) / 47)
-                let (cx, cy) = ((q.x / Self.cell).rounded(.down), (q.y / Self.cell).rounded(.down))
-                for i in -1...1 {
-                    for j in -1...1 {
-                        for c in craters[(Int(cx) + i) &* 10_007 &+ (Int(cy) + j)] ?? [] {
+                let cx = Int((q.x / Self.cell).rounded(.down)) + n
+                let cy = Int((q.y / Self.cell).rounded(.down)) + n
+                for i in (cx - 1)...(cx + 1) where i >= 0 && i < 2 * n {
+                    for j in (cy - 1)...(cy + 1) where j >= 0 && j < 2 * n {
+                        for c in craters[i * 2 * n + j] {
                             let dx = q.x - c.x
                             let dy = q.y - c.y
                             let rr = (dx * dx + dy * dy) / (c.r * c.r)
@@ -108,6 +120,6 @@ public final class FakeCamera: Camera, @unchecked Sendable {
                 pixels[y * w + x] = UInt8(max(10, min(245, b * 200)))
             }
         }
-        return Frame(width: w, height: h, pixels: pixels, time: Date())
+        return Frame(width: w, height: h, pixels: pixels, time: taken)
     }
 }

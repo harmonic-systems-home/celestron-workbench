@@ -64,17 +64,21 @@ public struct QuickStack: Sendable {
         return out
     }
 
+    /// Gradient energy per pixel of the Moon: dark sky (a limb tile's
+    /// corner) is left out so it doesn't make a sharp tile look soft.
     static func sharpness(_ f: Frame) -> Double {
         let b = bin4(f)
         let (w, h) = (f.width / 4, f.height / 4)
         var e: Double = 0
+        var n = 0
         for y in 1..<max(h - 1, 1) {
-            for x in 1..<max(w - 1, 1) {
+            for x in 1..<max(w - 1, 1) where b[y * w + x] > 0.1 {
                 let gx = Double(b[y * w + x + 1] - b[y * w + x - 1])
                 let gy = Double(b[(y + 1) * w + x] - b[(y - 1) * w + x])
                 e += gx * gx + gy * gy
+                n += 1
             }
         }
-        return e / Double(max(w * h, 1))
+        return n > 0 ? e / Double(n) : 0
     }
 }

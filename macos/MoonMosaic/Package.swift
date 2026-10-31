@@ -10,7 +10,8 @@ let package = Package(
     name: "MoonMosaic",
     platforms: [.macOS(.v15)],
     products: [
-        .library(name: "MoonMosaicCore", targets: ["MoonMosaicCore"])
+        .library(name: "MoonMosaicCore", targets: ["MoonMosaicCore"]),
+        .executable(name: "MoonMosaic", targets: ["MoonMosaic"]),
     ],
     targets: [
         // The Rust adapter's C interface (rust/crates/mount-ffi).
@@ -25,6 +26,8 @@ let package = Package(
                 .linkedFramework("CoreFoundation"),
             ]
         ),
+        // The SwiftUI app: big buttons, night and day palettes.
+        .executableTarget(name: "MoonMosaic", dependencies: ["MoonMosaicCore"]),
         .testTarget(name: "MoonMosaicCoreTests", dependencies: ["MoonMosaicCore"]),
     ]
 )

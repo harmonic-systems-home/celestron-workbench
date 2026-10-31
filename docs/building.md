@@ -197,6 +197,8 @@ swift test                                # runs against the simulated mount
 
 Its sessions are encoder-only (no phone): gotos only, with the motors' positions as feedback (`mount-core`'s `EncoderObserver`).
 
+`scripts/moon-mosaic-app.sh` builds `macos/MoonMosaic/build/Moon Mosaic.app` (git-ignored) for Apple silicon and Intel; `--install` puts it in `~/Applications`, and `--deploy` sends it to the MacBook over SSH (as for the AUX Listener), installing ZWO's camera library there first if it's missing. In the app, set the site in Settings once (it stays on that Mac); **Rehearse** uses the simulated mount and a synthetic Moon, with the clock moved to the next time the Moon is high, so the whole sequence can be tried at any hour.
+
 The camera is driven through ZWO's ASICamera2 library, loaded at run time. ASIStudio's copy is Intel-only, so on Apple silicon `scripts/zwo-camera-lib.sh` installs ZWO's arm64 build (as INDI ships it, pinned by commit and SHA-256, linked to Homebrew's `libusb`, signed ad hoc) in `~/Library/Application Support/MoonMosaic/lib/`, where the app looks first. Run it once on each Mac. Nothing from it is committed.
 
 ## Swift (phone side)

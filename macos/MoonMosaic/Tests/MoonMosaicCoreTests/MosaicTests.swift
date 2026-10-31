@@ -65,6 +65,18 @@ import Testing
             if !covered { return }
         }
     }
+    // Every tile sees some of the Moon, at any of its sizes: none is all sky.
+    for diameter in stride(from: 0.48, through: 0.57, by: 0.005) {
+        let p = MosaicPlanner.plan(
+            moonDiameterDeg: diameter, calibration: cal, frameWidth: 1920, frameHeight: 1080)
+        for tile in p.tiles {
+            let nearX = max(abs(tile.center.x) - 960, 0)
+            let nearY = max(abs(tile.center.y) - 540, 0)
+            let rr = p.moonRadiusPixels
+            #expect(
+                nearX * nearX + nearY * nearY < rr * rr, "\(diameter)°: tile \(tile.id) is all sky")
+        }
+    }
     // Serpentine: consecutive tiles in a row are one step apart.
     for (p, q) in zip(plan.tiles, plan.tiles.dropFirst()) where p.row == q.row {
         #expect(abs(abs(p.center.x - q.center.x) - 1920 * 0.75) < 1e-6)
