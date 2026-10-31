@@ -25,7 +25,9 @@ struct Palette {
 
 struct ContentView: View {
     @ObservedObject var model: AppModel
-    @State private var showPreview = false
+    @State private var panel = Panel.camera
+
+    enum Panel { case camera, focus, preview }
 
     var palette: Palette { model.dayPalette ? .day : .night }
 
@@ -94,7 +96,7 @@ struct ContentView: View {
             }
             button("Preview", enabled: model.plan != nil && model.busy == nil) {
                 model.makePreview()
-                showPreview = true
+                panel = .preview
             }
             button(
                 model.selected.isEmpty ? "Redo selected" : "Redo \(model.selected.count) selected",
@@ -127,28 +129,93 @@ struct ContentView: View {
 
     private var imagePanel: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Picker("", selection: $showPreview) {
-                Text("Camera").tag(false)
-                Text("Mosaic preview").tag(true)
+            HStack(spacing: 18) {
+                Picker("", selection: $panel) {
+                    Text("Camera").tag(Panel.camera)
+                    Text("Focus").tag(Panel.focus)
+                    Text("Mosaic preview").tag(Panel.preview)
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 400)
+                Spacer()
+                stepper(
+                    exposureText, enabled: model.busy == nil,
+                    down: { model.stepExposure(-1) }, up: { model.stepExposure(1) })
+                stepper(
+                    "Gain \(model.gain)", enabled: model.busy == nil,
+                    down: { model.stepGain(-1) }, up: { model.stepGain(1) })
             }
-            .pickerStyle(.segmented)
-            .frame(width: 320)
-            ZStack {
+            ZStack(alignment: .topLeading) {
                 RoundedRectangle(cornerRadius: 10).fill(palette.panel)
-                if let image = showPreview ? model.previewImage : model.liveImage {
+                if let image = shownImage {
                     Image(decorative: image, scale: 1)
                         .resizable()
-                        .interpolation(.medium)
+                        .interpolation(panel == .focus ? .none : .medium)
                         .aspectRatio(contentMode: .fit)
                         .colorMultiply(palette.imageTint)
                         .padding(6)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
-                    Text(showPreview ? "No preview yet" : "No camera image").foregroundStyle(
-                        palette.dim)
+                    Text(panel == .preview ? "No preview yet" : "No camera image")
+                        .foregroundStyle(palette.dim)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+                if panel == .focus, let s = model.focusSharpness {
+                    focusReadout(s)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+    }
+
+    private var shownImage: CGImage? {
+        switch panel {
+        case .camera: model.liveImage
+        case .focus: model.focusImage
+        case .preview: model.previewImage
+        }
+    }
+
+    private var exposureText: String {
+        let e = model.exposureMs
+        return "Exposure " + (e < 10 ? String(format: "%.1f ms", e) : String(format: "%.0f ms", e))
+    }
+
+    /// Sharpness now and the best so far (reset by a change of exposure or
+    /// gain, which changes the scale, or by hand).
+    private func focusReadout(_ sharpness: Double) -> some View {
+        HStack(spacing: 14) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(String(format: "Sharpness %.0f", sharpness))
+                    .font(.system(size: 28, weight: .semibold, design: .rounded))
+                    .foregroundStyle(
+                        sharpness >= 0.97 * model.bestFocus ? palette.bright : palette.text)
+                Text(String(format: "Best %.0f", model.bestFocus)).foregroundStyle(palette.dim)
+            }
+            Button("Reset best") { model.resetBestFocus() }
+                .buttonStyle(BigButton(palette: palette))
+                .frame(width: 130, height: 44)
+        }
+        .padding(14)
+        .background(RoundedRectangle(cornerRadius: 10).fill(palette.background.opacity(0.75)))
+        .padding(14)
+    }
+
+    private func stepper(
+        _ title: String, enabled: Bool, down: @escaping () -> Void, up: @escaping () -> Void
+    ) -> some View {
+        HStack(spacing: 6) {
+            Text(title).monospacedDigit().frame(minWidth: 140, alignment: .trailing)
+            ForEach([("−", down), ("+", up)], id: \.0) { label, action in
+                Button(action: action) {
+                    Text(label).font(.system(size: 24, weight: .semibold, design: .rounded))
+                        .frame(width: 48, height: 40)
+                }
+                .buttonStyle(BigButton(palette: palette))
+            }
+        }
+        .disabled(!enabled)
+        .opacity(enabled ? 1 : 0.35)
     }
 
     private var logPanel: some View {

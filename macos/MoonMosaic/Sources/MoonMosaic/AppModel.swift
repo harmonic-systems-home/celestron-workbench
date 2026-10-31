@@ -13,8 +13,18 @@ final class AppModel: ObservableObject {
     @Published var focalLengthMm: Double { didSet { save() } }
     @Published var overlap: Double { didSet { save() } }
     @Published var videoSeconds: Double { didSet { save() } }
-    @Published var exposureMs: Double { didSet { save() } }
-    @Published var gain: Int { didSet { save() } }
+    @Published var exposureMs: Double {
+        didSet {
+            save()
+            applyCamera()
+        }
+    }
+    @Published var gain: Int {
+        didSet {
+            save()
+            applyCamera()
+        }
+    }
     @Published var simulate: Bool { didSet { save() } }
     @Published var dayPalette: Bool { didSet { save() } }
     @Published var folder: URL { didSet { save() } }
@@ -30,6 +40,11 @@ final class AppModel: ObservableObject {
     @Published private(set) var preview: MosaicPreview?
     @Published private(set) var previewImage: CGImage?
     @Published private(set) var liveImage: CGImage?
+    /// The frame's middle at full resolution, its sharpness (averaged over
+    /// the last few frames), and the best seen since the last reset.
+    @Published private(set) var focusImage: CGImage?
+    @Published private(set) var focusSharpness: Double?
+    @Published private(set) var bestFocus: Double = 0
     @Published private(set) var hereSet = false
     @Published private(set) var calibrated = false
     /// Capture progress: tiles finished of those asked for, and when the
@@ -246,13 +261,25 @@ final class AppModel: ObservableObject {
                 await MainActor.run { self?.say("Live view: \(error)") }
                 return
             }
+            let color = camera.info.isColor
+            var recentSharpness: [Double] = []
             while !Task.isCancelled {
                 // The session's frames while it is reading (a goto's
                 // check, a tile's video); otherwise one of our own.
                 let recent = camera.latest.map { Date().timeIntervalSince($0.time) < 0.5 }
                 if let frame = recent == true ? camera.latest : try? camera.frame(timeoutMs: 500) {
                     let image = Imaging.image(fromFrame: frame)
-                    await MainActor.run { self?.liveImage = image }
+                    let crop = Focus.crop(frame)
+                    let focus = Imaging.image(crop: crop, binned: color)
+                    recentSharpness = (recentSharpness + [Focus.sharpness(crop)]).suffix(5)
+                    let sharpness = recentSharpness.reduce(0, +) / Double(recentSharpness.count)
+                    await MainActor.run {
+                        guard let self else { return }
+                        self.liveImage = image
+                        self.focusImage = focus
+                        self.focusSharpness = sharpness
+                        self.bestFocus = max(self.bestFocus, sharpness)
+                    }
                 }
                 try? await Task.sleep(for: .milliseconds(300))
             }
@@ -288,6 +315,45 @@ final class AppModel: ObservableObject {
                 self.busy = nil
                 self.finishAt = nil
                 self.sync()
+            }
+        }
+    }
+
+    func resetBestFocus() {
+        bestFocus = focusSharpness ?? 0
+    }
+
+    /// Exposure steps, in milliseconds.
+    static let exposures: [Double] = [
+        0.1, 0.2, 0.3, 0.5, 0.7, 1, 1.5, 2, 3, 5, 7, 10, 15, 20, 30, 50, 70, 100, 150, 200, 300,
+        500, 1000,
+    ]
+
+    func stepExposure(_ direction: Int) {
+        let steps = Self.exposures
+        exposureMs =
+            direction > 0
+            ? steps.first { $0 > exposureMs + 1e-9 } ?? steps[steps.count - 1]
+            : steps.last { $0 < exposureMs - 1e-9 } ?? steps[0]
+    }
+
+    func stepGain(_ direction: Int) {
+        gain = min(max(gain + 10 * direction, 0), 600)
+    }
+
+    /// Exposure and gain to the camera now (for the live view) and to the
+    /// session (for its next step).
+    private func applyCamera() {
+        let (us, g) = (Int(exposureMs * 1000), gain)
+        // Brightness changes the sharpness scale: a new best from here.
+        bestFocus = 0
+        session?.setCamera(exposureUs: us, gain: g)
+        guard let camera else { return }
+        Task.detached { [weak self] in
+            do {
+                try camera.configure(exposureUs: us, gain: g)
+            } catch {
+                await MainActor.run { self?.say("Camera: \(error)") }
             }
         }
     }
@@ -452,6 +518,25 @@ enum Imaging {
                         s += Int(p[row]) + Int(p[row + 1]) + Int(p[row + 2]) + Int(p[row + 3])
                     }
                     out[y * w + x] = UInt8(s / 16)
+                }
+            }
+        }
+        return gray(width: w, height: h, bytes: out)
+    }
+
+    /// A crop at full resolution, or 2× binned for a colour camera (so its
+    /// Bayer pattern doesn't show).
+    static func image(crop f: Frame, binned: Bool) -> CGImage? {
+        guard binned else { return gray(width: f.width, height: f.height, bytes: f.pixels) }
+        let (w, h) = (f.width / 2, f.height / 2)
+        var out = [UInt8](repeating: 0, count: w * h)
+        f.pixels.withUnsafeBufferPointer { p in
+            for y in 0..<h {
+                for x in 0..<w {
+                    let i = 2 * y * f.width + 2 * x
+                    out[y * w + x] = UInt8(
+                        (Int(p[i]) + Int(p[i + 1]) + Int(p[i + f.width]) + Int(p[i + f.width + 1]))
+                            / 4)
                 }
             }
         }

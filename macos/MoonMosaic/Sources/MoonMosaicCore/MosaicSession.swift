@@ -57,7 +57,7 @@ public struct MosaicError: Error, CustomStringConvertible {
 public final class MosaicSession: @unchecked Sendable {
     public let mount: MountSession
     public let camera: Camera
-    public let settings: MosaicSettings
+    public private(set) var settings: MosaicSettings
     public private(set) var here: Here?
     public private(set) var calibration: CameraCalibration?
     public private(set) var plan: MosaicPlan?
@@ -85,6 +85,13 @@ public final class MosaicSession: @unchecked Sendable {
     }
 
     // MARK: Here
+
+    /// New exposure and gain, for the next step (they're set on the camera
+    /// as each step starts).
+    public func setCamera(exposureUs: Int, gain: Int) {
+        settings.exposureUs = exposureUs
+        settings.gain = gain
+    }
 
     /// Records where the Moon is centred, checks the Sun, ties the altitude
     /// encoder to the Moon's altitude and arms the mount.
