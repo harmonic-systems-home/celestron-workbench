@@ -47,6 +47,11 @@ pub struct SimHandController {
     /// Every command received, shared so tests can read it after the
     /// adapter has taken the link.
     pub received: Arc<Mutex<Vec<Vec<u8>>>>,
+    /// Replies to hold back, as the hand controller does while its menus are
+    /// busy (O18): each held reply arrives late, during the next exchange, so
+    /// a run of them leaves the link one reply behind.
+    pub late_replies: Arc<Mutex<usize>>,
+    held: Vec<u8>,
     pending: Vec<u8>,
     reply: VecDeque<u8>,
 }
@@ -60,6 +65,8 @@ impl SimHandController {
             variable: [false; 2],
             backlash: 0,
             received: Arc::default(),
+            late_replies: Arc::default(),
+            held: Vec::new(),
             pending: Vec::new(),
             reply: VecDeque::new(),
         }
@@ -212,6 +219,8 @@ impl SimHandController {
 
 impl Link for SimHandController {
     fn write_all(&mut self, bytes: &[u8]) -> io::Result<()> {
+        // A held reply comes out now, after the adapter has cleared its input.
+        self.reply.extend(self.held.drain(..));
         self.pending.extend_from_slice(bytes);
         while let Some(&first) = self.pending.first() {
             let len = Self::command_len(first);
@@ -222,7 +231,13 @@ impl Link for SimHandController {
             self.received.lock().expect("received").push(cmd.clone());
             if let Some(mut reply) = self.answer(&cmd)? {
                 reply.push(b'#');
-                self.reply.extend(reply);
+                let mut late = self.late_replies.lock().expect("late replies");
+                if *late > 0 {
+                    *late -= 1;
+                    self.held.extend(reply);
+                } else {
+                    self.reply.extend(reply);
+                }
             }
         }
         Ok(())

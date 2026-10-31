@@ -24,7 +24,7 @@ use std::{
 
 use cwb_celestron_discovery::{
     Link, Outcome, Query,
-    query::{Device, Value},
+    query::{Device, REPLY_TIMEOUT_MS, Value},
     transact,
 };
 use cwb_mount_core::{
@@ -103,6 +103,8 @@ impl CelestronAdapter {
                     timeouts: 0,
                     moving: false,
                     watch: None,
+                    stale: false,
+                    sync_byte: 0,
                 }
                 .run(rx, position_every)
             })
@@ -207,6 +209,11 @@ struct Worker<L: Link> {
     /// of ms), and a stop must never wait behind it.
     moving: bool,
     watch: Option<Watch>,
+    /// A reply failed to arrive and may still come late, to be taken for the
+    /// next exchange's (O18): resynchronize before the next one.
+    stale: bool,
+    /// The last echo byte used to resynchronize.
+    sync_byte: u8,
 }
 
 /// Reading a goto's axis between commands.
@@ -300,7 +307,7 @@ impl<L: Link> Worker<L> {
     /// Sends one transaction and reports it.
     fn transmit(&mut self, tx: Tx, command: &MountCommand) -> Outcome {
         let sent_ns = (self.clock)();
-        let (outcome, _) = transact(&mut self.link, &tx.bytes, 0, tx.pass_through);
+        let (outcome, _) = self.exchange(&tx.bytes, 0, tx.pass_through);
         let _ = self.events.send(Event::Transaction(Transaction {
             sent_ns,
             reply_ns: (self.clock)(),
@@ -326,7 +333,7 @@ impl<L: Link> Worker<L> {
             return;
         }
         let query = Query::MotorPosition(device_of(axis));
-        let (outcome, reply) = transact(&mut self.link, &query.bytes(), query.reply_len(), true);
+        let (outcome, reply) = self.exchange(&query.bytes(), query.reply_len(), true);
         let t_ns = (self.clock)();
         let Some(Value::MotorPosition { units, .. }) = (outcome == Outcome::Ok)
             .then(|| query.decode(&reply[..query.reply_len()]))
@@ -357,7 +364,7 @@ impl<L: Link> Worker<L> {
         } else {
             Query::SlewDone(device_of(axis))
         };
-        let (outcome, reply) = transact(&mut self.link, &query.bytes(), query.reply_len(), true);
+        let (outcome, reply) = self.exchange(&query.bytes(), query.reply_len(), true);
         let t_ns = (self.clock)();
         let decoded = (outcome == Outcome::Ok)
             .then(|| query.decode(&reply[..query.reply_len()]))
@@ -414,6 +421,77 @@ impl<L: Link> Worker<L> {
     /// Unanswered commands and a failed port count against the link,
     /// whether they were motion commands or position reads: a dead link must
     /// show before anything is armed, not when a move is sent.
+    /// One exchange with the hand controller. While its menus are busy it
+    /// holds queries and answers them late, so after a reply times out (or
+    /// arrives malformed) the next query's answer may be the late one, and
+    /// a position read can be taken for the other axis's (O18). Before the
+    /// next exchange, then, the stream is resynchronized.
+    fn exchange(
+        &mut self,
+        bytes: &[u8],
+        reply_len: usize,
+        pass_through: bool,
+    ) -> (Outcome, Vec<u8>) {
+        if self.stale && !self.resync() {
+            return (Outcome::Timeout, Vec::new());
+        }
+        let result = transact(&mut self.link, bytes, reply_len, pass_through);
+        if matches!(result.0, Outcome::Timeout | Outcome::Malformed) {
+            self.stale = true;
+        }
+        result
+    }
+
+    /// Echoes a byte and discards everything up to its echo: the hand
+    /// controller answers in order, so late replies come first. A second
+    /// echo must then come back alone and exactly.
+    fn resync(&mut self) -> bool {
+        let mut next = || {
+            self.sync_byte = if self.sync_byte < b'a' || self.sync_byte >= b'z' {
+                b'a'
+            } else {
+                self.sync_byte + 1
+            };
+            self.sync_byte
+        };
+        let (first, second) = (next(), next());
+        if self
+            .link
+            .discard_input()
+            .and_then(|()| self.link.write_all(&[b'K', first]))
+            .is_err()
+        {
+            return false;
+        }
+        let deadline = Instant::now() + Duration::from_millis(REPLY_TIMEOUT_MS);
+        let mut tail = [0u8; 2];
+        let mut dropped = 0usize;
+        while tail != [first, b'#'] {
+            match self
+                .link
+                .read_byte(deadline.saturating_duration_since(Instant::now()))
+            {
+                Ok(Some(b)) => {
+                    tail = [tail[1], b];
+                    dropped += 1;
+                }
+                _ => return false,
+            }
+        }
+        let (outcome, reply) = transact(&mut self.link, &[b'K', second], 1, false);
+        if outcome != Outcome::Ok || reply.first() != Some(&second) {
+            return false;
+        }
+        self.stale = false;
+        if dropped > 2 {
+            let _ = self.events.send(Event::Note(format!(
+                "resynchronized with the hand controller: dropped {} late reply byte(s)",
+                dropped - 2
+            )));
+        }
+        true
+    }
+
     fn link_health(&mut self, outcome: Outcome) {
         match outcome {
             Outcome::Ok | Outcome::DeviceNoResponse => self.timeouts = 0,
@@ -443,8 +521,7 @@ impl<L: Link> Worker<L> {
         let mut deg = [0.0; 2];
         for axis in Axis::BOTH {
             let query = Query::MotorPosition(device_of(axis));
-            let (outcome, reply) =
-                transact(&mut self.link, &query.bytes(), query.reply_len(), true);
+            let (outcome, reply) = self.exchange(&query.bytes(), query.reply_len(), true);
             match (outcome == Outcome::Ok)
                 .then(|| query.decode(&reply[..query.reply_len()]))
                 .flatten()

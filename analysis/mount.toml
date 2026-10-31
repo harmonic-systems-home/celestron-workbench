@@ -50,4 +50,5 @@ protocol = [
   "**Positions:** `MC_GET_POSITION` (0x01) per axis matches the hand controller's precise position, 24 bits per revolution (ADR 0010). Positions have read 0 again between sessions without a power cycle (O8).",
   "**Keypad moves:** `MC_MOVE_POS`/`MC_MOVE_NEG` (0x24/0x25) with a rate of 1–9, as the arrow keys send them; rate 0 stops (O16). Variable-rate moves run about 3% long in altitude (O10).",
   "**Hand controller link:** every few seconds one exchange takes 0.5–1 s longer (O7). After the hand controller restarts, its USB port can't be opened until the cable is re-plugged (O2).",
+  "**Late replies:** while the hand controller's menus are busy it answers pass-through queries late, so a reply can be taken for the next query's; the adapter resynchronizes with an echo after any timeout (O18).",
 ]

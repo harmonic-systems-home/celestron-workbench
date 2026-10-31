@@ -38,6 +38,7 @@ struct Rig {
     mount: Arc<Mutex<SimMount>>,
     adapter: CelestronAdapter,
     received: Arc<Mutex<Vec<Vec<u8>>>>,
+    late_replies: Arc<Mutex<usize>>,
     clock: Clock,
     last_step: i64,
 }
@@ -51,6 +52,7 @@ fn rig_with(faults: SimFaults, position_every: Option<Duration>) -> Rig {
     let mount = Arc::new(Mutex::new(SimMount::new(faults, 30.0, 1)));
     let hc = SimHandController::new(mount.clone(), clock.clone());
     let received = hc.received.clone();
+    let late_replies = hc.late_replies.clone();
     let adapter = CelestronAdapter::spawn(
         hc,
         CelestronSettings::default(),
@@ -61,6 +63,7 @@ fn rig_with(faults: SimFaults, position_every: Option<Duration>) -> Rig {
         mount,
         adapter,
         received,
+        late_replies,
         last_step: clock(),
         clock,
     }
@@ -766,4 +769,39 @@ fn a_real_move_ends_cleanly_with_the_adapter_stop() {
     rig.run(500);
     assert_eq!(rig.rates(), [0.0, 0.0]);
     assert_eq!(rig.angles(), after, "no creep after the stop");
+}
+
+#[test]
+fn a_late_reply_is_never_taken_for_the_other_axis() {
+    // While its menus are busy the hand controller answers a query late, during
+    // the next exchange (O18). Without resynchronizing, the altitude read then
+    // gets azimuth's late answer, and the next read is off by one too.
+    let mut rig = rig_with(SimFaults::default(), Some(Duration::from_millis(100)));
+    // Move azimuth so the two axes read differently.
+    rig.adapter
+        .send(&mv(Axis::Azimuth, Direction::Positive, 1.0), 0)
+        .unwrap();
+    rig.run(1_000);
+    rig.adapter.send(&MountCommand::StopAll, 0).unwrap();
+    rig.run(500);
+    let truth = rig.angles();
+    assert!(
+        (truth[0] - truth[1]).abs() > 1.0,
+        "the axes must differ: {truth:?}"
+    );
+    rig.adapter.take_positions();
+    // Two replies in a row arrive one exchange late, as when the hand
+    // controller falls behind. Each timeout costs 3.5 s.
+    *rig.late_replies.lock().unwrap() = 2;
+    rig.run(10_000);
+    let positions = rig.adapter.take_positions();
+    assert!(positions.len() >= 5, "reads resumed: {positions:?}");
+    for p in &positions {
+        assert!(
+            (p.deg[0] - truth[0]).abs() < 1e-3 && (p.deg[1] - truth[1]).abs() < 1e-3,
+            "a read with an axis swapped: {:?} against {truth:?}",
+            p.deg
+        );
+    }
+    assert!(!rig.adapter.is_lost());
 }

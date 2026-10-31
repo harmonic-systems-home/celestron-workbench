@@ -215,6 +215,15 @@ Outside sources (Celestron, the community AUX command set, forums) are listed in
 - **Meaning:** the mount and `config/mount.toml` now hold **35, 35, 14, 14**. For the arrow keys at rates 1–5, a reversal lands within a few arcseconds of a straight move, against 170″ (azimuth) and 85″ (altitude) of slack uncorrected.
 - **Status:** measured at rate 3, tube near horizontal, one balance. Next if needed: rate 5 and other tube angles with the camera, the pause effect, and ADR 0015's analysis tool so these numbers come from the repo.
 
+## O18. A late reply taken for the other axis
+
+- **Seen:** 2026-10-31 (run log `2026-10-31T18-26-42`, about 940 s in), runner disarmed, while the operator used the hand controller's menu to check the slew rate. Position reads stopped for 5.4 s; the next two came back with an axis swapped: azimuth 0.486° and altitude **0.486°**, then azimuth **359.25°** (altitude's value) and altitude 0.486°. The read after was right again.
+- **Cause:** while its menus are busy, the hand controller holds pass-through queries and answers them late. A query that timed out is answered during a later exchange, so the next query takes the late answer for its own, and the link stays one reply behind until something re-aligns it. Motor position replies don't say which axis they're from. Clearing input before a query (as `transact` does) can't help: the late reply hasn't arrived yet.
+- **Risk:** disarmed, only a bad read. Armed, a false unexpected-motion fault, or a goto aimed relative to the wrong axis's position.
+- **Fix:** after any exchange times out or comes back malformed, the adapter resynchronizes before the next one: it echoes a byte (`K x`) and discards everything up to `x#`, since the hand controller answers in order; then a second echo must come back exactly. A note goes to the log when late bytes are dropped. The simulated hand controller can answer late (`late_replies`); with two replies late in a row, the adapter test reproduces the swap without the fix and passes with it.
+- **Also seen in the same session:** at keypad rate 9 a short tap moves 0.04–0.1° and never reaches speed (0.1–0.3 °/s against about 3 °/s held), and the briefest taps reach the motor not at all; at rate 5 taps move 70–115″ (1–2′) consistently, and the first tap after a reversal adds the anti-backlash take-up (about 143″ at 35). The arrow keys' "slow tap, fast press" at high rates is at least mostly the motor's acceleration ramp; the AUX listener will show whether the hand controller also sends a lower rate on short presses.
+- **Status:** fixed in the adapter, not yet seen again on hardware. Menus on the hand controller during an armed session remain something to avoid.
+
 ## From earlier use (not yet reproduced)
 
 Problems from about two years ago, before this project, without a known sequence. To be pinned down one at a time once basic motion is characterized; fill in details as they come back.
