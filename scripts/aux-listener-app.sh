@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # Builds the AUX Listener (ADR 0018) and wraps it as macos/AuxListener/build/AUX Listener.app,
-# signed ad hoc to run on this Mac. Optional: --install copies it to ~/Applications.
+# signed ad hoc, for Apple silicon and Intel.
+#   --install           copies it to ~/Applications on this Mac
+#   --deploy [HOST]     copies it to ~/Applications on another Mac over SSH and opens it
+#                       there; HOST defaults to AUX_LISTENER_HOST from your shell profile.
+#                       Needs Remote Login on that Mac and an SSH key. Never commit HOST.
 # Bundle ID prefix: CWB_BUNDLE_ID_PREFIX (default com.popperbiz), as for the iPhone app.
 set -euo pipefail
 
@@ -9,8 +13,9 @@ pkg="$root/macos/AuxListener"
 app="$pkg/build/AUX Listener.app"
 prefix="${CWB_BUNDLE_ID_PREFIX:-com.popperbiz}"
 
-swift build --package-path "$pkg" -c release --product AuxListener
-bin="$(swift build --package-path "$pkg" -c release --show-bin-path)/AuxListener"
+build=(swift build --package-path "$pkg" -c release --arch arm64 --arch x86_64)
+"${build[@]}" --product AuxListener
+bin="$("${build[@]}" --show-bin-path)/AuxListener"
 
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS"
@@ -33,9 +38,22 @@ PLIST
 codesign --force --sign - "$app"
 echo "Built $app"
 
-if [ "${1:-}" = "--install" ]; then
-  mkdir -p "$HOME/Applications"
-  rm -rf "$HOME/Applications/AUX Listener.app"
-  cp -R "$app" "$HOME/Applications/"
-  echo "Installed in ~/Applications"
-fi
+case "${1:-}" in
+  --install)
+    mkdir -p "$HOME/Applications"
+    rm -rf "$HOME/Applications/AUX Listener.app"
+    cp -R "$app" "$HOME/Applications/"
+    echo "Installed in ~/Applications"
+    ;;
+  --deploy)
+    host="${2:-${AUX_LISTENER_HOST:-}}"
+    if [ -z "$host" ]; then
+      echo "Give the other Mac as --deploy user@host, or set AUX_LISTENER_HOST in your shell profile." >&2
+      exit 1
+    fi
+    ssh "$host" 'osascript -e "quit app \"AUX Listener\"" 2>/dev/null; mkdir -p ~/Applications'
+    rsync -a --delete "$app/" "$host:Applications/AUX Listener.app/"
+    ssh "$host" 'open ~/Applications/"AUX Listener.app"'
+    echo "Installed and opened on $host"
+    ;;
+esac

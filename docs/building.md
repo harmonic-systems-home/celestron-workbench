@@ -176,7 +176,7 @@ swift test
 swift run AuxListener                     # opens the window
 ```
 
-`scripts/aux-listener-app.sh` builds `macos/AuxListener/build/AUX Listener.app` (git-ignored), signed ad hoc for this Mac; `--install` copies it to `~/Applications`.
+`scripts/aux-listener-app.sh` builds `macos/AuxListener/build/AUX Listener.app` (git-ignored) for Apple silicon and Intel, signed ad hoc. `--install` copies it to `~/Applications` here; `--deploy user@host` copies it to `~/Applications` on another Mac over SSH and opens it there, so the night MacBook needs neither Xcode nor the repo. For `--deploy`, turn on Remote Login on that Mac (System Settings → General → Sharing), install an SSH key (`ssh-copy-id user@host`), and put `export AUX_LISTENER_HOST=user@host` in your shell profile so the host is never committed.
 
 With no cable it shows made-up DEMO traffic (not recorded; Settings turns it off). It finds the FTDI cable by itself (USB vendor 0x0403), ignoring the hand controller's Prolific cable, starts recording when it opens it, and reconnects after an unplug. Sessions are NDJSON files in `~/Library/Application Support/AuxListener/sessions` unless Settings points elsewhere; never put them in this repo.
 
