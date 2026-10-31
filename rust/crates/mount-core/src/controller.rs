@@ -964,8 +964,10 @@ impl Controller {
             return self.begin_stop(now, false);
         }
         // The approach leg: back to the target slowly, once the IMU too
-        // shows the axis still, as for any request.
-        if !still {
+        // shows the axis still, as for any request. Without the IMU the two
+        // equal reads above are that evidence; nothing else reads the axis
+        // between legs, so waiting for more would only go stale.
+        if !still && !c.encoders_only {
             return Vec::new();
         }
         g.leg_start = g.leg_target();
@@ -1096,7 +1098,9 @@ impl Controller {
         let active = self
             .active
             .as_ref()
-            .filter(|a| a.axis == axis && a.sent.is_some())
+            // A goto counts between its legs too, while the next leg hasn't
+            // left yet: the axis is already out at the first leg's target.
+            .filter(|a| a.axis == axis && (a.sent.is_some() || a.goto.is_some()))
             .map_or(0.0, |a| match &a.goto {
                 // Anywhere up to the furthest leg target.
                 Some(g) => g.reach_deg(),

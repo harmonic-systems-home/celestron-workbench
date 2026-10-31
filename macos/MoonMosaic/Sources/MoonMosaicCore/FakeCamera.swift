@@ -19,10 +19,16 @@ public final class FakeCamera: Camera, @unchecked Sendable {
     private let craters: [Int: [(x: Double, y: Double, r: Double, depth: Double)]]
     private static let cell = 100.0
 
+    /// Where the mount points relative to the Moon, set directly or, with a
+    /// provider, computed for each frame (a simulated mount and the Moon's
+    /// motion).
     public var pointing: (x: Double, y: Double) {
-        get { lock.withLock { _pointing } }
+        get { lock.withLock { provider?() ?? _pointing } }
         set { lock.withLock { _pointing = newValue } }
     }
+    public var provider: (@Sendable () -> (x: Double, y: Double))?
+    /// Every frame's pointing, in order, for tests.
+    public private(set) var history: [(x: Double, y: Double)] = []
 
     public init(
         width: Int = 640, height: Int = 360, scale: Double = 0.6, rotationDeg: Double = 30,
@@ -61,8 +67,11 @@ public final class FakeCamera: Camera, @unchecked Sendable {
     /// The sky point (arcseconds from the Moon's centre) that pixel (u, v),
     /// measured from the frame's centre, sees.
     public func sky(u: Double, v: Double) -> (x: Double, y: Double) {
+        sky(u: u, v: v, pointing: pointing)
+    }
+
+    func sky(u: Double, v: Double, pointing p: (x: Double, y: Double)) -> (x: Double, y: Double) {
         let t = rotationDeg * .pi / 180
-        let p = pointing
         return (
             p.x + scale * (u * cos(t) - v * sin(t)), p.y - scale * (u * sin(t) + v * cos(t))
         )
@@ -72,9 +81,12 @@ public final class FakeCamera: Camera, @unchecked Sendable {
         let (w, h) = (info.width, info.height)
         var pixels = [UInt8](repeating: 0, count: w * h)
         let r2 = moonRadiusArcsec * moonRadiusArcsec
+        // One pointing for the whole frame.
+        let p = pointing
+        lock.withLock { history.append(p) }
         for y in 0..<h {
             for x in 0..<w {
-                let q = sky(u: Double(x) - Double(w) / 2, v: Double(y) - Double(h) / 2)
+                let q = sky(u: Double(x) - Double(w) / 2, v: Double(y) - Double(h) / 2, pointing: p)
                 let d2 = q.x * q.x + q.y * q.y
                 guard d2 < r2 else {
                     pixels[y * w + x] = 6

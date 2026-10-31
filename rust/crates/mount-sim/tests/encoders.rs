@@ -166,3 +166,18 @@ fn silent_position_reads_latch_while_armed() {
     let trace = run(&scenario);
     assert_eq!(only_fault(&trace), FaultKind::StaleImu);
 }
+
+#[test]
+fn a_two_leg_approach_goto_completes() {
+    // Heading negative but asked to finish moving positive: past the target
+    // by the margin, then back.
+    let mut request = goto("g", Axis::Azimuth, -0.1);
+    request.approach = Some(Direction::Positive);
+    let trace = run(&one_goto(request, SimFaults::default(), 12_000));
+    assert!(trace.faults.is_empty(), "{:#?}", trace.faults);
+    assert_eq!(trace.gotos_sent().len(), 2);
+    let stages: Vec<Stage> = trace.records[0].stages.iter().map(|s| s.0).collect();
+    assert_eq!(stages.last(), Some(&Stage::Completed), "{stages:?}");
+    let travel = trace.travel_after(0);
+    assert!((travel[0] + 0.1).abs() < 0.001, "{travel:?}");
+}

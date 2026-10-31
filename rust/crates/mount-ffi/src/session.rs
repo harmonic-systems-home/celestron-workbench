@@ -104,6 +104,9 @@ pub struct Session {
 impl Session {
     pub fn open(options: &OpenOptions) -> Result<Self, String> {
         let mut safety = serde_json::to_value(SafetyConfig::default()).expect("serializable");
+        // Encoder reads pause for up to a second or so: between a goto's
+        // watch and its stop, and when the hand controller stalls (O7).
+        safety["imu_max_age_ms"] = json!(2_500);
         merge(&mut safety, &options.safety);
         safety["encoders_only"] = json!(true);
         let safety: SafetyConfig =
