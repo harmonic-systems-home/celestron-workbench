@@ -213,6 +213,7 @@ Outside sources (Celestron, the community AUX command set, forums) are listed in
 - **The phone against the camera:** the phone's sweep (O16) gave +7 ± 35″ (azimuth 40) and +19 ± 14″ (altitude 20) where the camera gives +16 ± 1″ and +37 ± 1″: the camera is 10–30 times more precise, and the phone alone couldn't separate 35 from 40 or 14 from 20.
 - **First reversal after a long pause:** twice the first move of a run reversed the axis's last motion yet the encoder showed no take-up (azimuth after about 12 minutes idle, altitude after about 33), and the camera showed the tube losing only about 8–15″ rather than the full slack; after pauses of 4–8 minutes the take-up came as usual. Perhaps the motor controller forgets its last direction after a while idle, and the slack partly closes on its own as the tube rests. Four cases; to test with timed pauses.
 - **Meaning:** the mount and `config/mount.toml` now hold **35, 35, 14, 14**. For the arrow keys at rates 1–5, a reversal lands within a few arcseconds of a straight move, against 170″ (azimuth) and 85″ (altitude) of slack uncorrected.
+- **Confirmed in use:** with the camera's live view, the operator centred the target with the arrow keys at rate 5: each tap answered, reversals took no dead press, and the image didn't bounce.
 - **Status:** measured at rate 3, tube near horizontal, one balance. Next if needed: rate 5 and other tube angles with the camera, the pause effect, and ADR 0015's analysis tool so these numbers come from the repo.
 
 ## O18. A late reply taken for the other axis
