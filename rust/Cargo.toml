@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/protocol", "crates/storage", "crates/receiver", "crates/analysis", "crates/mount-core", "crates/mount-sim", "crates/mount-celestron", "crates/mount-runner", "crates/celestron-discovery", "crates/celestron-setup", "crates/cli"]
+members = ["crates/protocol", "crates/storage", "crates/receiver", "crates/analysis", "crates/mount-core", "crates/mount-sim", "crates/mount-celestron", "crates/mount-ffi", "crates/mount-runner", "crates/celestron-discovery", "crates/celestron-setup", "crates/cli"]
 
 [workspace.package]
 version = "0.1.0"

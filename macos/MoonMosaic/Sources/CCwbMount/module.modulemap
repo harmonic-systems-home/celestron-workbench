@@ -1,0 +1,5 @@
+module CCwbMount [system] {
+    header "../../../../rust/crates/mount-ffi/include/cwb_mount.h"
+    link "cwb_mount_ffi"
+    export *
+}

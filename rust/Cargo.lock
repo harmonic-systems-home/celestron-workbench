@@ -338,6 +338,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "cwb-mount-ffi"
+version = "0.1.0"
+dependencies = [
+ "cwb-celestron-discovery",
+ "cwb-mount-celestron",
+ "cwb-mount-core",
+ "cwb-mount-sim",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "cwb-mount-runner"
 version = "0.1.0"
 dependencies = [

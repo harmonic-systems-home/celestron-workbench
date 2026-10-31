@@ -1,13 +1,13 @@
 //! Motion requests, the commands sent to an adapter, and command records.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::FaultKind;
 
 /// Mac monotonic nanoseconds (ADR 0001).
 pub type Nanos = i64;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Axis {
     Azimuth,
@@ -33,7 +33,7 @@ impl Axis {
 }
 
 /// Positive is the axis's increasing angle (as the IMU observes it).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Direction {
     Positive,

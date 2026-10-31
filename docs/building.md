@@ -184,6 +184,21 @@ With no cable it shows made-up DEMO traffic (not recorded; Settings turns it off
 
 
 
+## Moon Mosaic (Mac app, in progress)
+
+`macos/MoonMosaic/` is the Moon mosaic app (ADR 0019). It drives the mount through the Rust adapter, linked in as a static library from `rust/crates/mount-ffi` (a C interface that passes JSON; the one crate allowed `unsafe`, confined to that boundary). Build the library first, for Apple silicon and Intel (needs `rustup target add x86_64-apple-darwin` once):
+
+```sh
+scripts/mount-ffi-lib.sh                  # rust/target/universal/release/libcwb_mount_ffi.a
+cd macos/MoonMosaic
+swift format lint --strict -r Sources Tests Package.swift
+swift test                                # runs against the simulated mount
+```
+
+Its sessions are encoder-only (no phone): gotos only, with the motors' positions as feedback (`mount-core`'s `EncoderObserver`).
+
+## Swift (phone side)
+
 `ios/ImuLogger/` has two parts:
 
 - `Core/`: the `ImuLoggerCore` Swift package. Wire messages, framing, sequencing, the bounded acquisition buffer, rate measurement, attitude continuity, the NDJSON session log, delivery tracking and the network uplink. Everything here is tested on the Mac, including the uplink against a fake receiver on loopback (interruptions, resend, rejection). The tests decode the same shared examples as the Rust tests.
