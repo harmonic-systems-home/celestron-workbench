@@ -21,3 +21,4 @@ Each ADR records one decision, why it was made, and what it costs. To change a d
 | [0015](0015-daytime-optical-check.md) | A daytime optical check against a terrestrial target | Accepted |
 | [0016](0016-other-controllers.md) | Other controllers on the mount | Accepted |
 | [0017](0017-mount-report.md) | The Phase 2 mount report | Accepted |
+| [0018](0018-aux-bus-listener.md) | A listen-only AUX bus monitor, as a Mac app | Accepted |

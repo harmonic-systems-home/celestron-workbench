@@ -165,7 +165,24 @@ cwb mount report reports/mount/2026-10-30T22-* -o /path/outside/repo/report
 
 It opens with what's established about the mount (from the latest hardware discovery in `reports/discovery`, or `--discovery <folder>`), the recommended anti-backlash for the arrow keys, and a chart of how reversals perform at it; the rest is supporting evidence. It writes `report.md` and `report.html` (same content), `metrics.json`, `moves.csv` (every move: encoder and phone travel, reversal or repeat), `groups.csv`, and SVG graphs: over-correction and motor take-up against anti-backlash per axis, every move's phone − encoder, keypad speeds against Celestron's list, and command latency and idle read gaps. Its settings are in [analysis/mount.toml](../analysis/mount.toml).
 
-## Swift (phone side)
+## AUX Listener (Mac app)
+
+`macos/AuxListener/` listens to the mount's AUX bus through a receive-only USB-to-TTL cable and shows every controller's commands, in dark red for night use (ADR 0018). It's one Swift package: `AuxListenerCore` (framing, decoding, anomaly detection, the session log, the read-only serial port; tested) and the `AuxListener` SwiftUI app.
+
+```sh
+cd macos/AuxListener
+swift format lint --strict -r Sources Tests Package.swift
+swift test
+swift run AuxListener                     # opens the window
+```
+
+`scripts/aux-listener-app.sh` builds `macos/AuxListener/build/AUX Listener.app` (git-ignored), signed ad hoc for this Mac; `--install` copies it to `~/Applications`.
+
+With no cable it shows made-up DEMO traffic (not recorded; Settings turns it off). It finds the FTDI cable by itself (USB vendor 0x0403), ignoring the hand controller's Prolific cable, starts recording when it opens it, and reconnects after an unplug. Sessions are NDJSON files in `~/Library/Application Support/AuxListener/sessions` unless Settings points elsewhere; never put them in this repo.
+
+**Wiring** (receive-only): find the breakout's pins with a meter first (one carries +12 V; the data and select pins idle high at the logic level). Then the cable's RXD (yellow) through a 10 kΩ resistor to a data pin, GND (black) to ground; tape off VCC (red) and TXD (orange).
+
+
 
 `ios/ImuLogger/` has two parts:
 

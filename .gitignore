@@ -50,3 +50,6 @@ xcuserdata/
 .DS_Store
 .vscode/
 .idea/
+
+# --- AUX Listener app bundle ---
+/macos/AuxListener/build/
