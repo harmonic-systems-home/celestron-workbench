@@ -55,7 +55,7 @@ fn title(a: &Analysis) -> String {
     format!("Bench report: session {}", short(&a.source.session_id))
 }
 
-enum Block {
+pub(crate) enum Block {
     Heading(u8, String),
     Para(String),
     List(Vec<String>),
@@ -378,7 +378,7 @@ fn document(a: &Analysis) -> Vec<Block> {
     d
 }
 
-fn markdown(doc: &[Block]) -> String {
+pub(crate) fn markdown(doc: &[Block]) -> String {
     let mut out = String::new();
     for block in doc {
         match block {
@@ -410,7 +410,7 @@ fn markdown(doc: &[Block]) -> String {
     out
 }
 
-fn html(doc: &[Block], title: &str) -> String {
+pub(crate) fn html(doc: &[Block], title: &str) -> String {
     let mut out = format!(
         "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>{}</title>\n<style>\nbody {{ font-family: -apple-system, system-ui, sans-serif; max-width: 72rem; margin: 2rem auto; padding: 0 1rem; color: #1d1d1f; background: #fff; }}\ntable {{ border-collapse: collapse; margin: 1rem 0; font-size: 0.9rem; }}\nth, td {{ border: 1px solid #d2d2d7; padding: 0.3rem 0.6rem; text-align: left; }}\nth {{ background: #f5f5f7; }}\ncode {{ font-size: 0.85em; }}\nimg {{ max-width: 100%; }}\n.table {{ overflow-x: auto; }}\n</style>\n</head>\n<body>\n",
         escape(title)
@@ -459,7 +459,7 @@ fn html(doc: &[Block], title: &str) -> String {
     out
 }
 
-fn escape(s: &str) -> String {
+pub(crate) fn escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
@@ -532,25 +532,25 @@ fn resolution_csv(a: &Analysis) -> String {
 
 // --- Plots -------------------------------------------------------------------
 
-const W: f64 = 760.0;
-const H: f64 = 380.0;
-const LEFT: f64 = 70.0;
-const RIGHT: f64 = 150.0;
-const TOP: f64 = 36.0;
-const BOTTOM: f64 = 48.0;
-const COLORS: [&str; 8] = [
+pub(crate) const W: f64 = 760.0;
+pub(crate) const H: f64 = 380.0;
+pub(crate) const LEFT: f64 = 70.0;
+pub(crate) const RIGHT: f64 = 150.0;
+pub(crate) const TOP: f64 = 36.0;
+pub(crate) const BOTTOM: f64 = 48.0;
+pub(crate) const COLORS: [&str; 8] = [
     "#1f77b4", "#d62728", "#2ca02c", "#ff7f0e", "#9467bd", "#8c564b", "#e377c2", "#17becf",
 ];
 
-struct Axis<'a> {
-    label: &'a str,
-    lo: f64,
-    hi: f64,
-    log: bool,
+pub(crate) struct Axis<'a> {
+    pub(crate) label: &'a str,
+    pub(crate) lo: f64,
+    pub(crate) hi: f64,
+    pub(crate) log: bool,
 }
 
 impl Axis<'_> {
-    fn map(&self, v: f64, from: f64, to: f64) -> f64 {
+    pub(crate) fn map(&self, v: f64, from: f64, to: f64) -> f64 {
         let (v, lo, hi) = if self.log {
             (v.log10(), self.lo.log10(), self.hi.log10())
         } else {
@@ -559,7 +559,7 @@ impl Axis<'_> {
         from + (v - lo) / (hi - lo) * (to - from)
     }
 
-    fn ticks(&self) -> Vec<f64> {
+    pub(crate) fn ticks(&self) -> Vec<f64> {
         if self.log {
             let (a, b) = (
                 self.lo.log10().ceil() as i32,
@@ -795,7 +795,7 @@ fn adev_svg(a: &Analysis, channels: &[usize], title: &str, unit: &str) -> String
 
 /// Four significant digits, switching to scientific notation for very small
 /// or large magnitudes.
-fn sig(v: f64) -> String {
+pub(crate) fn sig(v: f64) -> String {
     if v == 0.0 || !v.is_finite() {
         return format!("{v}");
     }
@@ -809,7 +809,7 @@ fn sig(v: f64) -> String {
 }
 
 /// Axis labels: `sig` without trailing zeros ("20", "0.01", "1e-4").
-fn tick(v: f64) -> String {
+pub(crate) fn tick(v: f64) -> String {
     let s = sig(v);
     let (mantissa, exponent) = match s.split_once('e') {
         Some((m, e)) => (m.to_string(), format!("e{e}")),

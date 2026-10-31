@@ -170,10 +170,10 @@ Outside sources (Celestron, the community AUX command set, forums) are listed in
 
   | Anti-backlash | Rate 5: motor extra | Rate 5: over-correction | Rate 3: motor extra | Rate 3: over-correction |
   |---|---|---|---|---|
-  | 35 | 144″ | −28 ± 16″ | 169″ | +27 ± 19″ |
-  | 40 | 160″ | +2 ± 21″ | 186″ | +7 ± 35″ |
-  | 50 | 185″ | +7 ± 14″ | 219″ | +57 ± 16″ |
-  | 70 | 244″ | +95 ± 18″ | 287″ | +148 ± 48″ |
+  | 35 | 143″ | −30 ± 15″ | 169″ | +27 ± 19″ |
+  | 40 | 160″ | +7 ± 21″ | 186″ | +7 ± 35″ |
+  | 50 | 187″ | +12 ± 14″ | 219″ | +56 ± 16″ |
+  | 70 | 244″ | +103 ± 18″ | 287″ | +148 ± 47″ |
 
   The slack on keypad moves is about 160–180″, less than O9's 245″ from slow variable-rate moves, so taking up 245″ (70) over-corrects, and so does 60. **40** balances both rates. The mount and `config/mount.toml` now hold azimuth 40; timed moves were best at 60 (O15), so they keep about 75″ of slack. Altitude stays at 40 (from O15, not checked for keypad moves). Each row rests on 4–7 reversals: enough to rule out 60–70, not to tell 40 from 45.
 - **Disturbances during these trials:** two false `UnexpectedMotion` faults with the encoders still. Footsteps as the operator left the room (carpet over a wood subfloor) rocked the tube about 0.1 °/s in pulses about a second apart, tilting it about 160″ before it settled. A text message to the phone showed as a jolt peaking at 7 °/s, gone within 0.5 s. Both are larger than the effects measured here: run trials with the phone on Do Not Disturb and nobody near the scope. The taped phone's angle on the tube held within about 0.02° through the rate 9 moves, but rose 0.12° between the morning's and afternoon's sessions with the altitude encoder unchanged (app restart, tape creep or the tube settling: unknown).
@@ -181,12 +181,12 @@ Outside sources (Celestron, the community AUX command set, forums) are listed in
 
   | Anti-backlash | Rate 5: motor extra | Rate 5: over-correction | Rate 3: motor extra | Rate 3: over-correction |
   |---|---|---|---|---|
-  | 0 | 0″ | −75 ± 17″ | 0″ | −74 ± 16″ |
-  | 20 | 82″ | +11 ± 14″ | 118″ | −1 ± 22″ |
-  | 40 | 140″ | +55 ± 14″ | 186″ | +93 ± 18″ |
-  | 60 | 192″ | +111 ± 13″ | 253″ | +140 ± 28″ |
+  | 0 | 1″ | −83 ± 16″ | 1″ | −81 ± 20″ |
+  | 20 | 93″ | +18 ± 12″ | 118″ | +19 ± 14″ |
+  | 40 | 157″ | +58 ± 14″ | 186″ | +93 ± 17″ |
+  | 60 | 216″ | +122 ± 9″ | 253″ | +141 ± 28″ |
 
-  The slack is about 75″ (O13: 70–120″), the same up and down at this angle, and altitude runs at azimuth's keypad speeds. **20** balances both rates. Chosen for the arrow keys: the mount and `config/mount.toml` now hold 40, 40, 20, 20 (timed moves would want 60 and 40, O15).
+  Both tables are from `cwb mount report` (ADR 0017), which leaves out the first move after each restart (its history is unknown) and moves flagged as disturbed; first worked out by hand, which had counted those first moves as repeats and put rate 5's altitude take-up 10–25″ low. The slack is about 75–100″ (O13: 70–120″), the same up and down at this angle, and altitude runs at azimuth's keypad speeds. **20** balances both rates. Chosen for the arrow keys: the mount and `config/mount.toml` now hold 40, 40, 20, 20 (timed moves would want 60 and 40, O15).
 - **Status:** keypad anti-backlash chosen for both axes at a tube angle of 50°. O13 found altitude backlash similar at other angles; not rechecked with keypad moves.
 
 ## From earlier use (not yet reproduced)

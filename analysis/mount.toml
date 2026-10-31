@@ -1,0 +1,53 @@
+# Phase 2 mount report (ADR 0017).
+# Bump `version` only when the format changes; change `name` when the
+# values change, so every report names exactly what produced it.
+version = 1
+name = "mount-v1"
+description = "Per-move encoder and phone travel from runner logs; reversal take-up, over-correction and slack by anti-backlash; keypad speeds; link health."
+
+# A move's encoder travel ends at the first position read this long after
+# the stop: the axis has settled and any servo easing is over (O15).
+settle_s = 2.5
+
+# A move is flagged as disturbed (footsteps, a vibration, O16) when its
+# phone - encoder difference is more than `robust_k` robust deviations and
+# `min_arcsec` from the median of its group's reversals or repeats.
+[outliers]
+robust_k = 4.0
+min_arcsec = 30.0
+min_moves = 3
+
+# The phone's travel against the encoder's on one-way moves at least this
+# long checks the encoder scale (backlash doesn't touch one-way travel).
+[scale]
+min_travel_arcsec = 350.0   # about 0.1°
+
+# Distance from the altitude axis to the tube's leading edge: an estimate,
+# and it varies with where the tube sits in its bracket. Converts angles to
+# millimetres there.
+[geometry]
+leading_edge_radius_mm = 285.0
+
+# The recommended anti-backlash is chosen for the arrow keys' fine rates
+# (keypad rates 1 to `max_keypad_rate`): among the settings where every such
+# move type was tried, the one whose reversals over-correct least on average.
+[recommend]
+max_keypad_rate = 5
+
+# Command exchanges slower than `stall_ms`, and gaps between idle position
+# reads longer than `read_stall_ms` (usually about 260 ms), count as stalls (O7).
+[link]
+stall_ms = 400.0
+read_stall_ms = 600.0
+
+# Protocol findings established on this mount, quoted at the top of the
+# report. Each cites the observation (docs/observations.md) or ADR behind it.
+[findings]
+protocol = [
+  "**Stopping a move:** tracking off (`T 00`), then fixed rate 0 (`P 02 dev 24 00`). A variable rate of 0 is not a stop: it runs the slowest variable rate, a 0.2–0.4″/s creep that fixed rate 0 doesn't cancel and `T 00` does (O1).",
+  "**Stopping a goto:** neither of those ends a goto. A slow goto to the position just read does, within about 0.06° and 0.2 s from slow-goto speed; it goes out before the stop (O11).",
+  "**Gotos by position:** `MC_GOTO_SLOW` (0x17) and `MC_GOTO_FAST` (0x02) with a 24-bit target end within ±1 unit and settle in under a second; over 0.2° slow runs about 0.5 °/s and fast about 0.7 °/s (O11, O14). The goto-finished flag (`MC_SLEW_DONE`, 0x13) can read done while the position still settles by a few units.",
+  "**Positions:** `MC_GET_POSITION` (0x01) per axis matches the hand controller's precise position, 24 bits per revolution (ADR 0010). Positions have read 0 again between sessions without a power cycle (O8).",
+  "**Keypad moves:** `MC_MOVE_POS`/`MC_MOVE_NEG` (0x24/0x25) with a rate of 1–9, as the arrow keys send them; rate 0 stops (O16). Variable-rate moves run about 3% long in altitude (O10).",
+  "**Hand controller link:** every few seconds one exchange takes 0.5–1 s longer (O7). After the hand controller restarts, its USB port can't be opened until the cable is re-plugged (O2).",
+]

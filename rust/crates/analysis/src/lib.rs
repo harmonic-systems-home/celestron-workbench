@@ -5,6 +5,8 @@
 pub mod config;
 pub mod data;
 pub mod math;
+pub mod mount;
+pub mod mount_report;
 pub mod report;
 pub mod stationary;
 pub mod synthetic;

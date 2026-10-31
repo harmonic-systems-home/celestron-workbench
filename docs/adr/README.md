@@ -20,3 +20,4 @@ Each ADR records one decision, why it was made, and what it costs. To change a d
 | [0014](0014-goto-by-motor-position.md) | Gotos by motor position | Accepted |
 | [0015](0015-daytime-optical-check.md) | A daytime optical check against a terrestrial target | Accepted |
 | [0016](0016-other-controllers.md) | Other controllers on the mount | Accepted |
+| [0017](0017-mount-report.md) | The Phase 2 mount report | Accepted |

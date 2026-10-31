@@ -308,6 +308,25 @@ enum MountCmd {
         #[arg(long, short, default_value = "reports/mount")]
         out: PathBuf,
     },
+    /// The Phase 2 mount report (ADR 0017) from runner logs: backlash by
+    /// anti-backlash setting, keypad speeds, link health. Moves nothing.
+    Report {
+        /// Run folders or `run.ndjson` files; a folder holding run folders
+        /// (such as reports/mount) takes them all.
+        #[arg(required = true)]
+        logs: Vec<PathBuf>,
+        /// Report config (default: the committed analysis/mount.toml).
+        #[arg(long)]
+        config: Option<PathBuf>,
+        /// A discovery report folder or its report.json, for the mount's
+        /// identity and motor settings (default: the latest hardware one in
+        /// reports/discovery, if any).
+        #[arg(long)]
+        discovery: Option<PathBuf>,
+        /// Output folder.
+        #[arg(long, short, default_value = "reports/mount-report")]
+        out: PathBuf,
+    },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
@@ -460,6 +479,15 @@ fn main() -> Result<ExitCode> {
             device,
         } => analyze(&db.db, &session, config.as_deref(), out, device.as_deref()),
         Command::Celestron { command } => celestron(command),
+        Command::Mount {
+            command:
+                MountCmd::Report {
+                    logs,
+                    config,
+                    discovery,
+                    out,
+                },
+        } => mount_report(&logs, config.as_deref(), discovery.as_deref(), &out),
         Command::Mount {
             command:
                 MountCmd::Run {
@@ -1254,6 +1282,96 @@ fn setup(
     } else {
         ExitCode::FAILURE
     })
+}
+
+fn mount_report(
+    logs: &[PathBuf],
+    config: Option<&Path>,
+    discovery: Option<&Path>,
+    out: &Path,
+) -> Result<ExitCode> {
+    let text = match config {
+        Some(path) => {
+            fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?
+        }
+        None => cwb_analysis::mount::MOUNT.to_owned(),
+    };
+    let config = cwb_analysis::mount::MountConfig::parse(&text)?;
+    let mut files = Vec::new();
+    for path in logs {
+        if path.is_file() {
+            files.push(path.clone());
+        } else if path.join("run.ndjson").is_file() {
+            files.push(path.join("run.ndjson"));
+        } else {
+            for entry in
+                fs::read_dir(path).with_context(|| format!("reading {}", path.display()))?
+            {
+                let log = entry?.path().join("run.ndjson");
+                if log.is_file() {
+                    files.push(log);
+                }
+            }
+        }
+    }
+    files.sort();
+    files.dedup();
+    let mut runs = Vec::new();
+    for file in &files {
+        let name = file.parent().and_then(Path::file_name).map_or_else(
+            || file.display().to_string(),
+            |n| n.to_string_lossy().into_owned(),
+        );
+        let text =
+            fs::read_to_string(file).with_context(|| format!("reading {}", file.display()))?;
+        runs.push(cwb_analysis::mount::RunLog { name, text });
+    }
+    let discovery = match discovery {
+        Some(path) => {
+            let file = if path.is_dir() {
+                path.join("report.json")
+            } else {
+                path.to_owned()
+            };
+            Some(file)
+        }
+        // The latest discovery of real hardware.
+        None => fs::read_dir("reports/discovery")
+            .into_iter()
+            .flatten()
+            .filter_map(|e| Some(e.ok()?.path().join("report.json")))
+            .filter(|f| fs::read_to_string(f).is_ok_and(|t| t.contains("\"simulated\": false")))
+            .max(),
+    };
+    let discovery = match discovery {
+        Some(file) => Some(cwb_analysis::mount::DiscoveryLog {
+            name: file.parent().and_then(Path::file_name).map_or_else(
+                || file.display().to_string(),
+                |n| n.to_string_lossy().into_owned(),
+            ),
+            text: fs::read_to_string(&file)
+                .with_context(|| format!("reading {}", file.display()))?,
+        }),
+        None => None,
+    };
+    let analysis = cwb_analysis::mount::analyze(
+        &runs,
+        discovery.as_ref(),
+        &config,
+        &cwb_analysis::config::sha256(&text),
+    );
+    fs::create_dir_all(out).with_context(|| format!("creating {}", out.display()))?;
+    for (name, contents) in cwb_analysis::mount_report::render(&analysis) {
+        fs::write(out.join(name), contents)?;
+    }
+    println!(
+        "{} run log(s), {} move(s), {} group(s); report in {}",
+        runs.len(),
+        analysis.moves.len(),
+        analysis.groups.len(),
+        out.display()
+    );
+    Ok(ExitCode::SUCCESS)
 }
 
 fn analyze(
