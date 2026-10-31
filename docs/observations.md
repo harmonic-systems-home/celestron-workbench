@@ -188,6 +188,32 @@ Outside sources (Celestron, the community AUX command set, forums) are listed in
 
   Both tables are from `cwb mount report` (ADR 0017), which leaves out the first move after each restart (its history is unknown) and moves flagged as disturbed; first worked out by hand, which had counted those first moves as repeats and put rate 5's altitude take-up 10–25″ low. The slack is about 75–100″ (O13: 70–120″), the same up and down at this angle, and altitude runs at azimuth's keypad speeds. **20** balances both rates. Chosen for the arrow keys: the mount and `config/mount.toml` now hold 40, 40, 20, 20 (timed moves would want 60 and 40, O15).
 - **Status:** keypad anti-backlash chosen for both axes at a tube angle of 50°. O13 found altitude backlash similar at other angles; not rechecked with keypad moves.
+- **Superseded (O17):** the camera puts the best values at azimuth 35 and altitude 14; the phone's scatter couldn't separate them from 40 and 20.
+
+## O17. Backlash measured with a camera: azimuth 35, altitude 14
+
+- **Setup:** 2026-10-31, daytime, indoors through a window (ADR 0015). ZWO ASI482MC at prime focus of the 8″ EdgeHD (2000 mm on the tube), 10 ms exposures, RAW8 AVI from ASIStudio at 5–17 fps, aimed at a building about 110 m away; tube at about 1° elevation; runner on `config/trials/daytime.toml` (max_excursion_deg 1). Frames binned 2×2, still periods found from frame-to-frame change, each still period's mean registered against the first by band-passed phase correlation (periods of about 8–200 binned pixels: pixel-level fixed pattern and vignetting don't move with the scene and otherwise pin the peak at zero). Within a still period, frames scatter by 0.3–2 px. Moves: keypad rate 3 for 2 s, `+ + − −` repeated; repeats (no backlash) calibrate the scale, and a reversal's camera travel is compared with its encoder travel. Run logs `2026-10-31T18-26-42` (one runner process; recordings 18:40–19:21 UTC, kept in the data folder, not in this repo). Analysis by scratch script for now; the repo tool is ADR 0015's next step.
+- **Image scale:** 0.58–0.61″ per pixel from repeats (124″ of encoder travel), as 5.8 µm pixels at 2000 mm give (0.598″). The two axes and runs differ by up to 3%.
+- **Framing matters:** a move shifts the image along one sensor direction; a target whose edges run along that direction (a gutter, for azimuth with the camera turned 90°) leaves the shift unmeasurable. Each axis was measured with edges across its direction of motion.
+- **Azimuth** (32 + 16 moves):
+
+  | Anti-backlash | Motor take-up | Reversal error (camera) | Slack crossed |
+  |---|---|---|---|
+  | 40 | 186″ | +16 ± 1″ | 170″ |
+  | 35 | 169″ | **+1.0 ± 0.7″** | 168″ |
+
+- **Altitude** (8 + 16 moves; one run lost to the sun clipping the image):
+
+  | Anti-backlash | Motor take-up | Reversal error (camera) | Slack crossed |
+  |---|---|---|---|
+  | 20 | 119″ | +37 ± 1″ | 82″ |
+  | 14 | 89″ | **−4 ± 1″** (another, partial run: +0.4″ from 2 reversals) | 87″ |
+
+- **By direction:** azimuth + reversals over-correct by about 3.5″ and − by −1.2″; altitude up reversals fall about 6.5″ short and down about 1.7″ (lifting against gravity). The motor controllers take separate + and − values if that ever matters; at the arrow keys it doesn't.
+- **The phone against the camera:** the phone's sweep (O16) gave +7 ± 35″ (azimuth 40) and +19 ± 14″ (altitude 20) where the camera gives +16 ± 1″ and +37 ± 1″: the camera is 10–30 times more precise, and the phone alone couldn't separate 35 from 40 or 14 from 20.
+- **First reversal after a long pause:** twice the first move of a run reversed the axis's last motion yet the encoder showed no take-up (azimuth after about 12 minutes idle, altitude after about 33), and the camera showed the tube losing only about 8–15″ rather than the full slack; after pauses of 4–8 minutes the take-up came as usual. Perhaps the motor controller forgets its last direction after a while idle, and the slack partly closes on its own as the tube rests. Four cases; to test with timed pauses.
+- **Meaning:** the mount and `config/mount.toml` now hold **35, 35, 14, 14**. For the arrow keys at rates 1–5, a reversal lands within a few arcseconds of a straight move, against 170″ (azimuth) and 85″ (altitude) of slack uncorrected.
+- **Status:** measured at rate 3, tube near horizontal, one balance. Next if needed: rate 5 and other tube angles with the camera, the pause effect, and ADR 0015's analysis tool so these numbers come from the repo.
 
 ## From earlier use (not yet reproduced)
 

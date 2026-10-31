@@ -80,6 +80,17 @@ pub struct SafetyConfig {
     /// anti-backlash.
     pub takeup_overspeed_deg_s: f64,
     pub takeup_ms: u64,
+    /// Farthest either axis may be commanded from where the session was
+    /// armed (ADR 0015): a request whose commanded travel would end beyond
+    /// it is refused. Guards against our own mistakes (a typo, a repeated
+    /// move, a wrong sign) that the per-request caps don't bound. A full
+    /// turn, the default, means no limit.
+    #[serde(default = "full_turn")]
+    pub max_excursion_deg: f64,
+}
+
+fn full_turn() -> f64 {
+    360.0
 }
 
 impl Default for SafetyConfig {
@@ -114,6 +125,7 @@ impl Default for SafetyConfig {
             goto_tolerance_deg: 0.01,
             takeup_overspeed_deg_s: 0.0,
             takeup_ms: 0,
+            max_excursion_deg: full_turn(),
         }
     }
 }
@@ -134,6 +146,7 @@ impl SafetyConfig {
             ("min_goto_rate_deg_s", self.min_goto_rate_deg_s),
             ("approach_margin_deg", self.approach_margin_deg),
             ("goto_tolerance_deg", self.goto_tolerance_deg),
+            ("max_excursion_deg", self.max_excursion_deg),
         ];
         for (name, v) in positive {
             if !(v.is_finite() && v > 0.0) {

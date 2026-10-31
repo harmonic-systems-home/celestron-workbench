@@ -972,3 +972,36 @@ fn a_fixed_rate_outside_1_to_9_is_refused() {
     assert_eq!(trace.moves_sent(), 0);
     assert!(trace.refusals[0].1.contains("fixed rate must be 1–9"));
 }
+
+#[test]
+fn requests_that_would_go_beyond_the_excursion_limit_are_refused() {
+    // 0.5 °/s for 1 s each: the first two reach +1.0°, the third would make 1.5°.
+    let step = |id: &str, dir| Op::Move(request(id, Axis::Azimuth, dir, 0.5, 1_000));
+    let scenario = Scenario {
+        config: SafetyConfig {
+            max_excursion_deg: 1.2,
+            ..SafetyConfig::default()
+        },
+        script: vec![
+            (100, Op::Connect),
+            (300, Op::Arm),
+            (500, step("a", Direction::Positive)),
+            (3_500, step("b", Direction::Positive)),
+            (6_500, step("c", Direction::Positive)),
+            // Coming back towards where it was armed is fine.
+            (9_500, step("d", Direction::Negative)),
+        ],
+        run_ms: 13_000,
+        ..Scenario::default()
+    };
+    let trace = run(&scenario);
+    assert_eq!(trace.moves_sent(), 3, "{:#?}", trace.refusals);
+    assert_eq!(trace.refusals.len(), 1);
+    assert!(
+        trace.refusals[0]
+            .1
+            .contains("+1.500° from where it was armed, beyond max_excursion_deg 1.2°"),
+        "{:#?}",
+        trace.refusals
+    );
+}

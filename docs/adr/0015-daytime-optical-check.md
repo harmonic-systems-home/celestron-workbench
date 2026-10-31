@@ -52,3 +52,9 @@ The frames show a neighbour's house: they are real session data. They live only 
 - New dependencies: an FFT crate for phase correlation and a small SER reader.
 - `max_excursion_deg` is a new interlock that later sessions can use too.
 - Results are relative only; absolute orientation, tracking and goto residuals against the sky still need Prompt 9 proper.
+
+## First daytime run (2026-10-31)
+
+- **Done:** step 1's `max_excursion_deg` and the daytime trial config, with a simulator test. Not yet: the runner's `clock` events (the run folder's UTC name and ASIStudio's capture times sufficed, since still periods were paired with moves in order) and step 2's analysis tool (a scratch script did it; O17).
+- **Changed from the plan:** ASIStudio recorded AVI, which has no per-frame times; moves are found in the frames themselves. Phase correlation needs a band-pass, or the sensor's fixed pattern holds the peak at zero. Each axis needs a target with edges across its direction of motion.
+- **Result:** O17. The camera resolved reversal errors to about 1″ and set the arrow-key anti-backlash at azimuth 35, altitude 14.

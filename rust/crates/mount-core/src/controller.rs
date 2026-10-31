@@ -191,6 +191,8 @@ pub struct Controller {
     confirmed_still: bool,
     /// Indexed by [`Axis::index`].
     tally: [Tally; 2],
+    /// Commanded travel per axis since arming, for `max_excursion_deg`.
+    excursion: [f64; 2],
     /// Time of the last observation integrated into the tallies.
     integrated_to: Option<Nanos>,
     /// Per axis: observed travel when the mount's own positions last showed
@@ -222,6 +224,7 @@ impl Controller {
             still_since: None,
             confirmed_still: false,
             tally: [Tally::default(); 2],
+            excursion: [0.0; 2],
             integrated_to: None,
             still_mark: [None; 2],
             last_direction: [None; 2],
@@ -313,6 +316,7 @@ impl Controller {
             return Err(Refused("altitude is outside the envelope".into()));
         }
         self.tally = [Tally::default(); 2];
+        self.excursion = [0.0; 2];
         self.still_mark = [None; 2];
         self.go(MountEvent::OperatorArm);
         Ok(Vec::new())
@@ -438,6 +442,11 @@ impl Controller {
                 "duration {} ms is outside 1–{} ms",
                 request.duration_ms, c.max_duration_ms
             ))
+        } else if let Some(why) = self.beyond_excursion(
+            request.axis,
+            request.direction.sign() * request.rate_deg_s * request.duration_ms as f64 / 1000.0,
+        ) {
+            Some(why)
         } else {
             self.refuse_now(now)
         };
@@ -528,6 +537,11 @@ impl Controller {
                 units_to_deg(longest),
                 c.max_goto_deg
             ))
+        } else if let Some(why) = offsets
+            .iter()
+            .find_map(|d| self.beyond_excursion(request.axis, *d))
+        {
+            Some(why)
         } else if request.speed == GotoSpeed::Fast && !c.allow_fast_goto {
             Some("fast gotos are off until their speed is measured (allow_fast_goto)".into())
         } else if request.axis == Axis::Altitude
@@ -594,6 +608,22 @@ impl Controller {
         self.still_mark[request.axis.index()] = None;
         self.go(MountEvent::MotionCommandSent);
         Ok(vec![Action::Send(command)])
+    }
+
+    /// Why a request whose commanded travel adds `delta_deg` to the axis
+    /// would end too far from where the session was armed, if it would.
+    fn beyond_excursion(&self, axis: Axis, delta_deg: f64) -> Option<String> {
+        let end = self.excursion[axis.index()] + delta_deg;
+        (end.abs() > self.config.max_excursion_deg).then(|| {
+            format!(
+                "it would take {} {end:+.3}° from where it was armed, beyond max_excursion_deg {}°",
+                match axis {
+                    Axis::Azimuth => "azimuth",
+                    Axis::Altitude => "altitude",
+                },
+                self.config.max_excursion_deg
+            )
+        })
     }
 
     /// The axis's own position, read at `t_ns` while a goto runs or stops.
@@ -1109,6 +1139,7 @@ impl Controller {
     /// Adds a completed command to its axis tally; once enough travel has
     /// been commanded, the IMU must confirm it.
     fn check_travel(&mut self, axis: Axis, commanded: f64, now: Nanos) -> Vec<Action> {
+        self.excursion[axis.index()] += commanded;
         let c = &self.config;
         let tally = &mut self.tally[axis.index()];
         tally.commanded_deg += commanded;
