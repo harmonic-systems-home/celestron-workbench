@@ -15,6 +15,7 @@
 pub mod command;
 pub mod config;
 pub mod controller;
+pub mod encoder;
 pub mod imu;
 pub mod state;
 
@@ -25,6 +26,7 @@ pub use command::{
 };
 pub use config::SafetyConfig;
 pub use controller::{Action, Controller, FaultRecord, Refused};
+pub use encoder::EncoderObserver;
 pub use state::{FaultKind, InvalidTransition, MountEvent, MountState, transition};
 
 /// What the mount reports back.

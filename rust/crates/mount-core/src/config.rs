@@ -87,6 +87,12 @@ pub struct SafetyConfig {
     /// turn, the default, means no limit.
     #[serde(default = "full_turn")]
     pub max_excursion_deg: f64,
+    /// The motors' positions, not the phone, are the feedback (ADR 0019):
+    /// observations come from an [`EncoderObserver`](crate::EncoderObserver),
+    /// and only gotos are allowed, since timed and keypad moves rely on the
+    /// IMU to see a slipping clutch or a stall.
+    #[serde(default)]
+    pub encoders_only: bool,
 }
 
 fn full_turn() -> f64 {
@@ -126,6 +132,7 @@ impl Default for SafetyConfig {
             takeup_overspeed_deg_s: 0.0,
             takeup_ms: 0,
             max_excursion_deg: full_turn(),
+            encoders_only: false,
         }
     }
 }

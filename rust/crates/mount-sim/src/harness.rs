@@ -6,8 +6,9 @@
 use std::collections::VecDeque;
 
 use cwb_mount_core::{
-    Action, Controller, FaultRecord, GotoRequest, MountAdapter, MountCommand, MountReport,
-    MountState, MoveRequest, Nanos, Observation, SafetyConfig,
+    Action, Axis, Controller, EncoderObserver, FaultRecord, GotoRequest, MountAdapter,
+    MountCommand, MountReport, MountState, MoveRequest, Nanos, Observation, SafetyConfig,
+    command::units_to_deg,
 };
 
 use crate::{SimFaults, SimMount};
@@ -32,6 +33,32 @@ pub enum Op {
     Reset,
 }
 
+/// Where the controller's observations come from.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Feedback {
+    /// The phone's IMU, sampled at 100 Hz.
+    Imu,
+    /// The motors' positions (ADR 0019): read every `read_every_ms` while no
+    /// command is watched, as the adapter does, plus a goto's own reads.
+    Encoders {
+        read_every_ms: u64,
+        /// Reads stop at this time, as when the link stalls.
+        reads_stop_at_ms: Option<u64>,
+        /// Tie the altitude encoder to the true altitude at the start.
+        altitude_reference: bool,
+    },
+}
+
+impl Feedback {
+    pub fn encoders() -> Self {
+        Self::Encoders {
+            read_every_ms: 250,
+            reads_stop_at_ms: None,
+            altitude_reference: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Scenario {
     pub config: SafetyConfig,
@@ -43,6 +70,7 @@ pub struct Scenario {
     pub imu_latency_ms: u64,
     pub start_altitude_deg: f64,
     pub seed: u64,
+    pub feedback: Feedback,
 }
 
 impl Default for Scenario {
@@ -55,6 +83,7 @@ impl Default for Scenario {
             imu_latency_ms: 60,
             start_altitude_deg: 30.0,
             seed: 1,
+            feedback: Feedback::Imu,
         }
     }
 }
@@ -133,6 +162,27 @@ pub fn run(scenario: &Scenario) -> Trace {
     let mut last_state = controller.state();
     trace.states.push((0, last_state));
 
+    let deg = |mount: &SimMount, axis| units_to_deg(i64::from(mount.position_units(axis)));
+    let (mut observer, read_every, reads_stop) = match scenario.feedback {
+        Feedback::Imu => (None, 0, None),
+        Feedback::Encoders {
+            read_every_ms,
+            reads_stop_at_ms,
+            altitude_reference,
+        } => {
+            let mut o = EncoderObserver::new(1_000 * MS);
+            if altitude_reference {
+                o.set_altitude_reference(deg(&mount, Axis::Altitude), scenario.start_altitude_deg);
+            }
+            (
+                Some(o),
+                read_every_ms as Nanos * MS,
+                reads_stop_at_ms.map(|t| t as Nanos * MS),
+            )
+        }
+    };
+    let reading = |now: Nanos| reads_stop.is_none_or(|t| now < t);
+
     let mut now: Nanos = 0;
     while now <= scenario.run_ms as Nanos * MS {
         // Operator actions due now.
@@ -164,7 +214,14 @@ pub fn run(scenario: &Scenario) -> Trace {
                 MountReport::Sent { id, sent_ns } => controller.sent(id, sent_ns, now),
                 MountReport::Acknowledged(id) => controller.acknowledged(id, now),
                 MountReport::Position { axis, t_ns, units } => {
-                    controller.position(axis, t_ns, units, now)
+                    let mut actions = controller.position(axis, t_ns, units, now);
+                    if let Some(o) = observer.as_mut()
+                        && reading(now)
+                        && let Some(obs) = o.reading(axis, t_ns, units_to_deg(i64::from(units)))
+                    {
+                        actions.extend(controller.observe(obs, now));
+                    }
+                    actions
                 }
                 MountReport::SlewDone { axis, t_ns, done } => {
                     controller.slew_done(axis, t_ns, done, now)
@@ -174,8 +231,23 @@ pub fn run(scenario: &Scenario) -> Trace {
             carry_out(actions, now, &mut controller, &mut mount, &mut trace);
         }
 
+        // Encoders: idle reads of both axes while no command is watched.
+        if let Some(o) = observer.as_mut()
+            && reading(now)
+            && now % read_every == 0
+            && (controller.active_command().is_none() || controller.state() == MountState::Stopping)
+            && let Some(obs) = o.readings(
+                now,
+                [deg(&mount, Axis::Azimuth), deg(&mount, Axis::Altitude)],
+            )
+        {
+            let actions = controller.observe(obs, now);
+            carry_out(actions, now, &mut controller, &mut mount, &mut trace);
+        }
+
         // IMU: sample now, deliver after the latency.
-        if now % (IMU_INTERVAL_MS as Nanos * MS) == 0
+        if observer.is_none()
+            && now % (IMU_INTERVAL_MS as Nanos * MS) == 0
             && let Some(observation) = mount.observation(now)
         {
             in_flight.push_back((now + scenario.imu_latency_ms as Nanos * MS, observation));

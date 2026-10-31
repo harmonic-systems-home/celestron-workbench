@@ -427,6 +427,8 @@ impl Controller {
         let c = self.config.clone();
         let refusal = if let Some(why) = self.refuse_any(&request.request_id) {
             Some(why)
+        } else if c.encoders_only {
+            Some("encoder-only sessions allow gotos only".into())
         } else if !(request.rate_deg_s.is_finite()
             && request.rate_deg_s >= c.min_rate_deg_s
             && request.rate_deg_s <= c.max_rate_deg_s)

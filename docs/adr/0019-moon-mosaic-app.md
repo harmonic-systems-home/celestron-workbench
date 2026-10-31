@@ -1,6 +1,6 @@
 # ADR 0019: A Moon mosaic app driven by motor positions
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
