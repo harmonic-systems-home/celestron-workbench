@@ -61,6 +61,8 @@ public final class MosaicSession: @unchecked Sendable {
     public private(set) var here: Here?
     public private(set) var calibration: CameraCalibration?
     public private(set) var plan: MosaicPlan?
+    /// The folder whose session log has this plan in it.
+    private var loggedPlanIn: URL?
     public private(set) var states: [Int: TileState] = [:]
     /// Each finished tile's quick stack, for the preview.
     public private(set) var stacks: [Int: QuickStack] = [:]
@@ -244,6 +246,15 @@ public final class MosaicSession: @unchecked Sendable {
         guard let plan else { throw MosaicError(description: "Plan first.") }
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         try camera.configure(exposureUs: settings.exposureUs, gain: settings.gain)
+        let log = SessionLog(folder: folder)
+        if loggedPlanIn != folder, let calibration, let here {
+            record {
+                try log.plan(
+                    plan, calibration: calibration, moonDiameterDeg: here.moon.diameterDeg,
+                    colorID: SerWriter.colorID(for: camera.info), time: clock())
+            }
+            loggedPlanIn = folder
+        }
         let ids =
             tiles
             ?? plan.tiles.map(\.id).filter {
@@ -256,14 +267,27 @@ public final class MosaicSession: @unchecked Sendable {
                 set(id, .moving)
                 try await goToSky(tile.pointing)
                 set(id, .capturing)
-                let result = try await capture(tile, into: folder)
-                set(
-                    id, .done(file: result.file, frames: result.frames, sharpness: result.sharpness)
-                )
+                let r = try await capture(tile, into: folder)
+                record {
+                    try log.done(
+                        id, file: r.file, frames: r.frames, sharpness: r.sharpness, start: r.start,
+                        end: r.end, positionDeg: r.position, measured: r.measured)
+                }
+                set(id, .done(file: r.file, frames: r.frames, sharpness: r.sharpness))
             } catch {
+                record { try log.failed(id, reason: "\(error)") }
                 set(id, .failed("\(error)"))
                 if try mount.status().state == "FaultLatched" { throw error }
             }
+        }
+    }
+
+    /// A session-log write; a failure is reported but doesn't stop the run.
+    private func record(_ write: () throws -> Void) {
+        do {
+            try write()
+        } catch {
+            onEvent(.message("Couldn't write the session log: \(error)"))
         }
     }
 
@@ -273,7 +297,8 @@ public final class MosaicSession: @unchecked Sendable {
     }
 
     private func capture(_ tile: Tile, into folder: URL) async throws -> (
-        file: String, frames: Int, sharpness: Double
+        file: String, frames: Int, sharpness: Double, start: Date, end: Date,
+        position: [Double]?, measured: PixelOffset?
     ) {
         try camera.start()
         defer { camera.stop() }
@@ -284,19 +309,36 @@ public final class MosaicSession: @unchecked Sendable {
             instrument: camera.info.name, telescope: "Moon mosaic", start: clock())
         var stack = QuickStack(keep: 8)
         let end = clock().addingTimeInterval(settings.videoSeconds)
+        // The first and last frames' times, on the session's clock.
+        var first: Date?
+        var last = Date()
         while clock() < end {
             guard let frame = try camera.frame(timeoutMs: 500) else { continue }
+            last = clock().addingTimeInterval(frame.time.timeIntervalSinceNow)
+            if first == nil { first = last }
             try writer.append(frame)
             stack.offer(frame)
             await Task.yield()
         }
         let frames = writer.frameCount
         try writer.finish()
-        guard frames > 0 else {
+        guard frames > 0, let first else {
             throw MosaicError(description: "No frames arrived from the camera.")
         }
         stacks[tile.id] = stack
-        return (name, frames, stack.bestSharpness)
+        // The mount holds still through the video, so one read serves; the
+        // Moon's part at the frame's centre is taken midway between the first
+        // and last frames.
+        let position = try? mount.status().positionsDeg
+        var measured: PixelOffset?
+        if let position, let here, let calibration {
+            let sky = relativeMove(
+                from: (here.time, [here.azimuthDeg, here.altitudeDeg]),
+                to: (first.addingTimeInterval(last.timeIntervalSince(first) / 2), position))
+            let p = calibration.image(for: sky)
+            measured = PixelOffset(x: -p.x, y: -p.y)
+        }
+        return (name, frames, stack.bestSharpness, first, last, position, measured)
     }
 
     // MARK: Moving

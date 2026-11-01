@@ -45,9 +45,11 @@ The runner moves only with the phone's IMU confirming motion (ADR 0005). This ap
 
 `scripts/moon-process.sh <session folder>`:
 
-1. **Stack** each tile's SER with Planetary System Stacker in Surface mode (`PlanetarySystemStacker -m Surface …`), falling back to the quick stack if PSS isn't installed.
-2. **Stitch** with Hugin's command-line tools: `pto_gen` with each tile's position and rotation from the session log as the starting point, `cpfind` for control points in the overlaps, `autooptimiser` (positions only, the lens fixed), `nona` and `enblend`. Seeding the positions keeps low-contrast maria from confusing the matching.
-3. **Write** the mosaic as 16-bit TIFF beside the session, for sharpening in Siril.
+1. **Stack** each tile's SER with Planetary System Stacker in Surface mode (`PlanetarySystemStacker -m Surface …`). The script's own quick stack (the sharpest quarter of the frames, aligned by phase correlation to the one nearest the video's middle, averaged) stands in with `--quick`, without PSS, and for a tile PSS can't align (mostly sky).
+2. **Stitch** with Hugin's command-line tools: `pto_gen`, each tile seeded where the session log puts it (the part of the Moon at its centre, in the camera's pixels, from the encoders and the calibration; all tiles one lens, so a tile PSS trimmed sits in a frame-sized canvas with a transparent border); `cpfind --prealigned` for control points between tiles that overlap there; matches more than 30 px (or 8% of the frame) from where the seeds put them dropped, since the Moon's texture repeats enough to pair a tile a whole step off; `cpclean`; `autooptimiser` for positions only, the tile nearest the Moon's centre fixed; a tile it still moves more than half a frame is put back at its seed and named; `nona` and `enblend`.
+3. **Write** `<session>/mosaic.tif`, 16 bits per channel, in the camera's orientation and scale, centred on the Moon, for sharpening (and turning north up) in Siril. Work files go in `<session>/processing/`; stacked tiles there are reused on a second run.
+
+`scripts/moon-process-test.sh` runs it on a synthetic session (`MoonMosaicSynth`: the fake camera's Moon with aiming errors up to 8% of the frame, drift, jitter and noise, plus the truth image) and scores the mosaic against the truth: on the first run both routes covered the whole Moon, within 5 px of centre, with every detailed 128-px block matching.
 
 **Tools** (all free; checked 2026-10-31 on the desktop Mac, Apple silicon):
 
@@ -68,7 +70,7 @@ The field laptop needs only the app (and ASIStudio for the camera library).
 
 ### Logs and privacy
 
-Each session writes NDJSON in the data folder (tiles, targets, encoder positions, times, files) and its SER files beside it; never in this repo. Site coordinates come from the git-ignored site config and are not written into logs that could be shared.
+Each session writes `session.ndjson` in its folder, beside its SER files, in the folder chosen in the app (outside this repo): first the plan (frame size, colour pattern, overlap, the Moon's size, the calibration, each tile's planned centre and pointing), then a line per tile captured (file, frames, the first and last frames' times, the mount's axis angles, and the part of the Moon at the frame's centre midway through the video) or failed (why). Site coordinates come from the app's settings and are not written into it; the times and axis angles together would still place the site roughly, so session folders stay out of anything shared.
 
 ### Order of work
 

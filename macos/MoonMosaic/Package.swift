@@ -12,6 +12,7 @@ let package = Package(
     products: [
         .library(name: "MoonMosaicCore", targets: ["MoonMosaicCore"]),
         .executable(name: "MoonMosaic", targets: ["MoonMosaic"]),
+        .executable(name: "MoonMosaicSynth", targets: ["MoonMosaicSynth"]),
     ],
     targets: [
         // The Rust adapter's C interface (rust/crates/mount-ffi).
@@ -28,6 +29,8 @@ let package = Package(
         ),
         // The SwiftUI app: big buttons, night and day palettes.
         .executableTarget(name: "MoonMosaic", dependencies: ["MoonMosaicCore"]),
+        // A synthetic session for testing scripts/moon-process.sh.
+        .executableTarget(name: "MoonMosaicSynth", dependencies: ["MoonMosaicCore"]),
         .testTarget(name: "MoonMosaicCoreTests", dependencies: ["MoonMosaicCore"]),
     ]
 )

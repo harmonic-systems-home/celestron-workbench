@@ -80,7 +80,38 @@ func aMosaicRunsOnTheSimulatedMount() async throws {
             hypot(mid.x - tile.pointing.x, mid.y - tile.pointing.y) < 0.1 * 108,
             "tile \(id): at \(mid), planned \(tile.pointing)")
         #expect(session.stacks[id]?.image() != nil)
+        // What the log says the camera saw, against where it really pointed.
+        let seen = cal.image(for: SkyOffset(x: mid.x, y: mid.y))
+        let logged = try #require(try loggedTiles(in: folder)[id])
+        #expect(
+            hypot(logged.x + seen.x, logged.y + seen.y) < 20,
+            "tile \(id): logged \(logged), camera saw \((-seen.x, -seen.y))")
     }
+    // The plan, once, ahead of the tiles.
+    let lines = try String(
+        contentsOf: folder.appendingPathComponent(SessionLog.fileName), encoding: .utf8
+    ).split(separator: "\n")
+    let records = try lines.map {
+        try #require(try JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any])
+    }
+    #expect(records.map { $0["type"] as? String } == ["plan"] + middle.map { _ in "tile" })
+    #expect((records[0]["tiles"] as? [Any])?.count == plan.tiles.count)
+}
+
+/// Each done tile's measured centre from the session log, by id.
+private func loggedTiles(in folder: URL) throws -> [Int: (x: Double, y: Double)] {
+    let text = try String(
+        contentsOf: folder.appendingPathComponent(SessionLog.fileName), encoding: .utf8)
+    var out: [Int: (x: Double, y: Double)] = [:]
+    for line in text.split(separator: "\n") {
+        guard
+            let r = try JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
+            r["type"] as? String == "tile", let id = r["id"] as? Int,
+            let m = r["measured"] as? [String: Double], let x = m["x"], let y = m["y"]
+        else { continue }
+        out[id] = (x, y)
+    }
+    return out
 }
 
 extension SkyOffset {

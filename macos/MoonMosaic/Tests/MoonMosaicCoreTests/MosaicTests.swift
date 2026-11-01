@@ -19,6 +19,7 @@ import Testing
             (SkyOffset(x: 60, y: 0), PixelOffset(x: s1.dx, y: s1.dy)),
             (SkyOffset(x: 0, y: 60), PixelOffset(x: s2.dx, y: s2.dy))))
     #expect(abs(calibration.arcsecPerPixel - 0.6) < 0.01, "\(calibration.arcsecPerPixel)")
+    #expect(abs(calibration.rotationDeg - 30) < 0.5, "\(calibration.rotationDeg)°")
 
     // A tile planned at pixel c of the reference frame: pointing there puts
     // the sky point the reference frame saw at c in the middle of the frame.

@@ -57,8 +57,10 @@ public struct CameraCalibration: Sendable, Equatable {
 
     public var arcsecPerPixel: Double { 1 / abs(a * d - b * c).squareRoot() }
 
-    /// The image's rotation against azimuth (degrees), for display.
-    public var rotationDeg: Double { atan2(c, a) * 180 / .pi }
+    /// How far the camera is turned (degrees), for display: 0 when its
+    /// rows run along azimuth with altitude up. The image moves against the
+    /// pointing, and image rows count downwards, hence the signs.
+    public var rotationDeg: Double { atan2(b, -a) * 180 / .pi }
 
     public func image(for sky: SkyOffset) -> PixelOffset {
         PixelOffset(x: a * sky.x + b * sky.y, y: c * sky.x + d * sky.y)

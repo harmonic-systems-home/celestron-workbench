@@ -201,6 +201,16 @@ Its sessions are encoder-only (no phone): gotos only, with the motors' positions
 
 The camera is driven through ZWO's ASICamera2 library, loaded at run time. ASIStudio's copy is Intel-only, so on Apple silicon `scripts/zwo-camera-lib.sh` installs ZWO's arm64 build (as INDI ships it, pinned by commit and SHA-256, linked to Homebrew's `libusb`, signed ad hoc) in `~/Library/Application Support/MoonMosaic/lib/`, where the app looks first. Run it once on each Mac. Nothing from it is committed.
 
+### Processing a session
+
+```sh
+scripts/moon-process.sh <session folder>          # PSS, then Hugin: <session>/mosaic.tif
+scripts/moon-process.sh <session folder> --quick  # without PSS
+scripts/moon-process-test.sh [--pss]              # on a synthetic session, scored against its truth
+```
+
+It needs `uv` (`brew install uv`; it fetches numpy and tifffile on the first run), Hugin's command-line tools (`brew install --cask hugin`, each tool approved once in Privacy & Security) and, for the full stack, Planetary System Stacker in `~/venvs/pss` (or `--pss PATH`). The mosaic comes out in the camera's orientation, centred on the Moon; turn it north up when sharpening.
+
 ## Swift (phone side)
 
 `ios/ImuLogger/` has two parts:
