@@ -95,8 +95,11 @@ public final class MosaicSession: @unchecked Sendable {
         settings.gain = gain
     }
 
-    /// Records where the Moon is centred, checks the Sun, ties the altitude
-    /// encoder to the Moon's altitude and arms the mount.
+    /// Records where the Moon is centred, checks the Sun and ties the
+    /// altitude encoder to the Moon's altitude. It doesn't arm the mount:
+    /// each step arms it for its own moves (`armForStep`), so the hand
+    /// controller's keys stay free between steps, and moving with them
+    /// leaves Here good (the encoders see the move).
     public func markHere() async throws {
         let now = clock()
         let sun = Ephemeris.sun(at: now)
@@ -112,24 +115,24 @@ public final class MosaicSession: @unchecked Sendable {
         guard moon.horizontal.altDeg > 5 else {
             throw MosaicError(description: "The Moon is below 5° from here now.")
         }
-        guard let p = try mount.status().positionsDeg else {
-            throw MosaicError(description: "No position read from the mount yet.")
+        // A read made since the press: unarmed, reads come every 2 s, and
+        // the keys may have moved the mount just before it.
+        let pressed = Date()
+        var read: [Double]?
+        for _ in 0..<40 {
+            let st = try mount.status()
+            if let p = st.positionsDeg, let age = st.positionsAgeMs,
+                Double(age) / 1000 < Date().timeIntervalSince(pressed)
+            {
+                read = p
+                break
+            }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        guard let p = read else {
+            throw MosaicError(description: "No position read from the mount: is it answering?")
         }
         try mount.setAltitudeReference(moon.horizontal.altDeg)
-        // Arming checks the altitude envelope against the latest position
-        // read, which must come after the reference: one every quarter second.
-        if try mount.status().state == "ConnectedReadOnly" {
-            var lastError: Error?
-            for _ in 0..<20 {
-                try await Task.sleep(for: .milliseconds(100))
-                do {
-                    try mount.arm()
-                    lastError = nil
-                    break
-                } catch { lastError = error }
-            }
-            if let lastError { throw lastError }
-        }
         here = Here(time: now, azimuthDeg: p[0], altitudeDeg: p[1], moon: moon)
         let later = Ephemeris.moon(at: now.addingTimeInterval(60), from: settings.site).horizontal
         approach = (
@@ -168,6 +171,8 @@ public final class MosaicSession: @unchecked Sendable {
     /// with the Moon's own motion meanwhile taken out.
     public func calibrate() async throws {
         guard here != nil else { throw MosaicError(description: "Press Here first.") }
+        try await armForStep()
+        defer { endStep() }
         try camera.configure(exposureUs: settings.exposureUs, gain: settings.gain)
         try camera.start()
         defer { camera.stop() }
@@ -244,6 +249,8 @@ public final class MosaicSession: @unchecked Sendable {
         tiles: [Int]? = nil, into folder: URL, shouldContinue: @Sendable () -> Bool = { true }
     ) async throws {
         guard let plan else { throw MosaicError(description: "Plan first.") }
+        try await armForStep()
+        defer { endStep() }
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         try camera.configure(exposureUs: settings.exposureUs, gain: settings.gain)
         let log = SessionLog(folder: folder)
@@ -342,6 +349,45 @@ public final class MosaicSession: @unchecked Sendable {
     }
 
     // MARK: Moving
+
+    /// One re-aim at the Moon's centre, for Hold.
+    public func hold() async throws {
+        guard here != nil else { throw MosaicError(description: "Press Here first.") }
+        try await armForStep()
+        defer { endStep() }
+        try await goToSky(SkyOffset(x: 0, y: 0))
+    }
+
+    /// Arms the mount for a step's moves. Arming wants fresh, steady
+    /// position reads, so a refusal is retried for a few seconds (the keys
+    /// may have just been used).
+    func armForStep() async throws {
+        let s = try mount.status()
+        switch s.state {
+        case "Armed": return
+        case "FaultLatched":
+            throw MosaicError(
+                description:
+                    "The mount is latched on a fault (\(s.lastFault?.detail ?? "?")): press Reset first.")
+        default: break
+        }
+        var last: Error?
+        for _ in 0..<60 {
+            do {
+                try mount.arm()
+                return
+            } catch {
+                last = error
+                try await Task.sleep(for: .milliseconds(100))
+            }
+        }
+        throw last ?? MosaicError(description: "Couldn't arm the mount.")
+    }
+
+    /// Disarms after a step, unless a fault latched it.
+    func endStep() {
+        if (try? mount.status().state) == "Armed" { try? mount.disarm() }
+    }
 
     /// Aims `sky` (relative to the Moon's centre) for the middle of the
     /// coming video: the gotos, then up to three touch-ups while the error,

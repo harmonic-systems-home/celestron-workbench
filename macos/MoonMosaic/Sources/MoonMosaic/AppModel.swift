@@ -42,6 +42,9 @@ final class AppModel: ObservableObject {
     @Published private(set) var connected = false
     @Published private(set) var mountState = "Not connected"
     @Published private(set) var altitude: Double?
+    /// Why the mount is latched, while it is: the app then stops any motion,
+    /// the keys' included, until Reset.
+    @Published private(set) var latchedReason: String?
     @Published private(set) var busy: String?
     @Published private(set) var log: [String] = []
     @Published private(set) var plan: MosaicPlan?
@@ -66,6 +69,7 @@ final class AppModel: ObservableObject {
     /// (for focusing) when the mount isn't tracking.
     @Published private(set) var holding = false
     private var holdTask: Task<Void, Never>?
+    private var holdStop: Flag?
     /// The hand controller has stopped answering (or answers slowly): it
     /// may have hung with a motor still running, which only cutting the
     /// mount's power stops. Beeps until silenced.
@@ -291,6 +295,7 @@ final class AppModel: ObservableObject {
         hereSet = false
         calibrated = false
         mountState = "Not connected"
+        latchedReason = nil
         say("Disconnected.")
     }
 
@@ -410,29 +415,50 @@ final class AppModel: ObservableObject {
             stopHold()
             return
         }
-        guard let session, hereSet, busy == nil else { return }
+        // A hold still finishing its last move can't be restarted yet.
+        guard let session, hereSet, busy == nil, holdTask == nil else { return }
         holding = true
         say("Holding on the Moon's centre.")
+        let stop = Flag()
+        holdStop = stop
         holdTask = Task.detached { [weak self] in
-            while !Task.isCancelled {
+            // Ends between moves, never in one: a move cut short leaves the
+            // mount going with nobody waiting for it.
+            while !stop.value {
                 do {
-                    try await session.goToSky(SkyOffset(x: 0, y: 0))
+                    try await session.hold()
                 } catch {
-                    await MainActor.run {
-                        self?.say("Hold stopped: \(error)")
-                        self?.stopHold()
-                    }
-                    return
+                    await MainActor.run { self?.say("Hold stopped: \(error)") }
+                    break
                 }
-                try? await Task.sleep(for: .seconds(10))
+                for _ in 0..<100 where !stop.value {
+                    try? await Task.sleep(for: .milliseconds(100))
+                }
+            }
+            await MainActor.run {
+                guard let self else { return }
+                self.holding = false
+                self.holdTask = nil
+                self.sync()
             }
         }
     }
 
+    /// Asks Hold to end after any move in progress; `holdTask` finishes then.
     private func stopHold() {
         holding = false
-        holdTask?.cancel()
-        holdTask = nil
+        holdStop?.value = true
+    }
+
+    /// Clears a latched fault once the mount is still; the next step arms it.
+    func resetFault() {
+        guard let mount else { return }
+        do {
+            try mount.reset()
+            say("Reset: the keys work again; the next step arms the mount.")
+        } catch {
+            say("Couldn't reset: \(error)")
+        }
     }
 
     func here() {
@@ -546,6 +572,7 @@ final class AppModel: ObservableObject {
         if let s = try? mount.status() {
             mountState = s.state
             altitude = s.altitudeDeg
+            latchedReason = s.state == "FaultLatched" ? (s.lastFault?.detail ?? "a fault") : nil
             for m in s.messages { say(m) }
             checkLink(s)
         }

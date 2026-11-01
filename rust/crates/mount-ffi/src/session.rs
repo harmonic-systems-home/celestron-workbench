@@ -35,6 +35,8 @@ const POSITION_EVERY: Duration = Duration::from_millis(250);
 /// Idle position reads before arming: enough to show the altitude, and
 /// little traffic through the hand controller while its keys are in use.
 const POSITION_EVERY_UNARMED: Duration = Duration::from_secs(2);
+/// How long an arm request keeps reads fast while unarmed.
+const FAST_READS_FOR_ARMING: Nanos = 10_000 * MS;
 /// Idle positions this far apart (units) are motion no command explains.
 const CREEP_UNITS: i64 = 16;
 /// Messages kept for the app to collect.
@@ -101,8 +103,11 @@ struct Inner {
     messages: VecDeque<String>,
     next_request: u64,
     trace: Option<Trace>,
-    /// The state at the last step, to trace changes and set the read rate.
+    /// The state at the last step, to trace changes.
     last_state: MountState,
+    /// Fast reads while unarmed, until then (an arm request).
+    fast_reads_until: Nanos,
+    fast_reads: bool,
 }
 
 pub struct Session {
@@ -175,6 +180,8 @@ impl Session {
             next_request: 1,
             trace,
             last_state: MountState::Disconnected,
+            fast_reads_until: 0,
+            fast_reads: true,
         };
         let actions = inner.controller.connect(now).map_err(|r| r.0)?;
         inner.carry_out(actions, now);
@@ -284,7 +291,12 @@ impl Inner {
     fn command(&mut self, request: Request) -> Result<Value, String> {
         let now = (self.clock)();
         let result = match request {
-            Request::Arm => self.controller.arm(now),
+            Request::Arm => {
+                // Arming needs fresh reads: four a second for a while, so a
+                // refused arm can be retried at once.
+                self.fast_reads_until = now + FAST_READS_FOR_ARMING;
+                self.controller.arm(now)
+            }
             Request::Disarm => self.controller.disarm(now),
             Request::Reset => self.controller.reset(now),
             Request::Stop => Ok(self.controller.stop(now)),
@@ -294,8 +306,6 @@ impl Inner {
                     return Err("no position read yet".into());
                 };
                 self.observer.set_altitude_reference(deg[1], altitude_deg);
-                // Arming comes next, and needs fresh reads.
-                self.adapter.set_position_every(Some(POSITION_EVERY));
                 return Ok(json!({ "ok": true }));
             }
             Request::Goto {
@@ -404,16 +414,20 @@ impl Inner {
                     json!({ "from": format!("{:?}", self.last_state), "to": format!("{state:?}") }),
                 );
             }
-            let unarmed = matches!(
-                state,
-                MountState::Disconnected | MountState::ConnectedReadOnly
-            );
-            self.adapter.set_position_every(Some(if unarmed {
-                POSITION_EVERY_UNARMED
-            } else {
-                POSITION_EVERY
-            }));
             self.last_state = state;
+        }
+        let unarmed = matches!(
+            state,
+            MountState::Disconnected | MountState::ConnectedReadOnly
+        );
+        let fast = !unarmed || now < self.fast_reads_until;
+        if fast != self.fast_reads {
+            self.fast_reads = fast;
+            self.adapter.set_position_every(Some(if fast {
+                POSITION_EVERY
+            } else {
+                POSITION_EVERY_UNARMED
+            }));
         }
     }
 

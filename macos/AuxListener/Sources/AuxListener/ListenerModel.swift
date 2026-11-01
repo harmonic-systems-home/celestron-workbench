@@ -126,7 +126,7 @@ final class ListenerModel: ObservableObject {
         let t = monotonicNs()
         log?.write(LogLine.mark(label, at: t, utc: Date()))
         append(
-            "★ \(label)" + (recording == nil && link != .demo ? " (not recording: no cable)" : ""),
+            "★ \(label)" + (recording == nil && link != .demo ? " (not recording: no AUX tap cable)" : ""),
             at: t, kind: .mark)
     }
 
@@ -207,7 +207,7 @@ final class ListenerModel: ObservableObject {
         framer = Framer()
         monitor = BusMonitor()
         link = .waiting
-        append("Cable unplugged: waiting for it", at: t, kind: .anomaly)
+        append("AUX tap cable unplugged: waiting for it", at: t, kind: .anomaly)
         alert(at: t)
     }
 

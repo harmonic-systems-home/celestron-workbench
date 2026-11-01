@@ -16,6 +16,18 @@ fn open() -> u64 {
     r["session"].as_u64().unwrap()
 }
 
+/// Arms, retrying while the first fresh reads come in.
+fn arm(session: u64) -> Value {
+    let end = Instant::now() + Duration::from_millis(3_000);
+    loop {
+        let r = command_json(session, r#"{"op": "arm"}"#);
+        if r["ok"] == true || Instant::now() > end {
+            return r;
+        }
+        sleep(Duration::from_millis(100));
+    }
+}
+
 /// Polls status until `done` holds or `ms` pass.
 fn wait(session: u64, ms: u64, done: impl Fn(&Value) -> bool) -> Value {
     let end = Instant::now() + Duration::from_millis(ms);
@@ -44,8 +56,7 @@ fn a_goto_runs_with_encoder_feedback_through_the_json_interface() {
         command_json(id, r#"{"op": "reference", "altitude_deg": 30.0}"#)["ok"],
         true
     );
-    sleep(Duration::from_millis(600));
-    let armed = command_json(id, r#"{"op": "arm"}"#);
+    let armed = arm(id);
     assert_eq!(armed["ok"], true, "{armed}");
     let alt = status_json(id)["altitude_deg"].as_f64().unwrap();
     assert!((alt - 30.0).abs() < 0.01, "{alt}");
@@ -108,8 +119,7 @@ fn the_trace_records_traffic_and_reads_are_slow_until_armed() {
         command_json(id, r#"{"op": "reference", "altitude_deg": 30.0}"#)["ok"],
         true
     );
-    sleep(Duration::from_millis(600));
-    assert_eq!(command_json(id, r#"{"op": "arm"}"#)["ok"], true);
+    assert_eq!(arm(id)["ok"], true);
     sleep(Duration::from_millis(1_100));
     close(id);
 

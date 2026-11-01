@@ -89,6 +89,18 @@ struct ContentView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.bottom, 6)
 
+            if let reason = model.latchedReason {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Latched: \(reason).").font(.system(size: 15, weight: .semibold))
+                    Text("The app stops any motion, so the arrow keys won't work, until you press Reset.")
+                        .font(.system(size: 14))
+                    button("Reset", enabled: true) { model.resetFault() }
+                }
+                .foregroundStyle(palette.bright)
+                .padding(10)
+                .background(RoundedRectangle(cornerRadius: 10).stroke(palette.bright, lineWidth: 2))
+            }
+
             if model.connected {
                 button("Disconnect", enabled: model.busy == nil) { model.disconnect() }
             } else {

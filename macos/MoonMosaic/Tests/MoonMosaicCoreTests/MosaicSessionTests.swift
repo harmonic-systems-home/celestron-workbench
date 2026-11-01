@@ -50,7 +50,10 @@ func aMosaicRunsOnTheSimulatedMount() async throws {
     try await Task.sleep(for: .milliseconds(600))
 
     try await session.markHere()
+    // Steps arm the mount for their own moves only, leaving the keys free.
+    #expect(try mount.status().state == "ConnectedReadOnly")
     try await session.calibrate()
+    #expect(try mount.status().state == "ConnectedReadOnly")
     let cal = try #require(session.calibration)
     #expect(abs(cal.arcsecPerPixel - 0.3) < 0.01, "\(cal.arcsecPerPixel)″/px")
 

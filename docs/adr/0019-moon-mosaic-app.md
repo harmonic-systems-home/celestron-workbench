@@ -81,7 +81,10 @@ The hand controller twice stopped taking key presses, and once a keyed move ran 
 - **Fewer reads before arming:** idle position reads every 2 s until the mount is armed (the altitude reference, just before arming, brings back four a second), so the app adds little traffic while the keys are in use.
 - **An alarm** when the hand controller stops answering: the link lost, or no idle read for 8 s. A red banner and a repeating sound say to cut the mount's power if it is moving.
 - **The trace** above, to see what came just before the next hang; the AUX Listener (ADR 0018) will show whether the hand controller stops sending on the bus.
-- Until then, search for the Moon with the app disconnected, and keep the mount's power switch in reach.
+- **Armed only for the app's own moves:** *Here* records the reference without arming (from a position read after the press); *Hold*, *Calibrate* and *Run* arm the mount for their moves and disarm after. Between steps the keys are free, and moving with them is no fault: the encoders see it, so *Here* stays good. Before this, a key move after *Here* latched an unexpected-motion fault, and while latched the app stops any motion it sees four times a second, which also blocks the keys.
+- **Reset** appears while a fault is latched, with the reason, and says the keys are blocked until it is pressed.
+- **Hold ends between moves:** a step that takes over waits for Hold's move in progress to finish, rather than abandoning it while the mount still moves.
+- Until the hangs are understood, search for the Moon with the app disconnected, and keep the mount's power switch in reach.
 
 ### Order of work
 

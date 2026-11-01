@@ -60,6 +60,11 @@ struct ContentView: View {
                 Text(model.recording.map { "Recording \($0)" } ?? "Not recording")
                     .font(.system(size: 15, design: .rounded))
                     .foregroundStyle(Palette.dim)
+                if model.link == .waiting {
+                    Text("It listens on the AUX bus through its own cable; the hand controller's USB isn't used.")
+                        .font(.system(size: 15, design: .rounded))
+                        .foregroundStyle(Palette.dim)
+                }
             }
             Spacer()
             stat("\(model.packetsPerSecond)", "packets/s")
@@ -75,7 +80,7 @@ struct ContentView: View {
 
     private var linkText: String {
         switch model.link {
-        case .waiting: "No cable: waiting for it"
+        case .waiting: "No AUX tap cable (FTDI): waiting for it"
         case .connected(let port): "Listening on \(URL(fileURLWithPath: port).lastPathComponent)"
         case .demo: "DEMO traffic (made up, not recorded)"
         case .failed(let why): "Can't open the cable: \(why)"
@@ -294,7 +299,7 @@ struct SettingsView: View {
             Text("Settings").font(.system(size: 26, weight: .semibold, design: .rounded))
             Toggle("Sound on anomalies", isOn: $model.soundOn)
             Toggle("Show routine position polling in the feed", isOn: $model.showPolling)
-            Toggle("Demo traffic while no cable is connected", isOn: $model.demoWhenIdle)
+            Toggle("Demo traffic while the AUX tap cable isn't connected", isOn: $model.demoWhenIdle)
             Picker("Palette", selection: $model.paletteMode) {
                 Text("Auto (red after dusk)").tag("auto")
                 Text("Day").tag("day")
