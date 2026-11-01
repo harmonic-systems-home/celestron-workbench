@@ -143,6 +143,16 @@ public enum Ephemeris {
     /// a degree), then refraction.
     public static func moon(at date: Date, from site: Site) -> MoonView {
         let (eq, distance) = moon(at: date)
+        return moon(eq, distanceKm: distance, at: date, from: site)
+    }
+
+    /// The Moon from the site, given its geocentric position and distance.
+    /// Parallax moves it straight down, toward the horizon, so only the
+    /// altitude changes (the Earth's flattening adds a few arcseconds of
+    /// azimuth, ignored).
+    static func moon(_ eq: Equatorial, distanceKm distance: Double, at date: Date, from site: Site)
+        -> MoonView
+    {
         let geo = horizontal(eq, at: date, from: site)
         let parallax = asin(earthRadiusKm / distance)
         let alt = rad2deg(deg2rad(geo.altDeg) - parallax * cos(deg2rad(geo.altDeg)))
