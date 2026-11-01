@@ -71,9 +71,12 @@ public final class MountSession: @unchecked Sendable {
     public let opened: Opened
 
     /// `port`: a serial device, or "simulate". `safety` overrides the
-    /// controller's safety settings (encoder-only is always on).
-    public init(port: String, safety: [String: Any] = [:]) throws {
-        let options: [String: Any] = ["port": port, "safety": safety]
+    /// controller's safety settings (encoder-only is always on). `trace`:
+    /// a file for every byte to and from the hand controller and every
+    /// request, state change and message, for working out faults later.
+    public init(port: String, safety: [String: Any] = [:], trace: URL? = nil) throws {
+        var options: [String: Any] = ["port": port, "safety": safety]
+        if let trace { options["trace"] = trace.path }
         let reply = try Self.call { cwb_session_open(Self.json(options)) }
         guard let id = (reply["session"] as? NSNumber)?.uint64Value,
             let opened = reply["opened"]

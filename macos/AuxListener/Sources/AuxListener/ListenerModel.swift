@@ -68,6 +68,15 @@ final class ListenerModel: ObservableObject {
         }
     }
     @Published var folder: URL { didSet { defaults.set(folder.path, forKey: "folder") } }
+    /// "auto" (red from civil dusk to dawn), "day" or "night".
+    @Published var paletteMode: String {
+        didSet {
+            defaults.set(paletteMode, forKey: "paletteMode")
+            updatePalette()
+        }
+    }
+    @Published private(set) var isNight = true
+    private var paletteCheckedAt = Date.distantPast
 
     private let defaults = UserDefaults.standard
     private var framer = Framer()
@@ -82,7 +91,10 @@ final class ListenerModel: ObservableObject {
     private var nextLine = 0
 
     init() {
-        defaults.register(defaults: ["soundOn": true, "showPolling": false, "demoWhenIdle": true])
+        defaults.register(defaults: [
+            "soundOn": true, "showPolling": false, "demoWhenIdle": true, "paletteMode": "auto",
+        ])
+        paletteMode = defaults.string(forKey: "paletteMode") ?? "auto"
         soundOn = defaults.bool(forKey: "soundOn")
         showPolling = defaults.bool(forKey: "showPolling")
         demoWhenIdle = defaults.bool(forKey: "demoWhenIdle")
@@ -95,6 +107,17 @@ final class ListenerModel: ObservableObject {
             MainActor.assumeIsolated { self?.tick() }
         }
         tick()
+    }
+
+    private func updatePalette() {
+        paletteCheckedAt = Date()
+        let night =
+            switch paletteMode {
+            case "day": false
+            case "night": true
+            default: Daylight.isNight()
+            }
+        if night != isNight { isNight = night }
     }
 
     // MARK: - Actions
@@ -120,6 +143,7 @@ final class ListenerModel: ObservableObject {
 
     private func tick() {
         now = monotonicNs()
+        if Date().timeIntervalSince(paletteCheckedAt) > 60 { updatePalette() }
         if reader == nil, now - lastScan > 1_000_000_000 {
             lastScan = now
             if let port = serialPorts(vendorID: ftdiVendorID).first {

@@ -12,7 +12,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use cwb_celestron_discovery::{Link, SerialLink};
+use cwb_celestron_discovery::{Link, SerialLink, redact_path};
 use cwb_mount_celestron::{
     CelestronAdapter, CelestronSettings, adapter::Clock, fake::SimHandController, prepare::prepare,
 };
@@ -22,14 +22,19 @@ use cwb_mount_core::{
     wrap_units,
 };
 use cwb_mount_sim::{SimFaults, SimMount};
+
+use crate::trace::{Trace, TracingLink};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 const MS: Nanos = 1_000_000;
 /// The loop's tick: deadlines are checked at least this often.
 const TICK: Duration = Duration::from_millis(5);
-/// Idle position reads, as the runner makes them.
+/// Idle position reads once armed, as the runner makes them.
 const POSITION_EVERY: Duration = Duration::from_millis(250);
+/// Idle position reads before arming: enough to show the altitude, and
+/// little traffic through the hand controller while its keys are in use.
+const POSITION_EVERY_UNARMED: Duration = Duration::from_secs(2);
 /// Idle positions this far apart (units) are motion no command explains.
 const CREEP_UNITS: i64 = 16;
 /// Messages kept for the app to collect.
@@ -46,6 +51,9 @@ pub struct OpenOptions {
     pub safety: Value,
     #[serde(default)]
     pub celestron: Value,
+    /// A file for the session trace (see [`crate::trace`]), if wanted.
+    #[serde(default)]
+    pub trace: Option<String>,
 }
 
 /// What the hand controller reported when the session opened.
@@ -92,6 +100,9 @@ struct Inner {
     steady: Option<[u32; 2]>,
     messages: VecDeque<String>,
     next_request: u64,
+    trace: Option<Trace>,
+    /// The state at the last step, to trace changes and set the read rate.
+    last_state: MountState,
 }
 
 pub struct Session {
@@ -120,17 +131,33 @@ impl Session {
 
         let start = Instant::now();
         let clock: Clock = Arc::new(move || start.elapsed().as_nanos() as Nanos);
+        let trace = match &options.trace {
+            Some(path) => Some(
+                Trace::create(path.as_ref(), clock.clone())
+                    .map_err(|e| format!("couldn't create the trace: {e}"))?,
+            ),
+            None => None,
+        };
+        if let Some(t) = &trace {
+            t.write(
+                "open",
+                json!({ "port": redact_path(&options.port), "safety": safety, "celestron": settings }),
+            );
+        }
         let (adapter, opened, sim) = if options.port == "simulate" {
             let mount = Arc::new(Mutex::new(SimMount::new(SimFaults::default(), 30.0, 1)));
             let link = SimHandController::new(mount.clone(), clock.clone());
-            let (adapter, opened) = start_adapter(link, settings, clock.clone(), true)?;
+            let (adapter, opened) = start_traced(link, &trace, settings, clock.clone(), true)?;
             (adapter, opened, Some(mount))
         } else {
             let link = SerialLink::open(&options.port)
                 .map_err(|e| format!("couldn't open the hand controller's port: {e}"))?;
-            let (adapter, opened) = start_adapter(link, settings, clock.clone(), false)?;
+            let (adapter, opened) = start_traced(link, &trace, settings, clock.clone(), false)?;
             (adapter, opened, None)
         };
+        if let Some(t) = &trace {
+            t.write("opened", json!({ "opened": opened }));
+        }
         let now = clock();
         let mut inner = Inner {
             controller,
@@ -146,6 +173,8 @@ impl Session {
             steady: None,
             messages: VecDeque::new(),
             next_request: 1,
+            trace,
+            last_state: MountState::Disconnected,
         };
         let actions = inner.controller.connect(now).map_err(|r| r.0)?;
         inner.carry_out(actions, now);
@@ -175,57 +204,16 @@ impl Session {
     /// One request from the app; see [`Request`].
     pub fn command(&self, request: Request) -> Result<Value, String> {
         let mut s = self.inner.lock().expect("session");
-        let now = (s.clock)();
-        let result = match request {
-            Request::Arm => s.controller.arm(now),
-            Request::Disarm => s.controller.disarm(now),
-            Request::Reset => s.controller.reset(now),
-            Request::Stop => Ok(s.controller.stop(now)),
-            Request::EmergencyStop => Ok(s.controller.emergency_stop(now)),
-            Request::Reference { altitude_deg } => {
-                let Some((_, deg, _)) = s.last_position else {
-                    return Err("no position read yet".into());
-                };
-                s.observer.set_altitude_reference(deg[1], altitude_deg);
-                return Ok(json!({ "ok": true }));
-            }
-            Request::Goto {
-                axis,
-                delta_deg,
-                fast,
-                approach,
-            } => {
-                let start = s.goto_start(axis)?;
-                let id = format!("app-{}", s.next_request);
-                s.next_request += 1;
-                let request = GotoRequest {
-                    request_id: id.clone(),
-                    axis,
-                    delta_deg,
-                    speed: if fast {
-                        GotoSpeed::Fast
-                    } else {
-                        GotoSpeed::Slow
-                    },
-                    approach,
-                };
-                match s.controller.request_goto(request, start, now) {
-                    Ok(actions) => {
-                        s.last_busy = now;
-                        s.carry_out(actions, now);
-                        return Ok(json!({ "ok": true, "request_id": id }));
-                    }
-                    Err(refused) => Err(refused),
-                }
-            }
-        };
-        match result {
-            Ok(actions) => {
-                s.carry_out(actions, now);
-                Ok(json!({ "ok": true }))
-            }
-            Err(refused) => Err(refused.0),
+        let traced = format!("{request:?}");
+        let result = s.command(request);
+        if let Some(t) = &s.trace {
+            let outcome = match &result {
+                Ok(v) => v.clone(),
+                Err(e) => json!({ "ok": false, "error": e }),
+            };
+            t.write("request", json!({ "request": traced, "result": outcome }));
         }
+        result
     }
 
     pub fn status(&self) -> Status {
@@ -293,6 +281,62 @@ pub enum Request {
 }
 
 impl Inner {
+    fn command(&mut self, request: Request) -> Result<Value, String> {
+        let now = (self.clock)();
+        let result = match request {
+            Request::Arm => self.controller.arm(now),
+            Request::Disarm => self.controller.disarm(now),
+            Request::Reset => self.controller.reset(now),
+            Request::Stop => Ok(self.controller.stop(now)),
+            Request::EmergencyStop => Ok(self.controller.emergency_stop(now)),
+            Request::Reference { altitude_deg } => {
+                let Some((_, deg, _)) = self.last_position else {
+                    return Err("no position read yet".into());
+                };
+                self.observer.set_altitude_reference(deg[1], altitude_deg);
+                // Arming comes next, and needs fresh reads.
+                self.adapter.set_position_every(Some(POSITION_EVERY));
+                return Ok(json!({ "ok": true }));
+            }
+            Request::Goto {
+                axis,
+                delta_deg,
+                fast,
+                approach,
+            } => {
+                let start = self.goto_start(axis)?;
+                let id = format!("app-{}", self.next_request);
+                self.next_request += 1;
+                let request = GotoRequest {
+                    request_id: id.clone(),
+                    axis,
+                    delta_deg,
+                    speed: if fast {
+                        GotoSpeed::Fast
+                    } else {
+                        GotoSpeed::Slow
+                    },
+                    approach,
+                };
+                match self.controller.request_goto(request, start, now) {
+                    Ok(actions) => {
+                        self.last_busy = now;
+                        self.carry_out(actions, now);
+                        return Ok(json!({ "ok": true, "request_id": id }));
+                    }
+                    Err(refused) => Err(refused),
+                }
+            }
+        };
+        match result {
+            Ok(actions) => {
+                self.carry_out(actions, now);
+                Ok(json!({ "ok": true }))
+            }
+            Err(refused) => Err(refused.0),
+        }
+    }
+
     fn step(&mut self) {
         let now = (self.clock)();
         if let Some(sim) = &self.sim {
@@ -329,6 +373,9 @@ impl Inner {
             });
             let deg = units.map(|u| units_to_deg(i64::from(u)));
             self.last_position = Some((p.t_ns, deg, units));
+            if let Some(t) = &self.trace {
+                t.write_at(p.t_ns, "position", json!({ "deg": deg }));
+            }
             let mut actions = Vec::new();
             if let Some(obs) = self.observer.readings(p.t_ns, deg) {
                 actions.extend(self.controller.observe(obs, now));
@@ -348,6 +395,26 @@ impl Inner {
         }
         let actions = self.controller.tick(now);
         self.carry_out(actions, now);
+        let state = self.controller.state();
+        if state != self.last_state {
+            if let Some(t) = &self.trace {
+                t.write_at(
+                    now,
+                    "state",
+                    json!({ "from": format!("{:?}", self.last_state), "to": format!("{state:?}") }),
+                );
+            }
+            let unarmed = matches!(
+                state,
+                MountState::Disconnected | MountState::ConnectedReadOnly
+            );
+            self.adapter.set_position_every(Some(if unarmed {
+                POSITION_EVERY_UNARMED
+            } else {
+                POSITION_EVERY
+            }));
+            self.last_state = state;
+        }
     }
 
     /// Motion too slow for the rate check, from idle reads drifting apart.
@@ -399,10 +466,32 @@ impl Inner {
     }
 
     fn message(&mut self, text: String) {
+        if let Some(t) = &self.trace {
+            t.write("message", json!({ "text": text }));
+        }
         if self.messages.len() >= MAX_MESSAGES {
             self.messages.pop_front();
         }
         self.messages.push_back(text);
+    }
+}
+
+/// Starts the adapter, over a traced link if there is a trace.
+fn start_traced<L: Link + Send + 'static>(
+    link: L,
+    trace: &Option<Trace>,
+    settings: CelestronSettings,
+    clock: Clock,
+    simulated: bool,
+) -> Result<(CelestronAdapter, Opened), String> {
+    match trace {
+        Some(t) => start_adapter(
+            TracingLink::new(link, t.clone()),
+            settings,
+            clock,
+            simulated,
+        ),
+        None => start_adapter(link, settings, clock, simulated),
     }
 }
 

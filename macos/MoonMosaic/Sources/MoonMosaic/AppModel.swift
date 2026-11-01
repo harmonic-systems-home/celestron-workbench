@@ -26,10 +26,19 @@ final class AppModel: ObservableObject {
         }
     }
     @Published var simulate: Bool { didSet { save() } }
-    @Published var dayPalette: Bool { didSet { save() } }
+    /// "auto" (red from civil dusk to dawn at the site), "day" or "night".
+    @Published var paletteMode: String {
+        didSet {
+            save()
+            updatePalette()
+        }
+    }
     @Published var folder: URL { didSet { save() } }
 
     // State.
+    /// The red night palette is showing.
+    @Published private(set) var isNight = true
+    private var paletteCheckedAt = Date.distantPast
     @Published private(set) var connected = false
     @Published private(set) var mountState = "Not connected"
     @Published private(set) var altitude: Double?
@@ -57,6 +66,12 @@ final class AppModel: ObservableObject {
     /// (for focusing) when the mount isn't tracking.
     @Published private(set) var holding = false
     private var holdTask: Task<Void, Never>?
+    /// The hand controller has stopped answering (or answers slowly): it
+    /// may have hung with a motor still running, which only cutting the
+    /// mount's power stops. Beeps until silenced.
+    @Published private(set) var linkAlarm: LinkAlarm?
+    private var alarmBeeps: Timer? { didSet { alarmSounding = alarmBeeps != nil } }
+    @Published private(set) var alarmSounding = false
     @Published var selected: Set<Int> = []
     @Published var showSettings = false
 
@@ -89,11 +104,12 @@ final class AppModel: ObservableObject {
         exposureMs = d["exposureMs"] as? Double ?? 2
         gain = d["gain"] as? Int ?? 100
         simulate = d["simulate"] as? Bool ?? false
-        dayPalette = d["dayPalette"] as? Bool ?? false
+        paletteMode = d["paletteMode"] as? String ?? "auto"
         folder =
             (d["folder"] as? String).map { URL(fileURLWithPath: $0) }
             ?? Self.support.appendingPathComponent("sessions")
         save()
+        updatePalette()
         pollTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.poll() }
         }
@@ -103,7 +119,7 @@ final class AppModel: ObservableObject {
         let d: [String: Any] = [
             "latitude": latitude, "longitude": longitude, "focalLengthMm": focalLengthMm,
             "overlap": overlap, "videoSeconds": videoSeconds, "exposureMs": exposureMs,
-            "gain": gain, "simulate": simulate, "dayPalette": dayPalette, "folder": folder.path,
+            "gain": gain, "simulate": simulate, "paletteMode": paletteMode, "folder": folder.path,
         ]
         do {
             try FileManager.default.createDirectory(
@@ -117,6 +133,27 @@ final class AppModel: ObservableObject {
     }
 
     var siteSet: Bool { latitude != 0 || longitude != 0 }
+
+    /// Night from civil dusk (Sun 6° below the horizon) to dawn at the
+    /// site, in auto; with no site yet, night from 19:00 to 07:00.
+    private func updatePalette() {
+        paletteCheckedAt = Date()
+        let night: Bool
+        switch paletteMode {
+        case "day": night = false
+        case "night": night = true
+        default:
+            let now = Date()
+            if siteSet {
+                let site = Site(latitudeDeg: latitude, longitudeDeg: longitude)
+                night = Ephemeris.horizontal(Ephemeris.sun(at: now), at: now, from: site).altDeg < -6
+            } else {
+                let hour = Calendar.current.component(.hour, from: now)
+                night = hour >= 19 || hour < 7
+            }
+        }
+        if night != isNight { isNight = night }
+    }
 
     func say(_ text: String) {
         let stamp = Self.clock.string(from: Date())
@@ -151,6 +188,10 @@ final class AppModel: ObservableObject {
             return
         }
         let simulate = self.simulate
+        let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(
+            of: ":", with: "-")
+        let trace = folder.appendingPathComponent("mount-traces")
+            .appendingPathComponent("\(stamp).ndjson")
         busy = "Connecting"
         Task.detached {
             do {
@@ -166,12 +207,16 @@ final class AppModel: ObservableObject {
                     }
                     port = p
                 }
-                let mount = try MountSession(port: port, safety: ["max_goto_deg": 1.0])
+                let mount = try MountSession(
+                    port: port, safety: ["max_goto_deg": 1.0], trace: trace)
                 let camera = SharedCamera(
                     simulate
                         ? FakeCamera(width: 1920, height: 1080, scale: 0.3, rotationDeg: 25)
                         : try ZWOCamera(library: ZWOLibrary()))
-                await MainActor.run { self.connected(mount: mount, camera: camera, port: port) }
+                await MainActor.run {
+                    self.connected(mount: mount, camera: camera, port: port)
+                    self.say("Mount trace: \(trace.lastPathComponent)")
+                }
             } catch {
                 await MainActor.run {
                     self.busy = nil
@@ -234,6 +279,8 @@ final class AppModel: ObservableObject {
     }
 
     func disconnect() {
+        silenceAlarm()
+        linkAlarm = nil
         stopHold()
         stopLive()
         try? mount?.stop()
@@ -494,11 +541,66 @@ final class AppModel: ObservableObject {
     }
 
     private func poll() {
+        if Date().timeIntervalSince(paletteCheckedAt) > 60 { updatePalette() }
         guard let mount else { return }
         if let s = try? mount.status() {
             mountState = s.state
             altitude = s.altitudeDeg
             for m in s.messages { say(m) }
+            checkLink(s)
+        }
+    }
+
+    /// Raises the alarm when the hand controller stops answering: the link
+    /// is lost, or idle reads (every 2 s, or 4 a second once armed) stop
+    /// coming. Reads pause during the app's own moves, so those don't count.
+    private func checkLink(_ s: MountSession.Status) {
+        let idle = ["ConnectedReadOnly", "Armed", "FaultLatched"].contains(s.state)
+        let alarm: LinkAlarm? =
+            if s.linkLost { .lost }
+            else if idle, let age = s.positionsAgeMs, age > 8000 { .slow(seconds: age / 1000) }
+            else { nil }
+        switch (linkAlarm, alarm) {
+        case (nil, let new?):
+            linkAlarm = new
+            say("ALARM: \(new.text)")
+            alarmBeeps?.invalidate()
+            NSSound(named: "Sosumi")?.play()
+            alarmBeeps = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { _ in
+                NSSound(named: "Sosumi")?.play()
+            }
+        case (.slow?, .lost):
+            linkAlarm = .lost
+            say("ALARM: \(LinkAlarm.lost.text)")
+        case (.slow?, .slow?):
+            linkAlarm = alarm
+        case (.slow?, nil):
+            // Answering again: the reads were only held up.
+            linkAlarm = nil
+            silenceAlarm()
+            say("The hand controller is answering again.")
+        default:
+            break
+        }
+    }
+
+    func silenceAlarm() {
+        alarmBeeps?.invalidate()
+        alarmBeeps = nil
+    }
+
+}
+
+enum LinkAlarm: Equatable {
+    case slow(seconds: Int)
+    case lost
+
+    var text: String {
+        switch self {
+        case .slow(let seconds):
+            "The hand controller hasn't answered for \(seconds) s. If the mount is moving and its keys don't stop it, cut the mount's power now."
+        case .lost:
+            "The hand controller stopped answering. If the mount is moving, cut its power now. Then Disconnect, unplug and re-plug the hand controller's USB, power the mount on and Connect."
         }
     }
 }

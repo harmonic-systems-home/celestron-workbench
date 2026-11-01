@@ -11,6 +11,7 @@
 //! the four C functions at the end of this file.
 
 pub mod session;
+pub mod trace;
 
 use std::{
     collections::HashMap,

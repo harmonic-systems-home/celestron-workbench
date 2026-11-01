@@ -24,7 +24,7 @@ One Swift package, `macos/AuxListener/`, with two targets:
 ### No typing, and dark
 
 - **Starts listening on its own:** it finds the FTDI cable by its USB vendor ID (0x0403) and opens it, ignores the hand controller's Prolific cable, and reconnects after an unplug. Recording starts when listening does; there is nothing to set.
-- **Night palette:** dark red on black throughout, large type, no white anywhere.
+- **Night palette:** dark red on black throughout, large type, no white anywhere, from civil dusk to dawn (the Sun 6° down at the site Moon Mosaic saved, or 19:00–07:00 without one); ordinary light colours by day, when red on black is hard to read. A setting fixes it to day or night.
 - **Big buttons for marks**, each a timestamped event in the log: *Keypad*, *SkySafari*, *ASIAIR*, *Problem*, *Recovered*, *Re-plugged USB*, *Power cycled*. The set is configurable.
 - **The live view:** whether the cable is connected and the bus active; per device, its last command and reply; packets per second; anomaly counts that turn bright when one occurs; time since the last packet. A scrolling feed of decoded packets, with position polling hidden by default so commands stand out.
 - **An alert sound** on an anomaly, so a problem is noticed without looking; a setting turns it off.

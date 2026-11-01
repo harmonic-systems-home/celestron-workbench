@@ -29,26 +29,46 @@ struct ContentView: View {
 
     enum Panel { case camera, focus, preview }
 
-    var palette: Palette { model.dayPalette ? .day : .night }
+    var palette: Palette { model.isNight ? .night : .day }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 14) {
-            controls.frame(width: 300)
-            VStack(spacing: 12) {
-                imagePanel
-                HStack(alignment: .top, spacing: 12) {
-                    TileGrid(model: model, palette: palette).frame(width: 340, height: 220)
-                    logPanel
+        VStack(spacing: 12) {
+            if let alarm = model.linkAlarm { alarmBanner(alarm) }
+            HStack(alignment: .top, spacing: 14) {
+                controls.frame(width: 300)
+                VStack(spacing: 12) {
+                    imagePanel
+                    HStack(alignment: .top, spacing: 12) {
+                        TileGrid(model: model, palette: palette).frame(width: 340, height: 220)
+                        logPanel
+                    }
+                    .frame(height: 220)
                 }
-                .frame(height: 220)
             }
         }
         .padding(16)
         .background(palette.background)
         .foregroundStyle(palette.text)
         .font(.system(size: 17, design: .rounded))
-        .preferredColorScheme(model.dayPalette ? nil : .dark)
+        .preferredColorScheme(model.isNight ? .dark : .light)
         .sheet(isPresented: $model.showSettings) { SettingsView(model: model, palette: palette) }
+    }
+
+    /// Loud in either palette: the one thing that mustn't be missed.
+    private func alarmBanner(_ alarm: LinkAlarm) -> some View {
+        HStack(spacing: 16) {
+            Image(systemName: "exclamationmark.octagon.fill").font(.system(size: 34))
+            Text(alarm.text).font(.system(size: 19, weight: .semibold, design: .rounded))
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer()
+            if model.alarmSounding {
+                Button("Silence") { model.silenceAlarm() }
+                    .font(.system(size: 17, weight: .semibold))
+            }
+        }
+        .foregroundStyle(.white)
+        .padding(14)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color(red: 0.75, green: 0, blue: 0)))
     }
 
     // MARK: Controls
@@ -357,7 +377,11 @@ struct SettingsView: View {
             Section("Session") {
                 Toggle("Rehearse with the simulated mount and camera", isOn: $model.simulate)
                     .disabled(model.connected)
-                Toggle("Day palette", isOn: $model.dayPalette)
+                Picker("Palette", selection: $model.paletteMode) {
+                    Text("Auto (red after dusk)").tag("auto")
+                    Text("Day").tag("day")
+                    Text("Night (red)").tag("night")
+                }
                 HStack {
                     Text(model.folder.path).font(.system(size: 12, design: .monospaced))
                         .lineLimit(2)

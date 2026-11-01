@@ -94,3 +94,61 @@ fn bad_requests_are_errors_not_panics() {
     assert_eq!(r["ok"], false, "{r}");
     close(id);
 }
+
+#[test]
+fn the_trace_records_traffic_and_reads_are_slow_until_armed() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("traces/t.ndjson");
+    let options = serde_json::json!({ "port": "simulate", "trace": path });
+    let r = open_json(&options.to_string());
+    assert_eq!(r["ok"], true, "{r}");
+    let id = r["session"].as_u64().unwrap();
+    sleep(Duration::from_millis(4_500));
+    assert_eq!(
+        command_json(id, r#"{"op": "reference", "altitude_deg": 30.0}"#)["ok"],
+        true
+    );
+    sleep(Duration::from_millis(600));
+    assert_eq!(command_json(id, r#"{"op": "arm"}"#)["ok"], true);
+    sleep(Duration::from_millis(1_100));
+    close(id);
+
+    let lines: Vec<Value> = std::fs::read_to_string(&path)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let events =
+        |name: &str| -> Vec<&Value> { lines.iter().filter(|l| l["event"] == name).collect() };
+    for name in [
+        "trace_start",
+        "open",
+        "opened",
+        "tx",
+        "rx",
+        "request",
+        "state",
+    ] {
+        assert!(!events(name).is_empty(), "no {name} line");
+    }
+    assert_eq!(events("open")[0]["port"], "simulate");
+    // Unarmed: a read at once, then one every 2 s (three in 4.5 s); armed:
+    // four a second.
+    let request_ns = events("request")[0]["t_ns"].as_i64().unwrap();
+    let before = events("position")
+        .iter()
+        .filter(|l| l["t_ns"].as_i64().unwrap() < request_ns)
+        .count();
+    assert!((2..=4).contains(&before), "{before} reads before arming");
+    let armed_ns = events("state")
+        .iter()
+        .find(|l| l["to"] == "Armed")
+        .expect("armed")["t_ns"]
+        .as_i64()
+        .unwrap();
+    let after = events("position")
+        .iter()
+        .filter(|l| l["t_ns"].as_i64().unwrap() > armed_ns)
+        .count();
+    assert!(after >= 3, "{after} reads in the second after arming");
+}

@@ -72,13 +72,24 @@ The field laptop needs only the app (and ASIStudio for the camera library).
 
 Each session writes `session.ndjson` in its folder, beside its SER files, in the folder chosen in the app (outside this repo): first the plan (frame size, colour pattern, overlap, the Moon's size, the calibration, each tile's planned centre and pointing), then a line per tile captured (file, frames, the first and last frames' times, the mount's axis angles, and the part of the Moon at the frame's centre midway through the video) or failed (why). Site coordinates come from the app's settings and are not written into it; the times and axis angles together would still place the site roughly, so session folders stay out of anything shared.
 
+Each connection also writes a **mount trace**, `mount-traces/<time>.ndjson` in the same folder: every byte to and from the hand controller (a line per write, per reply, per read that timed out), with the app's requests, the controller's state changes, positions and messages, flushed line by line so a hang or a power cut leaves everything before it. The adapter never asks the hand controller for its time or site, and the port name is redacted; the motor counts and times would still say something about the site with the session log, so traces stay out of the repo too.
+
+### After the first daytime trial
+
+The hand controller twice stopped taking key presses, and once a keyed move ran on until the mount's power was cut: the hand controller itself hung mid-move, so neither its keys nor the app's stops (which go through it) reached the motors. The cause isn't known yet. In response:
+
+- **Fewer reads before arming:** idle position reads every 2 s until the mount is armed (the altitude reference, just before arming, brings back four a second), so the app adds little traffic while the keys are in use.
+- **An alarm** when the hand controller stops answering: the link lost, or no idle read for 8 s. A red banner and a repeating sound say to cut the mount's power if it is moving.
+- **The trace** above, to see what came just before the next hang; the AUX Listener (ADR 0018) will show whether the hand controller stops sending on the bus.
+- Until then, search for the Moon with the app disconnected, and keep the mount's power switch in reach.
+
 ### Order of work
 
 1. `mount-core` encoder-only profile, with simulator safety tests (overshoot, stall, idle motion, a goto past the limits refused).
 2. `cwb-mount-ffi` and the Swift wrapper, tested against the simulator.
 3. Moon and Sun positions, tested against published examples.
 4. Camera access with the fake camera; calibration and the planner, tested on a synthetic Moon.
-5. The app: *Here*, calibrate, plan, run, redo, Preview, with the night and day palettes.
+5. The app: *Here*, calibrate, plan, run, redo, Preview, with the night and day palettes (automatic by default: red from civil dusk to dawn at the site).
 6. `scripts/moon-process.sh`, tested on a synthetic session.
 7. A daytime trial on the Moon, then a night session.
 

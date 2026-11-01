@@ -2,13 +2,22 @@ import AppKit
 import AuxListenerCore
 import SwiftUI
 
-/// Dark red on black, so the screen doesn't spoil night vision (ADR 0018).
-enum Night {
-    static let background = Color.black
-    static let panel = Color(red: 0.07, green: 0.0, blue: 0.0)
-    static let dim = Color(red: 0.38, green: 0.04, blue: 0.03)
-    static let text = Color(red: 0.72, green: 0.1, blue: 0.07)
-    static let bright = Color(red: 1.0, green: 0.28, blue: 0.12)
+/// Dark red on black at night, so the screen doesn't spoil night vision
+/// (ADR 0018); ordinary colours by day. The model sets `isNight`, and the
+/// views it drives redraw when it changes.
+@MainActor
+enum Palette {
+    static var isNight = true
+
+    static var background: Color {
+        isNight ? .black : Color(nsColor: .windowBackgroundColor)
+    }
+    static var panel: Color {
+        isNight ? Color(red: 0.07, green: 0.0, blue: 0.0) : Color(nsColor: .controlBackgroundColor)
+    }
+    static var dim: Color { isNight ? Color(red: 0.38, green: 0.04, blue: 0.03) : .secondary }
+    static var text: Color { isNight ? Color(red: 0.72, green: 0.1, blue: 0.07) : .primary }
+    static var bright: Color { isNight ? Color(red: 1.0, green: 0.28, blue: 0.12) : .orange }
 }
 
 struct ContentView: View {
@@ -16,7 +25,9 @@ struct ContentView: View {
     @State private var settings = false
 
     var body: some View {
-        VStack(spacing: 12) {
+        // Read here so the window redraws when it changes.
+        Palette.isNight = model.isNight
+        return VStack(spacing: 12) {
             header
             anomalies
             HStack(alignment: .top, spacing: 12) {
@@ -30,10 +41,10 @@ struct ContentView: View {
             marks
         }
         .padding(16)
-        .background(Night.background)
-        .foregroundStyle(Night.text)
+        .background(Palette.background)
+        .foregroundStyle(Palette.text)
         .font(.system(size: 18, design: .rounded))
-        .preferredColorScheme(.dark)
+        .preferredColorScheme(model.isNight ? .dark : .light)
         .sheet(isPresented: $settings) { SettingsView(model: model, done: { settings = false }) }
     }
 
@@ -48,7 +59,7 @@ struct ContentView: View {
                 Text(linkText).font(.system(size: 24, weight: .semibold, design: .rounded))
                 Text(model.recording.map { "Recording \($0)" } ?? "Not recording")
                     .font(.system(size: 15, design: .rounded))
-                    .foregroundStyle(Night.dim)
+                    .foregroundStyle(Palette.dim)
             }
             Spacer()
             stat("\(model.packetsPerSecond)", "packets/s")
@@ -58,7 +69,7 @@ struct ContentView: View {
             } label: {
                 Image(systemName: "gearshape").font(.system(size: 26))
             }
-            .buttonStyle(NightButton(height: 56, width: 64))
+            .buttonStyle(BigButton(height: 56, width: 64))
         }
     }
 
@@ -73,9 +84,9 @@ struct ContentView: View {
 
     private var linkColor: Color {
         switch model.link {
-        case .connected: model.packetsPerSecond > 0 ? Night.text : Night.dim
-        case .demo: Night.dim
-        case .waiting, .failed: Night.bright
+        case .connected: model.packetsPerSecond > 0 ? Palette.text : Palette.dim
+        case .demo: Palette.dim
+        case .waiting, .failed: Palette.bright
         }
     }
 
@@ -89,7 +100,7 @@ struct ContentView: View {
         VStack(alignment: .trailing, spacing: 0) {
             Text(value).font(.system(size: 26, weight: .semibold, design: .rounded))
                 .monospacedDigit()
-            Text(label).font(.system(size: 13, design: .rounded)).foregroundStyle(Night.dim)
+            Text(label).font(.system(size: 13, design: .rounded)).foregroundStyle(Palette.dim)
         }
     }
 
@@ -107,17 +118,17 @@ struct ContentView: View {
                     Text(kind.label).font(.system(size: 14, design: .rounded))
                 }
                 .frame(maxWidth: .infinity, minHeight: 64)
-                .foregroundStyle(n == 0 ? Night.dim : recent ? Night.bright : Night.text)
+                .foregroundStyle(n == 0 ? Palette.dim : recent ? Palette.bright : Palette.text)
                 .background(
                     RoundedRectangle(cornerRadius: 10).fill(
-                        recent ? Night.dim.opacity(0.5) : Night.panel)
+                        recent ? Palette.dim.opacity(0.5) : Palette.panel)
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: 10)
-                        .stroke(recent ? Night.bright : Night.dim, lineWidth: recent ? 3 : 1))
+                        .stroke(recent ? Palette.bright : Palette.dim, lineWidth: recent ? 3 : 1))
             }
             Button("Clear") { model.resetCounts() }
-                .buttonStyle(NightButton(height: 64, width: 90))
+                .buttonStyle(BigButton(height: 64, width: 90))
         }
     }
 
@@ -126,9 +137,9 @@ struct ContentView: View {
     private var devices: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Devices").font(.system(size: 15, weight: .semibold, design: .rounded))
-                .foregroundStyle(Night.dim)
+                .foregroundStyle(Palette.dim)
             if model.devices.isEmpty {
-                Text("None heard yet").foregroundStyle(Night.dim)
+                Text("None heard yet").foregroundStyle(Palette.dim)
             }
             ScrollView {
                 VStack(alignment: .leading, spacing: 10) {
@@ -140,14 +151,14 @@ struct ContentView: View {
                                 Spacer()
                                 Text(age(d.at)).font(.system(size: 14, design: .rounded))
                                     .monospacedDigit()
-                                    .foregroundStyle(Night.dim)
+                                    .foregroundStyle(Palette.dim)
                             }
                             Text(d.text).font(.system(size: 14, design: .monospaced))
                                 .lineLimit(2)
                         }
                         .padding(10)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(RoundedRectangle(cornerRadius: 8).fill(Night.panel))
+                        .background(RoundedRectangle(cornerRadius: 8).fill(Palette.panel))
                     }
                 }
             }
@@ -168,10 +179,10 @@ struct ContentView: View {
             HStack {
                 Text("Messages by sender → receiver")
                     .font(.system(size: 15, weight: .semibold, design: .rounded))
-                    .foregroundStyle(Night.dim)
+                    .foregroundStyle(Palette.dim)
                 Spacer()
                 Button("Reset") { model.resetRoutes() }
-                    .buttonStyle(NightButton(height: 36, width: 80))
+                    .buttonStyle(BigButton(height: 36, width: 80))
             }
             ScrollView {
                 VStack(spacing: 4) {
@@ -187,7 +198,7 @@ struct ContentView: View {
                 }
                 .padding(10)
             }
-            .background(RoundedRectangle(cornerRadius: 8).fill(Night.panel))
+            .background(RoundedRectangle(cornerRadius: 8).fill(Palette.panel))
         }
         .frame(maxHeight: .infinity, alignment: .top)
     }
@@ -198,18 +209,18 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Text("Bus traffic").font(.system(size: 15, weight: .semibold, design: .rounded))
-                    .foregroundStyle(Night.dim)
+                    .foregroundStyle(Palette.dim)
                 Spacer()
                 Button(model.showPolling ? "Hide polling" : "Show polling") {
                     model.showPolling.toggle()
                 }
-                .buttonStyle(NightButton(height: 40, width: 150))
+                .buttonStyle(BigButton(height: 40, width: 150))
             }
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 3) {
                         ForEach(model.feed) { line in
-                            (Text(line.time + "  ").foregroundStyle(Night.dim) + Text(line.text))
+                            (Text(line.time + "  ").foregroundStyle(Palette.dim) + Text(line.text))
                                 .font(
                                     .system(
                                         size: 15, weight: weight(line.kind), design: .monospaced)
@@ -221,7 +232,7 @@ struct ContentView: View {
                     }
                     .padding(10)
                 }
-                .background(RoundedRectangle(cornerRadius: 8).fill(Night.panel))
+                .background(RoundedRectangle(cornerRadius: 8).fill(Palette.panel))
                 .onChange(of: model.feed.last?.id) { _, id in
                     if let id { proxy.scrollTo(id, anchor: .bottom) }
                 }
@@ -232,9 +243,9 @@ struct ContentView: View {
 
     private func color(_ kind: ListenerModel.FeedLine.Kind) -> Color {
         switch kind {
-        case .anomaly, .mark: Night.bright
-        case .polling, .info: Night.dim
-        case .command, .reply: Night.text
+        case .anomaly, .mark: Palette.bright
+        case .polling, .info: Palette.dim
+        case .command, .reply: Palette.text
         }
     }
 
@@ -248,14 +259,14 @@ struct ContentView: View {
         LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 10)], spacing: 10) {
             ForEach(ListenerModel.marks, id: \.self) { label in
                 Button(label) { model.mark(label) }
-                    .buttonStyle(NightButton(height: 70))
+                    .buttonStyle(BigButton(height: 70))
             }
         }
     }
 }
 
 /// Large, dim buttons that light up while pressed.
-struct NightButton: ButtonStyle {
+struct BigButton: ButtonStyle {
     var height: CGFloat
     var width: CGFloat?
 
@@ -264,12 +275,12 @@ struct NightButton: ButtonStyle {
             .font(.system(size: 20, weight: .semibold, design: .rounded))
             .frame(maxWidth: width ?? .infinity, minHeight: height)
             .frame(width: width)
-            .foregroundStyle(configuration.isPressed ? Color.black : Night.text)
+            .foregroundStyle(configuration.isPressed ? Color.black : Palette.text)
             .background(
                 RoundedRectangle(cornerRadius: 12)
-                    .fill(configuration.isPressed ? Night.bright : Night.panel)
+                    .fill(configuration.isPressed ? Palette.bright : Palette.panel)
             )
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Night.dim, lineWidth: 1.5))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Palette.dim, lineWidth: 1.5))
             .contentShape(Rectangle())
     }
 }
@@ -284,23 +295,29 @@ struct SettingsView: View {
             Toggle("Sound on anomalies", isOn: $model.soundOn)
             Toggle("Show routine position polling in the feed", isOn: $model.showPolling)
             Toggle("Demo traffic while no cable is connected", isOn: $model.demoWhenIdle)
+            Picker("Palette", selection: $model.paletteMode) {
+                Text("Auto (red after dusk)").tag("auto")
+                Text("Day").tag("day")
+                Text("Night (red)").tag("night")
+            }
             VStack(alignment: .leading, spacing: 6) {
                 Text("Sessions are saved in")
                 Text(model.folder.path).font(.system(size: 14, design: .monospaced))
-                    .foregroundStyle(Night.dim)
+                    .foregroundStyle(Palette.dim)
                 Button("Choose folder…") { choose() }
-                    .buttonStyle(NightButton(height: 44, width: 200))
+                    .buttonStyle(BigButton(height: 44, width: 200))
             }
             Spacer()
-            Button("Done", action: done).buttonStyle(NightButton(height: 56))
+            Button("Done", action: done).buttonStyle(BigButton(height: 56))
         }
         .toggleStyle(.switch)
-        .tint(Night.dim)
+        .tint(Palette.dim)
         .font(.system(size: 18, design: .rounded))
-        .foregroundStyle(Night.text)
+        .foregroundStyle(Palette.text)
         .padding(24)
-        .frame(width: 520, height: 420)
-        .background(Night.background)
+        .frame(width: 520, height: 470)
+        .preferredColorScheme(model.isNight ? .dark : .light)
+        .background(Palette.background)
     }
 
     private func choose() {

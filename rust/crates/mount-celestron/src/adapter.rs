@@ -16,6 +16,7 @@
 use std::{
     sync::{
         Arc,
+        atomic::{AtomicU64, Ordering},
         mpsc::{self, RecvTimeoutError},
     },
     thread::{self, JoinHandle},
@@ -79,6 +80,8 @@ pub struct CelestronAdapter {
     transactions: Vec<Transaction>,
     notes: Vec<String>,
     worker: Option<JoinHandle<()>>,
+    /// Idle read interval in ms; 0 for none.
+    position_every: Arc<AtomicU64>,
 }
 
 impl CelestronAdapter {
@@ -92,6 +95,10 @@ impl CelestronAdapter {
     ) -> Self {
         let (jobs, rx) = mpsc::channel();
         let (tx, events) = mpsc::channel();
+        let every = Arc::new(AtomicU64::new(
+            position_every.map_or(0, |d| d.as_millis().max(1) as u64),
+        ));
+        let worker_every = every.clone();
         let worker = thread::Builder::new()
             .name("cwb-celestron".into())
             .spawn(move || {
@@ -106,7 +113,7 @@ impl CelestronAdapter {
                     stale: false,
                     sync_byte: 0,
                 }
-                .run(rx, position_every)
+                .run(rx, &worker_every)
             })
             .expect("spawn the Celestron worker thread");
         Self {
@@ -117,7 +124,17 @@ impl CelestronAdapter {
             transactions: Vec::new(),
             notes: Vec::new(),
             worker: Some(worker),
+            position_every: every,
         }
+    }
+
+    /// Changes the idle read interval. The worker may wait out the old one
+    /// first.
+    pub fn set_position_every(&self, every: Option<Duration>) {
+        self.position_every.store(
+            every.map_or(0, |d| d.as_millis().max(1) as u64),
+            Ordering::Relaxed,
+        );
     }
 
     /// Axis positions read since the last call.
@@ -226,21 +243,33 @@ struct Watch {
 }
 
 impl<L: Link> Worker<L> {
-    fn run(mut self, jobs: mpsc::Receiver<MountCommand>, position_every: Option<Duration>) {
+    fn run(mut self, jobs: mpsc::Receiver<MountCommand>, every: &AtomicU64) {
         // Stops re-sent every 250 ms while a fault is latched mustn't starve
         // the position reads: they are the best evidence the mount is still.
-        let mut last_read = Instant::now();
+        // None until the first read, which is due at once.
+        let mut last_read: Option<Instant> = None;
+        let since_read = |last: Option<Instant>| last.map_or(Duration::MAX, |t| t.elapsed());
         loop {
+            let position_every = match every.load(Ordering::Relaxed) {
+                0 => None,
+                ms => Some(Duration::from_millis(ms)),
+            };
             let first = match position_every {
                 // Watching a goto: read between commands, never waiting.
                 _ if self.watch.is_some() => jobs.try_recv().map_err(|e| match e {
                     mpsc::TryRecvError::Empty => RecvTimeoutError::Timeout,
                     mpsc::TryRecvError::Disconnected => RecvTimeoutError::Disconnected,
                 }),
-                Some(every) => jobs.recv_timeout(every.saturating_sub(last_read.elapsed())),
+                // Waking at least every 100 ms, so a change of interval
+                // takes effect promptly.
+                Some(every) => jobs.recv_timeout(
+                    every
+                        .saturating_sub(since_read(last_read))
+                        .min(Duration::from_millis(100)),
+                ),
                 None => jobs.recv().map_err(|_| RecvTimeoutError::Disconnected),
             };
-            let read_due = position_every.is_some_and(|every| last_read.elapsed() >= every);
+            let read_due = position_every.is_some_and(|every| since_read(last_read) >= every);
             match first {
                 Ok(command) => {
                     let mut batch = vec![command];
@@ -249,12 +278,14 @@ impl<L: Link> Worker<L> {
                         self.execute(&command);
                     }
                     if read_due && !self.moving && self.watch.is_none() {
-                        last_read = Instant::now();
+                        last_read = Some(Instant::now());
                         self.read_position();
                     }
                 }
-                Err(RecvTimeoutError::Timeout) if self.watch.is_none() && !self.moving => {
-                    last_read = Instant::now();
+                Err(RecvTimeoutError::Timeout)
+                    if read_due && self.watch.is_none() && !self.moving =>
+                {
+                    last_read = Some(Instant::now());
                     self.read_position();
                 }
                 Err(RecvTimeoutError::Timeout) if self.watch.is_some() => self.read_watch(),
