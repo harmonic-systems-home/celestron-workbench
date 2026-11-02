@@ -3,9 +3,10 @@
 public struct DecodedPacket: Equatable, Sendable {
     public let packet: AuxPacket
     public let at: UInt64
-    /// Answers a request seen earlier (same message, the other way).
+    /// Answers a request (same message, the other way), or is a device's
+    /// answer to a controller after its request timed out.
     public let isReply: Bool
-    /// From the request to this reply.
+    /// From the request to this reply; nil if the reply came too late to pair.
     public let latencyMs: Double?
     /// A routine read (positions, goto-finished), hidden from the feed by default.
     public let isPolling: Bool
@@ -63,6 +64,12 @@ public struct BusMonitor: Sendable {
                 let request = pending.remove(at: i)
                 let latency = Double(at - request.at) / 1e6
                 out.append(.packet(decode(packet, at: at, reply: true, latencyMs: latency)))
+            } else if !AuxDevice.isController(packet.source),
+                AuxDevice.isController(packet.destination)
+            {
+                // A late answer, not a new request: the camera can take over a
+                // second while it starts up.
+                out.append(.packet(decode(packet, at: at, reply: true, latencyMs: nil)))
             } else {
                 // Messages to "any" are announcements: nobody replies.
                 if packet.destination != 0x00 {
@@ -108,6 +115,8 @@ public struct BusMonitor: Sendable {
         }
         if let latencyMs {
             text += " (\(Int(latencyMs.rounded())) ms)"
+        } else if reply {
+            text += " (late)"
         }
         return DecodedPacket(
             packet: p, at: at, isReply: reply, latencyMs: latencyMs,
@@ -150,7 +159,7 @@ public struct BusMonitor: Sendable {
         case 0x91:
             guard let status = d.first else { return nil }
             let stars = d.dropFirst().first.map { ", \($0) stars" } ?? ""
-            return "status \(StarSenseMessage.status(status))\(stars)"
+            return "status \(status)\(stars)"
         case 0xfe:
             guard d.count >= 2 else { return nil }
             return "\(d[d.startIndex]).\(d[d.startIndex + 1])"

@@ -157,6 +157,21 @@ private func anomalies(_ events: [FramerEvent]) -> [AnomalyKind] {
     #expect(a.detail == "No reply: StarSense HC → StarSense  msg 0x05")
 }
 
+@Test func aLateAnswerIsNotANewRequest() {
+    // Seen on the mount: the camera answered 1.09 s after the request.
+    var monitor = BusMonitor(replyTimeoutNs: 500 * ms)
+    let ask = AuxPacket(raw: Aux.encode(source: 0x0e, destination: 0xb4, id: 0x05))!
+    let answer = AuxPacket(raw: Aux.encode(source: 0xb4, destination: 0x0e, id: 0x05, data: [1]))!
+    _ = monitor.process(.packet(ask, at: 0))
+    guard case .packet(let late) = monitor.process(.packet(answer, at: 1_090 * ms)).last else {
+        Issue.record("expected a packet")
+        return
+    }
+    #expect(late.isReply && late.latencyMs == nil)
+    #expect(late.text == "StarSense → StarSense HC  msg 0x05 [01] (late)")
+    #expect(monitor.expire(at: 2_000 * ms).isEmpty)
+}
+
 @Test func starSenseMessagesDecode() {
     var monitor = BusMonitor()
     func text(_ request: [UInt8], _ id: UInt8, _ data: [UInt8]) -> String? {
@@ -175,7 +190,7 @@ private func anomalies(_ events: [FramerEvent]) -> [AnomalyKind] {
             == "StarSense → StarSense HC  GET_ALIGN_CENTER = x 839, y 381 (16 ms)")
     #expect(
         text([], 0x91, [1, 0])
-            == "StarSense → StarSense HC  GET_STATUS = status 1 (error?), 0 stars (16 ms)")
+            == "StarSense → StarSense HC  GET_STATUS = status 1, 0 stars (16 ms)")
     #expect(text([], 0x05, [1]) == "StarSense → StarSense HC  msg 0x05 [01] (16 ms)")
 }
 

@@ -74,6 +74,11 @@ public enum AuxDevice {
     public static func isMotor(_ address: UInt8) -> Bool {
         address == 0x10 || address == 0x11
     }
+
+    /// Hand controllers and apps: they ask, and devices answer them.
+    public static func isController(_ address: UInt8) -> Bool {
+        [0x04, 0x0d, 0x0e, 0x20].contains(address)
+    }
 }
 
 /// Motor controller message IDs (docs/references.md).
@@ -127,16 +132,6 @@ public enum StarSenseMessage {
         case 0x9f: "GET_IMAGE"
         case 0xfe: "GET_VERSION"
         default: nil
-        }
-    }
-
-    /// The status byte's meaning, also a community guess.
-    static func status(_ byte: UInt8) -> String {
-        switch byte {
-        case 1: "\(byte) (error?)"
-        case 3: "\(byte) (ready?)"
-        case 9: "\(byte) (finished?)"
-        default: "\(byte)"
         }
     }
 }
