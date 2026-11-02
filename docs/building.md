@@ -180,7 +180,18 @@ swift run AuxListener                     # opens the window
 
 With no cable it shows made-up DEMO traffic (not recorded; Settings turns it off). It finds the FTDI cable by itself (USB vendor 0x0403), ignoring the hand controller's Prolific cable, starts recording when it opens it, and reconnects after an unplug. Sessions are NDJSON files in `~/Library/Application Support/AuxListener/sessions` unless Settings points elsewhere; never put them in this repo.
 
-**Wiring** (receive-only): find the breakout's pins with a meter first (one carries +12 V; the data and select pins idle high at the logic level). Then the cable's RXD (yellow) through a 10 kΩ resistor to a data pin, GND (black) to ground; tape off VCC (red) and TXD (orange).
+**Wiring** (receive-only): meter the breakout first, because the colours inside an RJ12 plug and the numbering of a breakout vary. On this mount, in order along the plug:
+
+| Position | Signal | How it was found |
+|---|---|---|
+| 1 | Nothing connected (select, expected) | Not metered |
+| 2 | Ground | Meter, with position 4 |
+| 3 | Data | Continuity with position 5, mount off; decoded packets on the data line |
+| 4 | +12 V | Meter |
+| 5 | Data | Continuity with position 3, mount off; decoded packets on the data line |
+| 6 | Unused | Not identified |
+
+The FTDI cable's connector, from the triangle: 1 GND (black), 2 CTS (brown), 3 VCC (red), 4 TXD (orange), 5 RXD (yellow), 6 RTS (green). Connect pin 5 through a 10 kΩ resistor to a data position and pin 1 to ground, and nothing else. Wire colours on the two cables don't correspond: a thermostat cable's yellow and red may well be +12 V and ground, as they were here. A wrong or poor connection can show as a single stray `00` for each packet; working wiring decodes whole `3B` packets when you tap an arrow key.
 
 
 

@@ -46,6 +46,16 @@ One Swift package, `macos/AuxListener/`, with two targets:
 2. **App:** port discovery and reading, the live view, marks and the log; checked with a fake byte source and then the real cable on the bench.
 3. **First listen on the mount:** meter the breakout, wire it, then listen with the hand controller alone, then the keypad, then SkySafari: ADR 0016's ladder, steps 1–4, with the decoded commands in view.
 
+## After the first listen
+
+The first listen on the mount, with the hand controller's arrow keys:
+
+- **Confirmed:** 19,200 baud, the `3B` packet format and checksum, azimuth at 0x10 and altitude at 0x11, keypad moves as `MC_MOVE_POS`/`MC_MOVE_NEG` with rate 0 to stop, and the wiring (building.md). The StarSense hand controller sends from 0x0E, which wasn't in the list above.
+- **USB timing:** bytes reach the Mac in batches about 16 ms apart, and one reply was split across 33 ms. A frame is now cut short only after 50 ms of quiet, not 20 ms. Times between packets, such as reply latency, are only good to about 16 ms, so they can't show fine timing or prove collisions.
+- **Accessories:** at startup the hand controller asks for accessories that may not be fitted (the focuser at 0x12, the dew heater at 0x17) and for the StarSense camera before it's ready. A request to a device not yet heard from this session is no longer a "no reply" anomaly; a motor must always answer.
+- **StarSense:** messages to and from 0xB4 use community names (references.md), which are best guesses; the app decodes the align centre and status replies. 0x05, which the hand controller sends about every 5 s, is unknown. Bulk star lists appear to use a separate `3C` frame the app doesn't decode, so they would count as stray bytes; not yet seen on this mount.
+- **Still unexplained:** after most unanswered probes to 0x12 or 0x17 at startup, a frame with the same bytes but a last byte of `00` about 0.5 s later, counted as a bad checksum.
+
 ## Consequences
 
 - ADR 0016's "we see effects, not commands" no longer holds: every controller's commands and every reply can be seen and timed, so collisions and unanswered requests show directly.

@@ -39,6 +39,8 @@ public struct BusMonitor: Sendable {
     }
 
     private var pending: [Pending] = []
+    /// Devices that have sent something this session.
+    private var heard: Set<UInt8> = []
 
     public init(replyTimeoutNs: UInt64 = 500_000_000) {
         self.replyTimeoutNs = replyTimeoutNs
@@ -52,6 +54,7 @@ public struct BusMonitor: Sendable {
                 detail: "\(kind.label): \(bytes.count) byte(s) \(hexBytes(bytes.prefix(16)))")
             return expire(at: at) + [.anomaly(anomaly)]
         case .packet(let packet, let at):
+            heard.insert(packet.source)
             var out = expire(at: at)
             if let i = pending.firstIndex(where: {
                 $0.source == packet.destination && $0.destination == packet.source
@@ -74,13 +77,19 @@ public struct BusMonitor: Sendable {
         }
     }
 
-    /// Requests older than the timeout become "no reply" anomalies.
+    /// Requests older than the timeout become "no reply" anomalies, except
+    /// to an accessory not heard from yet: the hand controller also asks for
+    /// devices that aren't fitted, or haven't finished starting up. A motor
+    /// always has to answer.
     public mutating func expire(at now: UInt64) -> [BusEvent] {
         let timeout = replyTimeoutNs
         let late = { (p: Pending) in now >= p.at && now - p.at > timeout }
         let expired = pending.filter(late)
         pending.removeAll(where: late)
-        return expired.map { p in
+        let faults = expired.filter {
+            AuxDevice.isMotor($0.destination) || heard.contains($0.destination)
+        }
+        return faults.map { p in
             let what = describe(source: p.source, destination: p.destination, id: p.id)
             return .anomaly(
                 Anomaly(kind: .noReply, at: p.at, bytes: p.raw, detail: "No reply: \(what)"))
@@ -90,7 +99,7 @@ public struct BusMonitor: Sendable {
     func decode(_ p: AuxPacket, at: UInt64, reply: Bool, latencyMs: Double?) -> DecodedPacket {
         let motor = AuxDevice.isMotor(p.source) || AuxDevice.isMotor(p.destination)
         var text = describe(source: p.source, destination: p.destination, id: p.id)
-        if let value = motor ? value(p, reply: reply) : nil {
+        if let value = value(p, reply: reply) {
             text += reply ? " = \(value)" : " \(value)"
         } else if !p.data.isEmpty {
             text += " [\(hexBytes(p.data))]"
@@ -106,13 +115,51 @@ public struct BusMonitor: Sendable {
     }
 
     private func describe(source: UInt8, destination: UInt8, id: UInt8) -> String {
-        let motor = AuxDevice.isMotor(source) || AuxDevice.isMotor(destination)
-        let message = (motor ? MotorMessage.name(id) : nil) ?? "msg \(hex(id))"
-        return "\(AuxDevice.name(source)) → \(AuxDevice.name(destination))  \(message)"
+        let message: String?
+        if AuxDevice.isMotor(source) || AuxDevice.isMotor(destination) {
+            message = MotorMessage.name(id)
+        } else if source == StarSenseMessage.address || destination == StarSenseMessage.address {
+            message = StarSenseMessage.name(id)
+        } else {
+            message = nil
+        }
+        return
+            "\(AuxDevice.name(source)) → \(AuxDevice.name(destination))  \(message ?? "msg \(hex(id))")"
     }
 
-    /// The data of motor-controller messages we know, in words.
+    /// The data of messages we know, in words.
     private func value(_ p: AuxPacket, reply: Bool) -> String? {
+        if AuxDevice.isMotor(p.source) || AuxDevice.isMotor(p.destination) {
+            return motorValue(p, reply: reply)
+        }
+        if p.source == StarSenseMessage.address || p.destination == StarSenseMessage.address {
+            return starSenseValue(p, reply: reply)
+        }
+        return nil
+    }
+
+    private func starSenseValue(_ p: AuxPacket, reply: Bool) -> String? {
+        let d = p.data[...]
+        guard reply else { return nil }
+        switch p.id {
+        case 0x3f:
+            guard let x = littleEndian32(d.prefix(4)), let y = littleEndian32(d.dropFirst(4)) else {
+                return nil
+            }
+            return "x \(x), y \(y)"
+        case 0x91:
+            guard let status = d.first else { return nil }
+            let stars = d.dropFirst().first.map { ", \($0) stars" } ?? ""
+            return "status \(StarSenseMessage.status(status))\(stars)"
+        case 0xfe:
+            guard d.count >= 2 else { return nil }
+            return "\(d[d.startIndex]).\(d[d.startIndex + 1])"
+        default:
+            return nil
+        }
+    }
+
+    private func motorValue(_ p: AuxPacket, reply: Bool) -> String? {
         let d = p.data[...]
         switch (p.id, reply) {
         case (0x01, true), (0x02, false), (0x04, false), (0x17, false):

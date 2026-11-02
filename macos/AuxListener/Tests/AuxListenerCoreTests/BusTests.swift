@@ -60,10 +60,10 @@ private func anomalies(_ events: [FramerEvent]) -> [AnomalyKind] {
     #expect(framer.feed(Array(whole.prefix(5)), at: 0).isEmpty)
     // Still within the gap: nothing yet.
     #expect(framer.flush(at: 10 * ms).isEmpty)
-    #expect(anomalies(framer.flush(at: 30 * ms)) == [.truncated])
+    #expect(anomalies(framer.flush(at: 60 * ms)) == [.truncated])
     // The next packet frames normally.
     #expect(
-        packets(framer.feed(Aux.encode(source: hc, destination: azm, id: 0x01), at: 40 * ms)).count
+        packets(framer.feed(Aux.encode(source: hc, destination: azm, id: 0x01), at: 70 * ms)).count
             == 1)
 }
 
@@ -123,6 +123,60 @@ private func anomalies(_ events: [FramerEvent]) -> [AnomalyKind] {
     #expect(a.kind == .noReply)
     #expect(a.detail == "No reply: Wi-Fi → Altitude  GET_VERSION")
     #expect(monitor.expire(at: 700 * ms).isEmpty)
+}
+
+@Test func aReplySplitAcrossUSBBatchesStaysWhole() {
+    // Seen on the mount: the first two bytes, then the rest 33 ms later.
+    var framer = Framer()
+    let whole = Aux.encode(source: azm, destination: 0x0e, id: 0x25)
+    var events = framer.feed(Array(whole[..<2]), at: 0)
+    events += framer.flush(at: 33 * ms)
+    events += framer.feed(Array(whole[2...]), at: 33 * ms)
+    #expect(anomalies(events).isEmpty)
+    #expect(packets(events).first?.raw == whole)
+}
+
+@Test func accessoriesNotHeardFromAreNotFaults() {
+    var monitor = BusMonitor(replyTimeoutNs: 500 * ms)
+    // The hand controller asks for a focuser and a camera still starting up.
+    for address in [UInt8(0x12), 0xb4] {
+        let probe = AuxPacket(raw: Aux.encode(source: 0x0e, destination: address, id: 0xfe))!
+        _ = monitor.process(.packet(probe, at: 0))
+    }
+    #expect(monitor.expire(at: 600 * ms).isEmpty)
+    // Once the camera has answered, a missed reply counts.
+    let ask = AuxPacket(raw: Aux.encode(source: 0x0e, destination: 0xb4, id: 0x05))!
+    let answer = AuxPacket(raw: Aux.encode(source: 0xb4, destination: 0x0e, id: 0x05, data: [1]))!
+    _ = monitor.process(.packet(ask, at: 700 * ms))
+    _ = monitor.process(.packet(answer, at: 710 * ms))
+    _ = monitor.process(.packet(ask, at: 800 * ms))
+    guard case .anomaly(let a) = monitor.expire(at: 1_400 * ms).first else {
+        Issue.record("expected a no-reply anomaly")
+        return
+    }
+    #expect(a.detail == "No reply: StarSense HC → StarSense  msg 0x05")
+}
+
+@Test func starSenseMessagesDecode() {
+    var monitor = BusMonitor()
+    func text(_ request: [UInt8], _ id: UInt8, _ data: [UInt8]) -> String? {
+        let ask = AuxPacket(
+            raw: Aux.encode(source: 0x0e, destination: 0xb4, id: id, data: request))!
+        let answer = AuxPacket(
+            raw: Aux.encode(source: 0xb4, destination: 0x0e, id: id, data: data))!
+        _ = monitor.process(.packet(ask, at: 0))
+        guard case .packet(let p) = monitor.process(.packet(answer, at: 16 * ms)).first else {
+            return nil
+        }
+        return p.text
+    }
+    #expect(
+        text([0], 0x3f, [0x47, 0x03, 0, 0, 0x7d, 0x01, 0, 0])
+            == "StarSense → StarSense HC  GET_ALIGN_CENTER = x 839, y 381 (16 ms)")
+    #expect(
+        text([], 0x91, [1, 0])
+            == "StarSense → StarSense HC  GET_STATUS = status 1 (error?), 0 stars (16 ms)")
+    #expect(text([], 0x05, [1]) == "StarSense → StarSense HC  msg 0x05 [01] (16 ms)")
 }
 
 @Test func announcementsToAnyExpectNoReply() {

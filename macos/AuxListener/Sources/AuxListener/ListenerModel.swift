@@ -126,7 +126,8 @@ final class ListenerModel: ObservableObject {
         let t = monotonicNs()
         log?.write(LogLine.mark(label, at: t, utc: Date()))
         append(
-            "★ \(label)" + (recording == nil && link != .demo ? " (not recording: no AUX tap cable)" : ""),
+            "★ \(label)"
+                + (recording == nil && link != .demo ? " (not recording: no AUX tap cable)" : ""),
             at: t, kind: .mark)
     }
 

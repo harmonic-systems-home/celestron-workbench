@@ -17,12 +17,14 @@ Outside sources this project relies on, what each established, and where it is u
 - **[libnexstar](https://github.com/indigo-astronomy/libnexstar)** (INDIGO). Model codes newer than Celestron's table (22 = Evolution), and the anti-backlash get and set messages (ADR 0010, ADR 0011).
 - **[ZWO forum: ASIAIR and the AUX commands](https://bbs.zwoastro.com/d/12341/1)**. The rate in `MC_MOVE_*` is an index into a table of nine rates (0 stops). ASIAIR sets rate index 1 to 1× sidereal for guiding and sends autoguide pulses as `MC_MOVE_POS`/`MC_MOVE_NEG`, so how anti-backlash acts on fixed-rate moves matters for guiding too.
 - **[TwiceAsNice `NexStarAUXScope.h`](https://www2.mpia-hd.mpg.de/~mathar/public/tan_api/NexStarAUXScope_8h.html)** (MPIA). An independent listing of the AUX command IDs (`MC_MOVE_POS` 0x24, `MC_SET_POS_GUIDERATE` 0x06, …) that agrees with the command set above.
+- **[platini2/celestron-aux](https://github.com/platini2/celestron-aux)** (GPL-3.0; facts used, no code copied). A scanner and emulators built from captures of real devices and community reverse engineering, not Celestron documentation. Source of the names for 0x0E (StarSense hand controller), 0x17 (dew heater), the motors' 0x05 (get model), and the StarSense camera's messages at 0xB4: 0x3E/0x3F set and get align centre, 0x90 reset capture, 0x91 status, 0x92 capture data, 0x94 start capture, 0x9F image, 0xFE version. Treat the meanings as best guesses.
 
 ## Checked on this mount
 
 - The keypad rates' speeds: rates 1–5 run at about half Celestron's list, 6–8 match it, and rate 9 takes 1.3–2.7 s to stop (O16). Anti-backlash acts on keypad moves at rates 1–5, partly at 6 (a fixed amount less than at 5), not at 7 or 8 (O16); on variable-rate moves (O15); not on pass-through gotos (O14).
 - The motor controllers' approach setting reads positive on both axes, but pass-through gotos don't use it (O14, O16).
 - `MC_AT_INDEX` gets no answer from azimuth: apparently no index marker (O16).
+- The AUX bus format, addresses and wiring: ADR 0018, "After the first listen", and building.md.
 
 ## Not yet confirmed
 

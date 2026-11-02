@@ -61,9 +61,11 @@ struct ContentView: View {
                     .font(.system(size: 15, design: .rounded))
                     .foregroundStyle(Palette.dim)
                 if model.link == .waiting {
-                    Text("It listens on the AUX bus through its own cable; the hand controller's USB isn't used.")
-                        .font(.system(size: 15, design: .rounded))
-                        .foregroundStyle(Palette.dim)
+                    Text(
+                        "It listens on the AUX bus through its own cable; the hand controller's USB isn't used."
+                    )
+                    .font(.system(size: 15, design: .rounded))
+                    .foregroundStyle(Palette.dim)
                 }
             }
             Spacer()
@@ -299,7 +301,8 @@ struct SettingsView: View {
             Text("Settings").font(.system(size: 26, weight: .semibold, design: .rounded))
             Toggle("Sound on anomalies", isOn: $model.soundOn)
             Toggle("Show routine position polling in the feed", isOn: $model.showPolling)
-            Toggle("Demo traffic while the AUX tap cable isn't connected", isOn: $model.demoWhenIdle)
+            Toggle(
+                "Demo traffic while the AUX tap cable isn't connected", isOn: $model.demoWhenIdle)
             Picker("Palette", selection: $model.paletteMode) {
                 Text("Auto (red after dusk)").tag("auto")
                 Text("Day").tag("day")

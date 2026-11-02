@@ -55,9 +55,11 @@ public enum AuxDevice {
         case 0x01: "Main board"
         case 0x04: "Hand control"
         case 0x0d: "Hand control+"
+        case 0x0e: "StarSense HC"
         case 0x10: "Azimuth"
         case 0x11: "Altitude"
         case 0x12: "Focuser"
+        case 0x17: "Dew heater"
         case 0x20: "App"
         case 0xb0: "GPS"
         case 0xb4: "StarSense"
@@ -81,6 +83,7 @@ public enum MotorMessage {
         case 0x01: "GET_POSITION"
         case 0x02: "GOTO_FAST"
         case 0x04: "SET_POSITION"
+        case 0x05: "GET_MODEL"
         case 0x06: "SET_POS_GUIDERATE"
         case 0x07: "SET_NEG_GUIDERATE"
         case 0x10: "SET_POS_BACKLASH"
@@ -107,6 +110,37 @@ public enum MotorMessage {
     }
 }
 
+/// StarSense camera message IDs, from community captures rather than
+/// Celestron (docs/references.md): the meanings are best guesses, and IDs
+/// not listed, such as 0x05, are unknown.
+public enum StarSenseMessage {
+    public static let address: UInt8 = 0xb4
+
+    public static func name(_ id: UInt8) -> String? {
+        switch id {
+        case 0x3e: "SET_ALIGN_CENTER"
+        case 0x3f: "GET_ALIGN_CENTER"
+        case 0x90: "RESET_CAPTURE"
+        case 0x91: "GET_STATUS"
+        case 0x92: "GET_CAPTURE_DATA"
+        case 0x94: "START_CAPTURE"
+        case 0x9f: "GET_IMAGE"
+        case 0xfe: "GET_VERSION"
+        default: nil
+        }
+    }
+
+    /// The status byte's meaning, also a community guess.
+    static func status(_ byte: UInt8) -> String {
+        switch byte {
+        case 1: "\(byte) (error?)"
+        case 3: "\(byte) (ready?)"
+        case 9: "\(byte) (finished?)"
+        default: "\(byte)"
+        }
+    }
+}
+
 public func hex(_ byte: UInt8) -> String {
     let digits = String(byte, radix: 16, uppercase: true)
     return "0x" + (digits.count == 1 ? "0" + digits : digits)
@@ -117,6 +151,12 @@ public func hexBytes<C: Collection>(_ bytes: C) -> String where C.Element == UIn
         let digits = String(b, radix: 16, uppercase: true)
         return digits.count == 1 ? "0" + digits : digits
     }.joined(separator: " ")
+}
+
+/// A 32-bit little-endian number.
+func littleEndian32(_ bytes: ArraySlice<UInt8>) -> UInt32? {
+    guard bytes.count == 4 else { return nil }
+    return bytes.reversed().reduce(0) { $0 << 8 | UInt32($1) }
 }
 
 /// A 24-bit big-endian position in degrees.

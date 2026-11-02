@@ -14,8 +14,10 @@ enum Daylight {
 
     /// Moon Mosaic's settings file, if it has a site in it.
     static func savedSite() -> (Double, Double)? {
-        let file = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("MoonMosaic/settings.json")
+        let file = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[
+            0
+        ]
+        .appendingPathComponent("MoonMosaic/settings.json")
         guard let data = try? Data(contentsOf: file),
             let d = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
             let lat = d["latitude"] as? Double, let lon = d["longitude"] as? Double,

@@ -33,8 +33,9 @@ public enum FramerEvent: Equatable, Sendable {
 /// byte for `gapNs` is reported as cut short; bytes that can't start a frame
 /// are gathered and reported as stray.
 public struct Framer: Sendable {
-    /// At 19,200 baud a byte takes about 0.5 ms; a pause this long inside a
-    /// frame means it was cut off.
+    /// At 19,200 baud a byte takes about 0.5 ms, but USB delivers bytes in
+    /// batches about 16 ms apart, and a whole reply was seen split across a
+    /// 33 ms gap. A pause this long inside a frame means it was cut off.
     public var gapNs: UInt64
 
     private var frame: [UInt8] = []
@@ -43,7 +44,7 @@ public struct Framer: Sendable {
     private var strayStart: UInt64 = 0
     private var lastByte: UInt64 = 0
 
-    public init(gapNs: UInt64 = 20_000_000) {
+    public init(gapNs: UInt64 = 50_000_000) {
         self.gapNs = gapNs
     }
 
