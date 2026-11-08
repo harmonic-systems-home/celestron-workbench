@@ -21,9 +21,20 @@ public struct Anomaly: Equatable, Sendable {
     public let detail: String
 }
 
+/// A frame that breaks the rules in a way we've seen before and understand
+/// well enough not to call a fault: logged and shown, not counted or sounded.
+public struct KnownFrame: Equatable, Sendable {
+    public let at: UInt64
+    public let bytes: [UInt8]
+    /// Stable name for the log, such as `probe_checksum_00`.
+    public let kind: String
+    public let text: String
+}
+
 public enum BusEvent: Equatable, Sendable {
     case packet(DecodedPacket)
     case anomaly(Anomaly)
+    case known(KnownFrame)
 }
 
 /// Pairs requests with replies, flags requests nobody answers, and turns
@@ -42,6 +53,10 @@ public struct BusMonitor: Sendable {
     private var pending: [Pending] = []
     /// Devices that have sent something this session.
     private var heard: Set<UInt8> = []
+    /// Recent requests, raw, for recognising a repeat with a zeroed checksum.
+    private var recent: [(raw: [UInt8], at: UInt64)] = []
+    /// How far back a zeroed-checksum frame may repeat its request.
+    private let repeatWindowNs: UInt64 = 2_000_000_000
 
     public init(replyTimeoutNs: UInt64 = 500_000_000) {
         self.replyTimeoutNs = replyTimeoutNs
@@ -50,6 +65,9 @@ public struct BusMonitor: Sendable {
     public mutating func process(_ event: FramerEvent) -> [BusEvent] {
         switch event {
         case .anomaly(let kind, let bytes, let at):
+            if kind == .badChecksum, let known = probeRepeat(bytes, at: at) {
+                return expire(at: at) + [.known(known)]
+            }
             let anomaly = Anomaly(
                 kind: kind, at: at, bytes: bytes,
                 detail: "\(kind.label): \(bytes.count) byte(s) \(hexBytes(bytes.prefix(16)))")
@@ -73,6 +91,8 @@ public struct BusMonitor: Sendable {
             } else {
                 // Messages to "any" are announcements: nobody replies.
                 if packet.destination != 0x00 {
+                    recent.removeAll { at < $0.at || at - $0.at > repeatWindowNs }
+                    recent.append((packet.raw, at))
                     pending.append(
                         Pending(
                             source: packet.source, destination: packet.destination,
@@ -82,6 +102,28 @@ public struct BusMonitor: Sendable {
             }
             return out
         }
+    }
+
+    /// Seen at every startup on the mount (ADR 0018): about 0.5 s after the
+    /// hand controller probes an accessory that doesn't answer, the same frame
+    /// again with `00` where the checksum belongs. Recognised only when every
+    /// byte but the last matches a recent request from a controller to an
+    /// accessory not heard from; anything else stays a bad checksum.
+    private func probeRepeat(_ bytes: [UInt8], at: UInt64) -> KnownFrame? {
+        guard bytes.count >= 6, bytes.last == 0x00 else { return nil }
+        let source = bytes[2]
+        let destination = bytes[3]
+        guard AuxDevice.isController(source), !AuxDevice.isMotor(destination),
+            !heard.contains(destination),
+            recent.contains(where: {
+                at >= $0.at && at - $0.at <= repeatWindowNs
+                    && $0.raw.dropLast() == bytes.dropLast()
+            })
+        else { return nil }
+        let what = describe(source: source, destination: destination, id: bytes[4])
+        return KnownFrame(
+            at: at, bytes: bytes, kind: "probe_checksum_00",
+            text: "\(what) repeated, checksum 00 (unanswered probe)")
     }
 
     /// Requests older than the timeout become "no reply" anomalies, except

@@ -264,6 +264,9 @@ final class ListenerModel: ObservableObject {
                 log?.write(LogLine.anomaly(a, utc: utc(a.at)))
                 append("⚠ \(a.detail)", at: a.at, kind: .anomaly)
                 alert(at: a.at)
+            case .known(let k):
+                log?.write(LogLine.known(k, utc: utc(k.at)))
+                append(k.text, at: k.at, kind: .info)
             }
         }
     }

@@ -40,6 +40,12 @@ public enum LogLine {
             ], a.at, utc)
     }
 
+    public static func known(_ k: KnownFrame, utc: Date) -> String {
+        line(
+            ["event": "known", "kind": k.kind, "hex": hexBytes(k.bytes), "text": k.text],
+            k.at, utc)
+    }
+
     public static func mark(_ label: String, at t: UInt64, utc: Date) -> String {
         line(["event": "mark", "label": label], t, utc)
     }

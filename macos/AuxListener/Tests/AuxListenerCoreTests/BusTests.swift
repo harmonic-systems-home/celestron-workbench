@@ -172,6 +172,33 @@ private func anomalies(_ events: [FramerEvent]) -> [AnomalyKind] {
     #expect(monitor.expire(at: 2_000 * ms).isEmpty)
 }
 
+@Test func aProbeRepeatedWithChecksumZeroIsKnownNotAFault() {
+    // From the mount at startup: a focuser probe, then 0.5 s later the same
+    // header with 00 where the checksum (DF) belongs.
+    var framer = Framer()
+    var monitor = BusMonitor(replyTimeoutNs: 500 * ms)
+    let probe = Aux.encode(source: 0x0e, destination: 0x12, id: 0xfe)
+    #expect(probe == [0x3b, 0x03, 0x0e, 0x12, 0xfe, 0xdf])
+    let run = { (bytes: [UInt8], t: UInt64) in
+        framer.feed(bytes, at: t).flatMap { monitor.process($0) }
+    }
+    _ = run(probe, 0)
+    let repeated = run([0x3b, 0x03, 0x0e, 0x12, 0xfe, 0x00], 495 * ms)
+    guard case .known(let k) = repeated.last, repeated.count == 1 else {
+        Issue.record("expected one known frame, got \(repeated)")
+        return
+    }
+    #expect(k.kind == "probe_checksum_00")
+    #expect(k.text == "StarSense HC → Focuser  msg 0xFE repeated, checksum 00 (unanswered probe)")
+    // Anything else ending 00 is still a fault: no matching request here.
+    let other = run([0x3b, 0x03, 0x0e, 0x17, 0x10, 0x00], 600 * ms)
+    guard case .anomaly(let a) = other.last else {
+        Issue.record("expected a bad checksum")
+        return
+    }
+    #expect(a.kind == .badChecksum)
+}
+
 @Test func starSenseMessagesDecode() {
     var monitor = BusMonitor()
     func text(_ request: [UInt8], _ id: UInt8, _ data: [UInt8]) -> String? {
