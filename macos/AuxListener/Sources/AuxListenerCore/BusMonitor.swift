@@ -64,6 +64,17 @@ public struct BusMonitor: Sendable {
 
     public mutating func process(_ event: FramerEvent) -> [BusEvent] {
         switch event {
+        case .split(let outer, let inner, let raw, let at, let innerAt):
+            // Seen with SkySafari over Wi-Fi: its request stops after the
+            // first two or three bytes and a reply is sent in the gap.
+            let note = KnownFrame(
+                at: at, bytes: raw, kind: "split_packet",
+                text:
+                    "\(describe(source: outer.source, destination: outer.destination, id: outer.id))"
+                    + " split by \(describe(source: inner.source, destination: inner.destination, id: inner.id))"
+            )
+            return [.known(note)] + process(.packet(inner, at: innerAt))
+                + process(.packet(outer, at: at))
         case .anomaly(let kind, let bytes, let at):
             if kind == .badChecksum, let known = probeRepeat(bytes, at: at) {
                 return expire(at: at) + [.known(known)]

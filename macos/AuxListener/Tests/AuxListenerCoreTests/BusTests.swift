@@ -199,6 +199,75 @@ private func anomalies(_ events: [FramerEvent]) -> [AnomalyKind] {
     #expect(a.kind == .badChecksum)
 }
 
+@Test func aPacketSplitByAReplyDecodesBoth() {
+    // From the mount with SkySafari over Wi-Fi: its altitude position request
+    // stopped after three bytes and the azimuth's reply came in the gap.
+    var framer = Framer()
+    var monitor = BusMonitor(replyTimeoutNs: 500 * ms)
+    let run = { (bytes: [UInt8], t: UInt64) in
+        framer.feed(bytes, at: t).flatMap { monitor.process($0) }
+    }
+    _ = run(Aux.encode(source: 0x20, destination: azm, id: 0x01), 0)
+    let woven: [UInt8] = [
+        0x3b, 0x03, 0x20, 0x3b, 0x06, 0x10, 0x20, 0x01, 0xff, 0xff, 0xff, 0xcc, 0x11, 0x01, 0xcb,
+    ]
+    let events = run(woven, 16 * ms)
+    var texts: [String] = []
+    for event in events {
+        switch event {
+        case .known(let k): texts.append(k.text)
+        case .packet(let p): texts.append(p.text)
+        case .anomaly(let a): Issue.record("unexpected anomaly \(a.detail)")
+        }
+    }
+    #expect(
+        texts == [
+            "App (Wi-Fi) → Altitude  GET_POSITION split by Azimuth → App (Wi-Fi)  GET_POSITION",
+            "Azimuth → App (Wi-Fi)  GET_POSITION = 359.99998° (16 ms)",
+            "App (Wi-Fi) → Altitude  GET_POSITION",
+        ])
+    // The split request still expects its answer.
+    let answer = run(
+        Aux.encode(source: alt, destination: 0x20, id: 0x01, data: [0, 0, 0]), 32 * ms)
+    guard case .packet(let p) = answer.last else {
+        Issue.record("expected the altitude reply")
+        return
+    }
+    #expect(p.isReply && p.latencyMs == 16)
+}
+
+@Test func aSplitAfterTheLengthByteDecodesToo() {
+    // Also seen: the reply came after only the preamble and length.
+    var framer = Framer()
+    let woven: [UInt8] = [
+        0x3b, 0x06, 0x3b, 0x03, 0x10, 0x20, 0x06, 0xc7, 0x20, 0x10, 0x06, 0x00, 0x00, 0x00, 0xc4,
+    ]
+    guard case .split(let outer, let inner, let raw, _, _) = framer.feed(woven, at: 0).first else {
+        Issue.record("expected a split packet")
+        return
+    }
+    #expect(outer.raw == Aux.encode(source: 0x20, destination: azm, id: 0x06, data: [0, 0, 0]))
+    #expect(inner.raw == Aux.encode(source: azm, destination: 0x20, id: 0x06))
+    #expect(raw == woven)
+}
+
+@Test func aBadFrameThatIsNotTwoPacketsStaysABadChecksum() {
+    // A wrong checksum with a 3B inside that doesn't make two packets: the
+    // frame is a bad checksum and the next packet still frames.
+    var framer = Framer()
+    let bad: [UInt8] = [0x3b, 0x03, 0x0d, 0x3b, 0x03, 0x10]
+    let good = Aux.encode(source: hc, destination: azm, id: 0x01)
+    let events = framer.feed(bad + good, at: 0)
+    #expect(anomalies(events) == [.badChecksum])
+    #expect(packets(events) == [AuxPacket(raw: good)!])
+    // And when the line goes quiet partway, nothing is lost or invented.
+    var quiet = Framer()
+    let partial = quiet.feed(bad + [0x3b, 0x03], at: 0)
+    #expect(partial.isEmpty)
+    let flushed = quiet.flush(at: 100 * ms)
+    #expect(anomalies(flushed) == [.badChecksum, .truncated])
+}
+
 @Test func starSenseMessagesDecode() {
     var monitor = BusMonitor()
     func text(_ request: [UInt8], _ id: UInt8, _ data: [UInt8]) -> String? {

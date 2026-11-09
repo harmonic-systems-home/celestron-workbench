@@ -84,6 +84,10 @@ After every row, a short check that each controller can still move the mount (on
 3. **Stop ends any goto,** with the simulator's second controller and tests; then rows 2 and 6 on hardware.
 4. **Ladder step 7** and rows 3, 4 and 8; then the soak.
 
+## First evidence from the bus (2026-11-09)
+
+With the AUX Listener (ADR 0018) and SkySafari connected over Wi-Fi, the bus showed SkySafari's packets split after their first two or three bytes, with another device's reply sent in the gap: 24 times in about 4 minutes, with SkySafari polling both axes every 0.5 s. It is the first direct sign of two senders' packets mixing on this bus. The hand controller was idle then. The next steps of the ladder repeat it with the hand controller busy (an alignment, the runner or Moon Mosaic connected), to see whether the hand controller receives split packets, and whether hangs follow them.
+
 ## Consequences
 
 - The night failures get a controlled reproduction attempt, mostly with our side read-only, and a record of what recovers each symptom.

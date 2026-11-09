@@ -60,7 +60,7 @@ public enum AuxDevice {
         case 0x11: "Altitude"
         case 0x12: "Focuser"
         case 0x17: "Dew heater"
-        case 0x20: "App"
+        case 0x20: "App (Wi-Fi)"
         case 0xb0: "GPS"
         case 0xb4: "StarSense"
         case 0xb5: "Wi-Fi"

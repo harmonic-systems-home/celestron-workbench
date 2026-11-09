@@ -26,6 +26,10 @@ public enum FramerEvent: Equatable, Sendable {
     /// A packet, timed by the read that brought its first byte.
     case packet(AuxPacket, at: UInt64)
     case anomaly(AnomalyKind, bytes: [UInt8], at: UInt64)
+    /// A packet with another whole packet inside it: `outer` stopped partway
+    /// (seen after its first two or three bytes) and `inner` was sent in the
+    /// gap. `raw` is every byte as it arrived.
+    case split(outer: AuxPacket, inner: AuxPacket, raw: [UInt8], at: UInt64, innerAt: UInt64)
 }
 
 /// Splits the bus's byte stream into packets. Reads arrive in chunks, each
@@ -43,6 +47,9 @@ public struct Framer: Sendable {
     private var stray: [UInt8] = []
     private var strayStart: UInt64 = 0
     private var lastByte: UInt64 = 0
+    /// Where a second frame seems to start inside the current one, after the
+    /// current one's checksum failed; nil while framing normally.
+    private var weave: (index: Int, at: UInt64)?
 
     public init(gapNs: UInt64 = 50_000_000) {
         self.gapNs = gapNs
@@ -50,7 +57,15 @@ public struct Framer: Sendable {
 
     public mutating func feed(_ bytes: [UInt8], at t: UInt64) -> [FramerEvent] {
         var out = flush(at: t)
-        for byte in bytes {
+        out += consume(bytes[...], at: t)
+        if !bytes.isEmpty { lastByte = t }
+        return out
+    }
+
+    private mutating func consume(_ bytes: ArraySlice<UInt8>, at t: UInt64) -> [FramerEvent] {
+        var out: [FramerEvent] = []
+        var rest = bytes
+        while let byte = rest.popFirst() {
             if frame.isEmpty {
                 if byte == Aux.preamble {
                     out += takeStray()
@@ -71,17 +86,66 @@ public struct Framer: Sendable {
                 }
                 continue
             }
-            if frame.count == Int(frame[1]) + 3 {
+            let outerCount = Int(frame[1]) + 3
+            if let w = weave {
+                // Waiting for the inner frame's length, then for both whole.
+                guard frame.count > w.index + 1 else { continue }
+                let innerLength = Int(frame[w.index + 1])
+                guard innerLength >= 3, innerLength <= Aux.maxLength else {
+                    out += unweave(at: t, then: &rest)
+                    continue
+                }
+                guard frame.count == outerCount + innerLength + 3 else { continue }
+                let innerEnd = w.index + innerLength + 3
+                if let inner = AuxPacket(raw: Array(frame[w.index..<innerEnd])),
+                    let outer = AuxPacket(raw: Array(frame[..<w.index] + frame[innerEnd...]))
+                {
+                    out.append(
+                        .split(
+                            outer: outer, inner: inner, raw: frame, at: frameStart, innerAt: w.at))
+                    frame = []
+                    weave = nil
+                } else {
+                    out += unweave(at: t, then: &rest)
+                }
+                continue
+            }
+            if frame.count == outerCount {
                 if let packet = AuxPacket(raw: frame) {
                     out.append(.packet(packet, at: frameStart))
+                    frame = []
+                } else if let i = frame.indices.dropFirst(2).first(where: {
+                    frame[$0] == Aux.preamble
+                }) {
+                    // Perhaps another packet came in a pause in this one.
+                    weave = (i, t)
+                    if frame.count > i + 1 {
+                        let innerLength = Int(frame[i + 1])
+                        if innerLength < 3 || innerLength > Aux.maxLength {
+                            out += unweave(at: t, then: &rest)
+                        }
+                    }
                 } else {
                     out.append(.anomaly(.badChecksum, bytes: frame, at: frameStart))
+                    frame = []
                 }
-                frame = []
             }
         }
-        if !bytes.isEmpty { lastByte = t }
         return out
+    }
+
+    /// The bytes didn't make two packets after all: the first frame is a bad
+    /// checksum, and what was gathered after it goes back to normal framing.
+    private mutating func unweave(at t: UInt64, then rest: inout ArraySlice<UInt8>)
+        -> [FramerEvent]
+    {
+        let outerCount = Int(frame[1]) + 3
+        let bad = Array(frame[..<outerCount])
+        let extra = frame[outerCount...]
+        frame = []
+        weave = nil
+        rest = extra + rest
+        return [.anomaly(.badChecksum, bytes: bad, at: frameStart)]
     }
 
     /// Reports a frame left unfinished, and stray bytes, once the line has
@@ -89,6 +153,12 @@ public struct Framer: Sendable {
     public mutating func flush(at t: UInt64) -> [FramerEvent] {
         guard t >= lastByte, t - lastByte > gapNs else { return [] }
         var out = takeStray()
+        if weave != nil {
+            var rest: ArraySlice<UInt8> = []
+            out += unweave(at: t, then: &rest)
+            out += consume(rest, at: t)
+            out += takeStray()
+        }
         if !frame.isEmpty {
             out.append(.anomaly(.truncated, bytes: frame, at: frameStart))
             frame = []
