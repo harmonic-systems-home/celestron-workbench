@@ -48,6 +48,7 @@ public struct BusMonitor: Sendable {
         let id: UInt8
         let at: UInt64
         let raw: [UInt8]
+        let timeoutNs: UInt64
     }
 
     private var pending: [Pending] = []
@@ -64,6 +65,12 @@ public struct BusMonitor: Sendable {
 
     public mutating func process(_ event: FramerEvent) -> [BusEvent] {
         switch event {
+        case .bulk(let bytes, let at):
+            let length = bytes.count - Bulk.headerCount - 1
+            let note = KnownFrame(
+                at: at, bytes: bytes, kind: "bulk_3c",
+                text: "3C bulk frame: \(length) data bytes (StarSense capture data?), not decoded")
+            return expire(at: at) + [.known(note)]
         case .split(let outer, let inner, let raw, let at, let innerAt):
             // Seen with SkySafari over Wi-Fi: its request stops after the
             // first two or three bytes and a reply is sent in the gap.
@@ -107,7 +114,8 @@ public struct BusMonitor: Sendable {
                     pending.append(
                         Pending(
                             source: packet.source, destination: packet.destination,
-                            id: packet.id, at: at, raw: packet.raw))
+                            id: packet.id, at: at, raw: packet.raw,
+                            timeoutNs: timeout(packet)))
                 }
                 out.append(.packet(decode(packet, at: at, reply: false, latencyMs: nil)))
             }
@@ -137,13 +145,21 @@ public struct BusMonitor: Sendable {
             text: "\(what) repeated, checksum 00 (unanswered probe)")
     }
 
+    /// The camera takes seconds to capture: on the mount, 2.8 s to answer a
+    /// capture reset and 5.0 s to answer a capture start.
+    public var captureTimeoutNs: UInt64 = 10_000_000_000
+
+    private func timeout(_ p: AuxPacket) -> UInt64 {
+        p.destination == StarSenseMessage.address && StarSenseMessage.isCapture(p.id)
+            ? max(replyTimeoutNs, captureTimeoutNs) : replyTimeoutNs
+    }
+
     /// Requests older than the timeout become "no reply" anomalies, except
     /// to an accessory not heard from yet: the hand controller also asks for
     /// devices that aren't fitted, or haven't finished starting up. A motor
     /// always has to answer.
     public mutating func expire(at now: UInt64) -> [BusEvent] {
-        let timeout = replyTimeoutNs
-        let late = { (p: Pending) in now >= p.at && now - p.at > timeout }
+        let late = { (p: Pending) in now >= p.at && now - p.at > p.timeoutNs }
         let expired = pending.filter(late)
         pending.removeAll(where: late)
         let faults = expired.filter {

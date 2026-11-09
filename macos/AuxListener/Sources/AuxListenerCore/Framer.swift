@@ -30,6 +30,19 @@ public enum FramerEvent: Equatable, Sendable {
     /// (seen after its first two or three bytes) and `inner` was sent in the
     /// gap. `raw` is every byte as it arrived.
     case split(outer: AuxPacket, inner: AuxPacket, raw: [UInt8], at: UInt64, innerAt: UInt64)
+    /// A `3C` bulk frame with a valid checksum: seen after the StarSense
+    /// camera's capture data answer. `bytes` is the whole frame.
+    case bulk(bytes: [UInt8], at: UInt64)
+}
+
+/// The `3C` bulk frame, from one capture on this mount (ADR 0018): `3C`, a
+/// 4-byte big-endian data length, the data, and a checksum like a packet's
+/// (two's complement of the sum from the first length byte on).
+public enum Bulk {
+    public static let preamble: UInt8 = 0x3C
+    /// Longest data length accepted; longer is treated as stray bytes.
+    public static let maxLength = 4096
+    static let headerCount = 5
 }
 
 /// Splits the bus's byte stream into packets. Reads arrive in chunks, each
@@ -50,6 +63,8 @@ public struct Framer: Sendable {
     /// Where a second frame seems to start inside the current one, after the
     /// current one's checksum failed; nil while framing normally.
     private var weave: (index: Int, at: UInt64)?
+    private var bulk: [UInt8] = []
+    private var bulkStart: UInt64 = 0
 
     public init(gapNs: UInt64 = 50_000_000) {
         self.gapNs = gapNs
@@ -66,7 +81,35 @@ public struct Framer: Sendable {
         var out: [FramerEvent] = []
         var rest = bytes
         while let byte = rest.popFirst() {
+            if !bulk.isEmpty {
+                bulk.append(byte)
+                guard bulk.count >= Bulk.headerCount else { continue }
+                let length = bulk[1..<Bulk.headerCount].reduce(0) { $0 << 8 | Int($1) }
+                guard length <= Bulk.maxLength else {
+                    // Not a bulk frame: the 3C is stray, the rest is framed again.
+                    if stray.isEmpty { strayStart = bulkStart }
+                    stray.append(Bulk.preamble)
+                    rest = bulk[1...] + rest
+                    bulk = []
+                    continue
+                }
+                if bulk.count == Bulk.headerCount + length + 1 {
+                    if Aux.checksum(bulk[1..<(bulk.count - 1)]) == bulk[bulk.count - 1] {
+                        out.append(.bulk(bytes: bulk, at: bulkStart))
+                    } else {
+                        out.append(.anomaly(.badChecksum, bytes: bulk, at: bulkStart))
+                    }
+                    bulk = []
+                }
+                continue
+            }
             if frame.isEmpty {
+                if byte == Bulk.preamble {
+                    out += takeStray()
+                    bulk = [byte]
+                    bulkStart = t
+                    continue
+                }
                 if byte == Aux.preamble {
                     out += takeStray()
                     frame = [byte]
@@ -162,6 +205,10 @@ public struct Framer: Sendable {
         if !frame.isEmpty {
             out.append(.anomaly(.truncated, bytes: frame, at: frameStart))
             frame = []
+        }
+        if !bulk.isEmpty {
+            out.append(.anomaly(.truncated, bytes: bulk, at: bulkStart))
+            bulk = []
         }
         return out
     }

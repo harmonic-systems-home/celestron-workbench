@@ -134,6 +134,11 @@ public enum StarSenseMessage {
         default: nil
         }
     }
+
+    /// Messages the camera answers only once a capture is done.
+    public static func isCapture(_ id: UInt8) -> Bool {
+        id == 0x90 || id == 0x94
+    }
 }
 
 public func hex(_ byte: UInt8) -> String {

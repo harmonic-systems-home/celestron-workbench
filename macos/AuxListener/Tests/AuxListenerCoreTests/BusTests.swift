@@ -268,6 +268,48 @@ private func anomalies(_ events: [FramerEvent]) -> [AnomalyKind] {
     #expect(anomalies(flushed) == [.badChecksum, .truncated])
 }
 
+@Test func aCaptureMayTakeSecondsToAnswer() {
+    // On the mount: SkySafari reset and started a capture; the camera
+    // answered 2.8 s and 5.0 s later.
+    var monitor = BusMonitor(replyTimeoutNs: 500 * ms)
+    let hello = AuxPacket(raw: Aux.encode(source: 0xb4, destination: 0x20, id: 0x3f, data: [0]))!
+    _ = monitor.process(.packet(hello, at: 0))
+    let start = AuxPacket(raw: Aux.encode(source: 0x20, destination: 0xb4, id: 0x94, data: [0]))!
+    _ = monitor.process(.packet(start, at: 100 * ms))
+    #expect(monitor.expire(at: 3_000 * ms).isEmpty)
+    let done = AuxPacket(raw: Aux.encode(source: 0xb4, destination: 0x20, id: 0x94, data: [9, 9]))!
+    guard case .packet(let p) = monitor.process(.packet(done, at: 5_100 * ms)).last else {
+        Issue.record("expected the capture answer")
+        return
+    }
+    #expect(p.latencyMs == 5_000)
+    // Other messages to the camera keep the short timeout.
+    let ask = AuxPacket(raw: Aux.encode(source: 0x20, destination: 0xb4, id: 0x3f, data: [0]))!
+    _ = monitor.process(.packet(ask, at: 6_000 * ms))
+    #expect(monitor.expire(at: 6_600 * ms).count == 1)
+}
+
+@Test func aBulkFrameIsKeptNotStray() {
+    // The shape of the 3C frame seen after GET_CAPTURE_DATA: 3C, a 4-byte
+    // big-endian length, the data, and a packet-style checksum.
+    let data: [UInt8] = [0x34, 0x04, 0x48, 0x44, 0x6b, 0x89, 0x55, 0x00]
+    let body: [UInt8] = [0, 0, 0, UInt8(data.count)] + data
+    let frame = [Bulk.preamble] + body + [Aux.checksum(body)]
+    var framer = Framer()
+    var monitor = BusMonitor()
+    let reply = Aux.encode(source: 0xb4, destination: 0x20, id: 0x92, data: [9, 9])
+    let events = framer.feed(reply + frame + reply, at: 0).flatMap { monitor.process($0) }
+    let known = events.compactMap { if case .known(let k) = $0 { k } else { nil } }
+    #expect(known.map(\.kind) == ["bulk_3c"])
+    #expect(known.first?.bytes == frame)
+    #expect(events.allSatisfy { if case .anomaly = $0 { false } else { true } })
+    // A 3C with an impossible length is a stray byte, and framing recovers.
+    var other = Framer()
+    let stray = other.feed([0x3c, 0xff, 0xff, 0xff, 0xff] + reply, at: 0)
+    #expect(anomalies(stray) == [.noise])
+    #expect(packets(stray) == [AuxPacket(raw: reply)!])
+}
+
 @Test func starSenseMessagesDecode() {
     var monitor = BusMonitor()
     func text(_ request: [UInt8], _ id: UInt8, _ data: [UInt8]) -> String? {
