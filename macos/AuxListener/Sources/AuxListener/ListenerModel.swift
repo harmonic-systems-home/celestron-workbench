@@ -85,6 +85,7 @@ final class ListenerModel: ObservableObject {
 
     private let defaults = UserDefaults.standard
     private var framer = Framer()
+    private var joiner = PauseJoiner()
     private var monitor = BusMonitor()
     private var reader: SerialReader?
     private var log: SessionLog?
@@ -164,7 +165,7 @@ final class ListenerModel: ObservableObject {
             }
             demo = d
         }
-        handle(framer.flush(at: now).flatMap { monitor.process($0) })
+        handle(joiner.process(framer.flush(at: now), at: now).flatMap { monitor.process($0) })
         handle(monitor.expire(at: now))
         arrivals.removeAll { $0 + 1_000_000_000 < now }
         packetsPerSecond = arrivals.count
@@ -211,6 +212,7 @@ final class ListenerModel: ObservableObject {
         recording = nil
         reader = nil
         framer = Framer()
+        joiner = PauseJoiner()
         monitor = BusMonitor()
         link = .waiting
         append("AUX tap cable unplugged: waiting for it", at: t, kind: .anomaly)
@@ -230,6 +232,7 @@ final class ListenerModel: ObservableObject {
         guard demo != nil else { return }
         demo = nil
         framer = Framer()
+        joiner = PauseJoiner()
         monitor = BusMonitor()
         devices = []
         routes = []
@@ -239,7 +242,7 @@ final class ListenerModel: ObservableObject {
     // MARK: - Bytes to events
 
     private func ingest(_ bytes: [UInt8], at t: UInt64) {
-        handle(framer.feed(bytes, at: t).flatMap { monitor.process($0) })
+        handle(joiner.process(framer.feed(bytes, at: t), at: t).flatMap { monitor.process($0) })
     }
 
     private func handle(_ events: [BusEvent]) {

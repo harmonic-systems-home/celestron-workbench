@@ -401,3 +401,47 @@ private func anomalies(_ events: [FramerEvent]) -> [AnomalyKind] {
     #expect(BusMonitor.battery(r) == BatteryMessage.Reading(volts: 10.056, level: 2, state: 2))
     #expect(BusMonitor.battery(q) == nil)
 }
+
+@Test func aRequestThatPausesPartwayIsOneAnomalyNotThree() {
+    // As heard on 2026-11-10: the HC sends five bytes of a position read,
+    // pauses about 0.5 s, then the checksum and the request again with 00
+    // for its checksum; the motor answers after that.
+    let hcStarSense: UInt8 = 0x0e
+    let request = Aux.encode(source: hcStarSense, destination: alt, id: 0x01)
+    let reply = Aux.encode(source: alt, destination: hcStarSense, id: 0x01, data: [0, 0, 1])
+    var framer = Framer()
+    var joiner = PauseJoiner()
+    var monitor = BusMonitor()
+    var events: [BusEvent] = []
+    func run(_ e: [FramerEvent], _ t: UInt64) {
+        events += joiner.process(e, at: t).flatMap { monitor.process($0) }
+    }
+    run(framer.feed(Array(request.prefix(5)), at: 0), 0)
+    run(framer.flush(at: 200 * ms), 200 * ms)
+    run(framer.feed([request[5]] + request.dropLast() + [0x00], at: 500 * ms), 500 * ms)
+    run(framer.feed(reply, at: 525 * ms), 525 * ms)
+    run(framer.flush(at: 3000 * ms), 3000 * ms)
+    let found = events.compactMap { if case .anomaly(let a) = $0 { a } else { nil } }
+    #expect(found.map(\.kind) == [.paused])
+    #expect(found.first?.detail.contains("StarSense HC → Altitude  GET_POSITION") == true)
+    #expect(found.first?.detail.contains("500 ms") == true)
+    #expect(found.first?.bytes.count == 12)
+    #expect(events.contains { if case .packet(let p) = $0 { p.packet.source == alt } else { false } })
+}
+
+@Test func aFrameCutShortWithNothingAfterStaysCutShort() {
+    var framer = Framer()
+    var joiner = PauseJoiner()
+    let whole = Aux.encode(source: hc, destination: azm, id: 0x17, data: [1, 2, 3])
+    #expect(joiner.process(framer.feed(Array(whole.prefix(5)), at: 0), at: 0).isEmpty)
+    // Held through its window, then passed on unchanged.
+    #expect(joiner.process(framer.flush(at: 100 * ms), at: 100 * ms).isEmpty)
+    #expect(anomalies(joiner.process(framer.flush(at: 1600 * ms), at: 1600 * ms)) == [.truncated])
+}
+
+@Test func strayBytesOnTheirOwnAreNotHeld() {
+    var framer = Framer()
+    var joiner = PauseJoiner()
+    #expect(anomalies(joiner.process(framer.feed([0xDD], at: 0), at: 0)).isEmpty)
+    #expect(anomalies(joiner.process(framer.flush(at: 100 * ms), at: 100 * ms)) == [.noise])
+}

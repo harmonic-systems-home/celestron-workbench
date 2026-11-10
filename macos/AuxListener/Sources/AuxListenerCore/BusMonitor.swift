@@ -82,6 +82,17 @@ public struct BusMonitor: Sendable {
             )
             return [.known(note)] + process(.packet(inner, at: innerAt))
                 + process(.packet(outer, at: at))
+        case .paused(let bytes, let at, let resumedAt):
+            let what =
+                bytes.count >= 5
+                ? describe(source: bytes[2], destination: bytes[3], id: bytes[4]) : "a frame"
+            let ms = Int((Double(resumedAt - at) / 1e6).rounded())
+            let anomaly = Anomaly(
+                kind: .paused, at: at, bytes: bytes,
+                detail:
+                    "\(AnomalyKind.paused.label): \(what), went on after \(ms) ms"
+                    + " (\(bytes.count) bytes \(hexBytes(bytes.prefix(16))))")
+            return expire(at: at) + [.anomaly(anomaly)]
         case .anomaly(let kind, let bytes, let at):
             if kind == .badChecksum, let known = probeRepeat(bytes, at: at) {
                 return expire(at: at) + [.known(known)]

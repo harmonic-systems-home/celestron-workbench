@@ -10,6 +10,9 @@ public enum AnomalyKind: String, CaseIterable, Sendable {
     case noise
     /// A request that nobody answered in time.
     case noReply = "no_reply"
+    /// A frame that stopped partway and went on after a pause, with any
+    /// garbled bytes that came with it: one event, not several.
+    case paused
 
     public var label: String {
         switch self {
@@ -18,6 +21,7 @@ public enum AnomalyKind: String, CaseIterable, Sendable {
         case .truncated: "Cut short"
         case .noise: "Stray bytes"
         case .noReply: "No reply"
+        case .paused: "Paused mid-packet"
         }
     }
 }
@@ -33,6 +37,9 @@ public enum FramerEvent: Equatable, Sendable {
     /// A `3C` bulk frame with a valid checksum: seen after the StarSense
     /// camera's capture data answer. `bytes` is the whole frame.
     case bulk(bytes: [UInt8], at: UInt64)
+    /// A frame cut short, then more broken bytes soon after: `bytes` is all
+    /// of them in order, from `at` to `resumedAt` (see `PauseJoiner`).
+    case paused(bytes: [UInt8], at: UInt64, resumedAt: UInt64)
 }
 
 /// The `3C` bulk frame, from one capture on this mount (ADR 0018): `3C`, a
@@ -217,5 +224,64 @@ public struct Framer: Sendable {
         guard !stray.isEmpty else { return [] }
         defer { stray = [] }
         return [.anomaly(.noise, bytes: stray, at: strayStart)]
+    }
+}
+
+/// Joins a frame cut short with the broken bytes that follow it soon after
+/// into one `.paused` event. On 2026-11-10 the StarSense HC, passing Moon
+/// Mosaic's reads through, stopped about 2.5 times a minute after the fifth
+/// byte of a request, went quiet for 0.5–1 s, then sent the checksum and
+/// often the request again with `00` for its checksum; the motor answered
+/// after that. The framer saw each as cut short, stray bytes and a bad
+/// checksum. A cut-short frame with nothing broken after it within
+/// `windowNs` is passed on as it was.
+public struct PauseJoiner: Sendable {
+    public var windowNs: UInt64
+
+    private var held: (bytes: [UInt8], at: UInt64, lastAt: UInt64, parts: Int)?
+
+    public init(windowNs: UInt64 = 1_500_000_000) {
+        self.windowNs = windowNs
+    }
+
+    /// Feed it the framer's events, and call it on a timer (with none) so a
+    /// held frame is let go once its window is over.
+    public mutating func process(_ events: [FramerEvent], at now: UInt64) -> [FramerEvent] {
+        var out: [FramerEvent] = []
+        for event in events {
+            if case .anomaly(let kind, let bytes, let at) = event, kind != .noReply {
+                if var h = held, at >= h.at, at - h.at <= windowNs {
+                    h.bytes += bytes
+                    h.lastAt = at
+                    h.parts += 1
+                    held = h
+                    continue
+                }
+                out += release()
+                if kind == .truncated {
+                    held = (bytes, at, at, 1)
+                } else {
+                    out.append(event)
+                }
+                continue
+            }
+            // A packet after the broken bytes ends the episode.
+            if let h = held, h.parts > 1, case .packet = event {
+                out += release()
+            }
+            out.append(event)
+        }
+        if let h = held, now >= h.at, now - h.at > windowNs {
+            out += release()
+        }
+        return out
+    }
+
+    private mutating func release() -> [FramerEvent] {
+        guard let h = held else { return [] }
+        held = nil
+        return h.parts == 1
+            ? [.anomaly(.truncated, bytes: h.bytes, at: h.at)]
+            : [.paused(bytes: h.bytes, at: h.at, resumedAt: h.lastAt)]
     }
 }

@@ -117,7 +117,8 @@ public enum MotorMessage {
 
 /// The mount's battery (0xB6). Message 0x10 returns six bytes: the last four
 /// its voltage in microvolts, big-endian. The first is a state (0 on
-/// battery, 2 charging; 1 not seen), the second a coarse level that steps
+/// battery, 2 on external power, which may not mean charging: 1 not seen),
+/// the second a coarse level that steps
 /// from 2 to 1 at about 9.75 V.
 public enum BatteryMessage {
     public static let address: UInt8 = 0xb6
