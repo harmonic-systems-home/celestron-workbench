@@ -38,6 +38,23 @@ use crate::encode::{CelestronSettings, Tx, goto_motor, transactions};
 /// adapter can stay up while the hand controller or its cable is gone.
 pub const TIMEOUTS_UNTIL_LOST: u32 = 3;
 
+/// How often the idle worker reads the mount's battery, alongside a position
+/// read. Never while a move or a goto watch is under way.
+pub const BATTERY_EVERY: Duration = Duration::from_secs(30);
+
+/// The mount's battery, as [`Query::Battery`] reads it.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
+pub struct Battery {
+    /// Mac time the reply arrived.
+    pub t_ns: Nanos,
+    pub volts: f64,
+    /// The reply's second byte, a coarse level set by the voltage alone:
+    /// 2 at 9.752 V and above, 1 at 9.746 V and below (2026-11-09).
+    pub level: u8,
+    /// The first byte: 0 on battery, 2 on the charger. 1 not seen yet.
+    pub state: u8,
+}
+
 /// The mount's own axis angles, read from the motor controllers (the same
 /// counts the hand controller's `z` reports), relative to power-on.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -67,6 +84,7 @@ enum Event {
     Transaction(Transaction),
     Lost(String),
     Position(Position),
+    Battery(Battery),
     Note(String),
 }
 
@@ -79,6 +97,7 @@ pub struct CelestronAdapter {
     positions: Vec<Position>,
     transactions: Vec<Transaction>,
     notes: Vec<String>,
+    battery: Option<Battery>,
     worker: Option<JoinHandle<()>>,
     /// Idle read interval in ms; 0 for none.
     position_every: Arc<AtomicU64>,
@@ -112,6 +131,8 @@ impl CelestronAdapter {
                     watch: None,
                     stale: false,
                     sync_byte: 0,
+                    battery_read: None,
+                    no_battery: false,
                 }
                 .run(rx, &worker_every)
             })
@@ -123,6 +144,7 @@ impl CelestronAdapter {
             positions: Vec::new(),
             transactions: Vec::new(),
             notes: Vec::new(),
+            battery: None,
             worker: Some(worker),
             position_every: every,
         }
@@ -140,6 +162,11 @@ impl CelestronAdapter {
     /// Axis positions read since the last call.
     pub fn take_positions(&mut self) -> Vec<Position> {
         std::mem::take(&mut self.positions)
+    }
+
+    /// The latest battery reading, if the mount has one.
+    pub fn battery(&self) -> Option<Battery> {
+        self.battery
     }
 
     /// Whether the link has been reported lost.
@@ -200,6 +227,7 @@ impl MountAdapter for CelestronAdapter {
                     }
                 }
                 Event::Position(p) => self.positions.push(p),
+                Event::Battery(b) => self.battery = Some(b),
                 Event::Transaction(t) => self.transactions.push(t),
                 Event::Note(n) => self.notes.push(n),
             }
@@ -231,6 +259,10 @@ struct Worker<L: Link> {
     stale: bool,
     /// The last echo byte used to resynchronize.
     sync_byte: u8,
+    /// When the battery was last asked; None until the first time.
+    battery_read: Option<Instant>,
+    /// The bus has no battery (the pass-through said so): stop asking.
+    no_battery: bool,
 }
 
 /// Reading a goto's axis between commands.
@@ -280,6 +312,7 @@ impl<L: Link> Worker<L> {
                     if read_due && !self.moving && self.watch.is_none() {
                         last_read = Some(Instant::now());
                         self.read_position();
+                        self.read_battery_if_due();
                     }
                 }
                 Err(RecvTimeoutError::Timeout)
@@ -287,6 +320,7 @@ impl<L: Link> Worker<L> {
                 {
                     last_read = Some(Instant::now());
                     self.read_position();
+                    self.read_battery_if_due();
                 }
                 Err(RecvTimeoutError::Timeout) if self.watch.is_some() => self.read_watch(),
                 Err(RecvTimeoutError::Timeout) => {}
@@ -573,6 +607,50 @@ impl<L: Link> Worker<L> {
             t_ns: (self.clock)(),
             deg,
         }));
+    }
+}
+
+impl<L: Link> Worker<L> {
+    /// Reads the battery every [`BATTERY_EVERY`], straight after a position
+    /// read, so it never delays a command by more than one short exchange.
+    fn read_battery_if_due(&mut self) {
+        if self.no_battery
+            || self.moving
+            || self.watch.is_some()
+            || self
+                .battery_read
+                .is_some_and(|t| t.elapsed() < BATTERY_EVERY)
+        {
+            return;
+        }
+        self.battery_read = Some(Instant::now());
+        let query = Query::Battery;
+        let (outcome, reply) = self.exchange(&query.bytes(), query.reply_len(), true);
+        match outcome {
+            Outcome::Ok => match query.decode(&reply[..query.reply_len()]) {
+                Some(Value::Battery {
+                    state,
+                    level,
+                    volts,
+                }) => {
+                    self.timeouts = 0;
+                    let _ = self.events.send(Event::Battery(Battery {
+                        t_ns: (self.clock)(),
+                        volts,
+                        level,
+                        state,
+                    }));
+                }
+                _ => self.link_health(Outcome::Malformed),
+            },
+            Outcome::DeviceNoResponse => {
+                self.no_battery = true;
+                let _ = self.events.send(Event::Note(
+                    "the mount's battery didn't answer: battery level unavailable".into(),
+                ));
+            }
+            other => self.link_health(other),
+        }
     }
 }
 

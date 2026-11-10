@@ -80,6 +80,10 @@ struct ContentView: View {
                 if let alt = model.altitude {
                     Text(String(format: "Tube altitude %.2f°", alt)).foregroundStyle(palette.dim)
                 }
+                if let b = model.battery, let summary = model.batterySummary {
+                    Text("Mount battery \(summary)")
+                        .foregroundStyle(b.level <= 1 && b.state != 2 ? palette.bright : palette.dim)
+                }
                 Text(model.busy.map { "\($0)…" } ?? "Ready").foregroundStyle(
                     model.busy == nil ? palette.dim : palette.bright)
                 if let finish = model.finishAt {

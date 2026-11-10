@@ -16,7 +16,6 @@ use cwb_celestron_discovery::{Link, SerialLink, redact_path};
 use cwb_celestron_setup::{
     Applied, Dms, HandTime, Location, ReadBack, apply::until_next_second, set_location, set_time,
 };
-use jiff::{Timestamp, tz::TimeZone};
 use cwb_mount_celestron::{
     CelestronAdapter, CelestronSettings, adapter::Clock, fake::SimHandController, prepare::prepare,
 };
@@ -26,6 +25,7 @@ use cwb_mount_core::{
     wrap_units,
 };
 use cwb_mount_sim::{SimFaults, SimMount};
+use jiff::{Timestamp, tz::TimeZone};
 
 use crate::trace::{Trace, TracingLink};
 use serde::{Deserialize, Serialize};
@@ -160,6 +160,18 @@ pub struct Status {
     pub last_fault: Option<Value>,
     /// Alerts and notes since the last status call.
     pub messages: Vec<String>,
+    /// The mount's battery, read about every 30 s while idle.
+    pub battery: Option<BatteryStatus>,
+}
+
+/// See [`cwb_mount_celestron::Battery`]: `level` and `state` are the reply's
+/// first two bytes as sent.
+#[derive(Debug, Clone, Serialize)]
+pub struct BatteryStatus {
+    pub volts: f64,
+    pub level: u8,
+    pub state: u8,
+    pub age_ms: i64,
 }
 
 struct Inner {
@@ -184,6 +196,8 @@ struct Inner {
     /// Fast reads while unarmed, until then (an arm request).
     fast_reads_until: Nanos,
     fast_reads: bool,
+    /// The battery reading last traced.
+    traced_battery: Option<Nanos>,
 }
 
 pub struct Session {
@@ -268,6 +282,7 @@ impl Session {
             last_state: MountState::Disconnected,
             fast_reads_until: 0,
             fast_reads: true,
+            traced_battery: None,
         };
         let actions = inner.controller.connect(now).map_err(|r| r.0)?;
         inner.carry_out(actions, now);
@@ -329,6 +344,12 @@ impl Session {
                 .last()
                 .map(|f| serde_json::to_value(f).expect("serializable")),
             messages: s.messages.drain(..).collect(),
+            battery: s.adapter.battery().map(|b| BatteryStatus {
+                volts: b.volts,
+                level: b.level,
+                state: b.state,
+                age_ms: (now - b.t_ns) / MS,
+            }),
         }
     }
 }
@@ -481,6 +502,18 @@ impl Inner {
         }
         for note in self.adapter.take_notes() {
             self.message(note);
+        }
+        if let Some(b) = self.adapter.battery()
+            && self.traced_battery != Some(b.t_ns)
+        {
+            self.traced_battery = Some(b.t_ns);
+            if let Some(t) = &self.trace {
+                t.write_at(
+                    b.t_ns,
+                    "battery",
+                    json!({ "volts": b.volts, "level": b.level, "state": b.state }),
+                );
+            }
         }
         if matches!(
             self.controller.state(),

@@ -200,6 +200,8 @@ impl SimHandController {
                 let done = self.mount.lock().expect("sim mount").slew_done(axis);
                 vec![if done { 0xFF } else { 0x00 }]
             }
+            // 10.06 V, as the bench mount read on 2026-11-10.
+            [b'P', 1, 0xB6, 0x10, 0, 0, 0, 6] => vec![2, 2, 0x00, 0x99, 0x71, 0x40],
             [b'L'] => vec![b'0'],
             [b't'] => vec![self.tracking],
             [b'T', mode] => {

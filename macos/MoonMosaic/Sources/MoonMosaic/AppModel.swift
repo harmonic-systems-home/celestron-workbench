@@ -47,6 +47,12 @@ final class AppModel: ObservableObject {
     private let keepAwake = KeepAwake(reason: "Connected to the mount")
     @Published private(set) var mountState = "Not connected"
     @Published private(set) var altitude: Double?
+    @Published private(set) var battery: MountSession.Battery?
+    /// "~60%, about 3 h left", or "Charging, 10.17 V".
+    @Published private(set) var batterySummary: String?
+    /// Kept across reconnects, so the projection keeps its history.
+    private var gauge = BatteryGauge()
+    private var lastBatteryReadAt: Date?
     /// Why the mount is latched, while it is: the app then stops any motion,
     /// the keys' included, until Reset.
     @Published private(set) var latchedReason: String?
@@ -305,6 +311,8 @@ final class AppModel: ObservableObject {
         hereSet = false
         calibrated = false
         mountState = "Not connected"
+        battery = nil
+        batterySummary = nil
         latchedReason = nil
         say("Disconnected.")
     }
@@ -582,9 +590,33 @@ final class AppModel: ObservableObject {
         if let s = try? mount.status() {
             mountState = s.state
             altitude = s.altitudeDeg
+            if let b = s.battery { checkBattery(b) }
             latchedReason = s.state == "FaultLatched" ? (s.lastFault?.detail ?? "a fault") : nil
             for m in s.messages { say(m) }
             checkLink(s)
+        }
+    }
+
+    /// Warns once each time the battery's level byte falls to 1, and sounds
+    /// once at 0: on 2026-11-09 it read 2, then 1 for the last hours before
+    /// the mount went flat.
+    private func checkBattery(_ b: MountSession.Battery) {
+        let before = battery?.level
+        battery = b
+        // Status is asked often; the battery is read every 30 s.
+        let readAt = Date().addingTimeInterval(-Double(b.ageMs) / 1000)
+        if lastBatteryReadAt.map({ abs(readAt.timeIntervalSince($0)) > 2 }) ?? true {
+            lastBatteryReadAt = readAt
+            gauge.add(.init(at: readAt, volts: b.volts, charging: b.state == 2))
+            batterySummary = gauge.summary
+        }
+        guard let before, b.level < before else { return }
+        let volts = String(format: "%.2f V", b.volts)
+        if b.level <= 0 {
+            say("ALARM: the mount's battery is nearly flat (\(volts)). Finish up or plug in the charger.")
+            NSSound(named: "Sosumi")?.play()
+        } else if b.level == 1 {
+            say("The mount's battery is getting low (\(volts)).")
         }
     }
 

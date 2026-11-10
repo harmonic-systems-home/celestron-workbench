@@ -16,5 +16,5 @@ pub mod fake;
 pub mod prepare;
 pub mod stoptest;
 
-pub use adapter::{CelestronAdapter, Position, Transaction};
+pub use adapter::{Battery, CelestronAdapter, Position, Transaction};
 pub use encode::CelestronSettings;

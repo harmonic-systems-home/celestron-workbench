@@ -189,12 +189,30 @@ public struct BusMonitor: Sendable {
         }
         return DecodedPacket(
             packet: p, at: at, isReply: reply, latencyMs: latencyMs,
-            isPolling: motor && MotorMessage.isPolling(p.id), text: text)
+            isPolling: motor && MotorMessage.isPolling(p.id) || Self.isBattery(p), text: text)
+    }
+
+    /// A battery voltage read: routine (SkySafari asks every 5 s), so polling.
+    static func isBattery(_ p: AuxPacket) -> Bool {
+        p.id == BatteryMessage.getVoltage
+            && (p.source == BatteryMessage.address || p.destination == BatteryMessage.address)
+    }
+
+    /// A battery voltage reply, decoded.
+    public static func battery(_ p: DecodedPacket) -> BatteryMessage.Reading? {
+        guard p.isReply, p.packet.source == BatteryMessage.address,
+            p.packet.id == BatteryMessage.getVoltage
+        else { return nil }
+        return BatteryMessage.reading(p.packet.data)
     }
 
     private func describe(source: UInt8, destination: UInt8, id: UInt8) -> String {
         let message: String?
-        if AuxDevice.isMotor(source) || AuxDevice.isMotor(destination) {
+        if (source == BatteryMessage.address || destination == BatteryMessage.address),
+            id == BatteryMessage.getVoltage
+        {
+            message = "GET_VOLTAGE"
+        } else if AuxDevice.isMotor(source) || AuxDevice.isMotor(destination) {
             message = MotorMessage.name(id)
         } else if source == StarSenseMessage.address || destination == StarSenseMessage.address {
             message = StarSenseMessage.name(id)
@@ -212,6 +230,11 @@ public struct BusMonitor: Sendable {
         }
         if p.source == StarSenseMessage.address || p.destination == StarSenseMessage.address {
             return starSenseValue(p, reply: reply)
+        }
+        if reply, p.source == BatteryMessage.address, p.id == BatteryMessage.getVoltage,
+            let b = BatteryMessage.reading(p.data)
+        {
+            return String(format: "%.2f V, level %d, state %d", b.volts, b.level, b.state)
         }
         return nil
     }

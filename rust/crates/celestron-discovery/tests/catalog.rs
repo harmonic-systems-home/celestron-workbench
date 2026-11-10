@@ -125,3 +125,31 @@ fn replies_decode_as_documented() {
     assert_eq!(Query::Approach(Device::AltMotor).decode(&[2]), None);
     assert_eq!(Query::AtIndex.decode(&[0xFF]), Some(Value::Flag(true)));
 }
+
+#[test]
+fn battery_reads_pass_through_and_decode_microvolts() {
+    assert_eq!(
+        Query::Battery.bytes(),
+        [b'P', 1, 0xB6, 0x10, 0, 0, 0, 6],
+        "a read: no data, six bytes back"
+    );
+    assert!(Query::Battery.is_pass_through());
+    // As the bench mount answered on 2026-11-10, and on battery on 2026-11-09.
+    let Some(Value::Battery {
+        state,
+        level,
+        volts,
+    }) = Query::Battery.decode(&[0x02, 0x02, 0x00, 0x99, 0x71, 0x40])
+    else {
+        panic!("decodes")
+    };
+    assert_eq!((state, level), (2, 2));
+    assert!((volts - 10.056).abs() < 1e-9, "{volts}");
+    let Some(Value::Battery { volts, .. }) =
+        Query::Battery.decode(&[0x00, 0x02, 0x00, 0x94, 0xCD, 0xC0])
+    else {
+        panic!("decodes")
+    };
+    assert!((volts - 9.752).abs() < 1e-9, "{volts}");
+    assert_eq!(Query::Battery.decode(&[0, 2, 0, 0x99]), None, "short reply");
+}

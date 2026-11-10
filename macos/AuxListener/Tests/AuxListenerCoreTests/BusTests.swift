@@ -382,3 +382,22 @@ private func anomalies(_ events: [FramerEvent]) -> [AnomalyKind] {
     #expect(kinds == [.badChecksum, .noReply])
     #expect(commands > 4)
 }
+
+@Test func batteryRepliesDecodeTheirVoltageAndCountAsPolling() {
+    var monitor = BusMonitor()
+    let request = AuxPacket(raw: Aux.encode(source: hc, destination: 0xb6, id: 0x10))!
+    // As the bench mount answered on 2026-11-10: 10.056 V.
+    let reply = AuxPacket(
+        raw: Aux.encode(
+            source: 0xb6, destination: hc, id: 0x10, data: [0x02, 0x02, 0x00, 0x99, 0x71, 0x40]))!
+    let a = monitor.process(.packet(request, at: 0))
+    let b = monitor.process(.packet(reply, at: 20 * ms))
+    guard case .packet(let q) = a.first, case .packet(let r) = b.first else {
+        Issue.record("expected two packets")
+        return
+    }
+    #expect(q.isPolling && r.isPolling)
+    #expect(r.text == "Battery → Hand control+  GET_VOLTAGE = 10.06 V, level 2, state 2 (20 ms)")
+    #expect(BusMonitor.battery(r) == BatteryMessage.Reading(volts: 10.056, level: 2, state: 2))
+    #expect(BusMonitor.battery(q) == nil)
+}

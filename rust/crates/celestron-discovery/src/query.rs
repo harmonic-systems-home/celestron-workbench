@@ -76,6 +76,13 @@ pub enum Query {
     /// Whether the azimuth axis is at its index marker (`MC_AT_INDEX`):
     /// 0xFF at it, 0x00 not. Azimuth only. Same source.
     AtIndex,
+    /// The mount's battery (bus address 0xB6, message 0x10): six bytes, the
+    /// last four its voltage in microvolts. SkySafari asks this every 5 s
+    /// over Wi-Fi (ADR 0018); the hand controller passes it through whole.
+    /// The first byte is a state (0 on battery, 2 charging; 1 not seen), the
+    /// second a coarse level that steps from 2 to 1 at about 9.75 V. Not in
+    /// Celestron's document.
+    Battery,
 }
 
 /// Pass-through message ID for "get version".
@@ -88,6 +95,9 @@ pub const GET_MOTOR_POSITION: u8 = 0x01;
 pub const GET_SLEW_DONE: u8 = 0x13;
 pub const GET_APPROACH: u8 = 0xFC;
 pub const GET_AT_INDEX: u8 = 0x18;
+/// The battery's bus address and its voltage message (seen on the bus).
+pub const BATTERY: u8 = 0xB6;
+pub const GET_BATTERY: u8 = 0x10;
 
 impl Sense {
     pub fn get_id(self) -> u8 {
@@ -115,6 +125,7 @@ impl Query {
             Query::SlewDone(d) => vec![b'P', 1, d.id(), GET_SLEW_DONE, 0, 0, 0, 1],
             Query::Approach(d) => vec![b'P', 1, d.id(), GET_APPROACH, 0, 0, 0, 1],
             Query::AtIndex => vec![b'P', 1, Device::AzmMotor.id(), GET_AT_INDEX, 0, 0, 0, 1],
+            Query::Battery => vec![b'P', 1, BATTERY, GET_BATTERY, 0, 0, 0, 6],
         }
     }
 
@@ -125,6 +136,7 @@ impl Query {
             Query::MotorPosition(_) => 3,
             Query::AzmAlt => 9,
             Query::PreciseAzmAlt => 17,
+            Query::Battery => 6,
             _ => 1,
         }
     }
@@ -139,6 +151,7 @@ impl Query {
                 | Query::SlewDone(_)
                 | Query::Approach(_)
                 | Query::AtIndex
+                | Query::Battery
         )
     }
 
@@ -155,7 +168,8 @@ impl Query {
             | Query::MotorPosition(_)
             | Query::SlewDone(_)
             | Query::Approach(_)
-            | Query::AtIndex => (1, 6),
+            | Query::AtIndex
+            | Query::Battery => (1, 6),
             Query::Model | Query::PreciseAzmAlt => (2, 2),
             Query::TrackingMode => (2, 3),
         }
@@ -178,6 +192,9 @@ impl Query {
             }
             Query::AtIndex => {
                 "AUX command set MC_AT_INDEX (community-documented, not in Celestron's document)"
+            }
+            Query::Battery => {
+                "battery 0xB6 message 0x10 (seen on the AUX bus, not in Celestron's document)"
             }
             _ => "Miscellaneous Commands",
         }
@@ -220,6 +237,15 @@ impl Query {
                 1 => Value::Approach(Sense::Negative),
                 _ => return None,
             },
+            Query::Battery => {
+                let microvolts =
+                    u32::from_be_bytes([payload[2], payload[3], payload[4], payload[5]]);
+                Value::Battery {
+                    state: payload[0],
+                    level: payload[1],
+                    volts: f64::from(microvolts) / 1e6,
+                }
+            }
             Query::AzmAlt => parse_angles(payload, 4)?,
             Query::PreciseAzmAlt => parse_angles(payload, 8)?,
         })
@@ -243,6 +269,7 @@ impl fmt::Display for Query {
             Query::SlewDone(d) => write!(f, "{} slew done?", axis_name(*d)),
             Query::Approach(d) => write!(f, "{} goto approach", axis_name(*d)),
             Query::AtIndex => f.write_str("azimuth at index marker?"),
+            Query::Battery => f.write_str("battery"),
             Query::Backlash(d, sense) => write!(
                 f,
                 "{} backlash, {}",
@@ -307,6 +334,12 @@ pub enum Value {
     },
     /// The direction a goto finishes in.
     Approach(Sense),
+    /// See [`Query::Battery`]: `state` and `level` are the first two bytes, as sent.
+    Battery {
+        state: u8,
+        level: u8,
+        volts: f64,
+    },
 }
 
 impl fmt::Display for Value {
@@ -327,6 +360,11 @@ impl fmt::Display for Value {
             Value::MotorPosition { units, deg } => write!(f, "{units} ({deg:.5}°)"),
             Value::Approach(Sense::Positive) => f.write_str("positive"),
             Value::Approach(Sense::Negative) => f.write_str("negative"),
+            Value::Battery {
+                state,
+                level,
+                volts,
+            } => write!(f, "{volts:.2} V (level {level}, state {state})"),
             Value::Angles {
                 azm_deg, alt_deg, ..
             } => write!(f, "azm {azm_deg:.5}°, alt {alt_deg:.5}°"),

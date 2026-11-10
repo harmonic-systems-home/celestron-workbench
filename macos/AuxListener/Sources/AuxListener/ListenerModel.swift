@@ -48,6 +48,8 @@ final class ListenerModel: ObservableObject {
     }
 
     @Published private(set) var link: Link = .waiting
+    /// The battery, from replies heard on the bus (only when something asks).
+    @Published private(set) var battery: BatteryGauge?
     @Published private(set) var recording: String? {
         didSet { keepAwake.isOn = recording != nil }
     }
@@ -256,6 +258,11 @@ final class ListenerModel: ObservableObject {
                     devices.sort { $0.address < $1.address }
                 }
                 count(p.packet)
+                if let b = BusMonitor.battery(p) {
+                    var gauge = battery ?? BatteryGauge()
+                    gauge.add(.init(at: Date(), volts: b.volts, charging: b.state == 2))
+                    battery = gauge
+                }
                 if showPolling || !p.isPolling {
                     append(
                         p.text, at: p.at,

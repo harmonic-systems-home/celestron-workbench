@@ -69,6 +69,9 @@ struct ContentView: View {
                 }
             }
             Spacer()
+            if let b = model.battery?.headline {
+                stat(b.value, "battery: \(b.detail)")
+            }
             stat("\(model.packetsPerSecond)", "packets/s")
             stat(sinceLast, "since last")
             Button {

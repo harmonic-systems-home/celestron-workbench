@@ -44,6 +44,18 @@ public final class MountSession: @unchecked Sendable {
         public let lastFault: Fault?
         /// Alerts and notes since the last status call.
         public let messages: [String]
+        /// The mount's battery, read about every 30 s while idle.
+        public let battery: Battery?
+    }
+
+    /// The battery's reply: its voltage, and its first two bytes as sent.
+    /// `level` is a coarse band, stepping from 2 to 1 at about 9.75 V;
+    /// `state` is 0 on battery and 2 charging (1 not seen yet).
+    public struct Battery: Decodable, Sendable, Equatable {
+        public let volts: Double
+        public let level: Int
+        public let state: Int
+        public let ageMs: Int
     }
 
     public struct Record: Decodable, Sendable {

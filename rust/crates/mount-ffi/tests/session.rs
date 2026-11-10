@@ -233,3 +233,15 @@ fn a_simulated_open_reports_setup_skipped_and_traces_no_coordinates() {
     assert!(text.contains("\"setup\""));
     assert!(!text.contains("12.5") && !text.contains("45.25"));
 }
+
+#[test]
+fn the_battery_is_read_and_reported_while_idle() {
+    let id = open();
+    let s = wait(id, 3_000, |s| !s["battery"].is_null());
+    let b = &s["battery"];
+    assert!((b["volts"].as_f64().unwrap() - 10.056).abs() < 1e-9, "{s}");
+    assert_eq!(b["level"], 2);
+    assert_eq!(b["state"], 2);
+    assert!(b["age_ms"].as_i64().unwrap() >= 0);
+    assert_eq!(close(id)["ok"], true);
+}

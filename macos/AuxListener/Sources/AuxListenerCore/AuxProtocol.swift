@@ -115,6 +115,27 @@ public enum MotorMessage {
     }
 }
 
+/// The mount's battery (0xB6). Message 0x10 returns six bytes: the last four
+/// its voltage in microvolts, big-endian. The first is a state (0 on
+/// battery, 2 charging; 1 not seen), the second a coarse level that steps
+/// from 2 to 1 at about 9.75 V.
+public enum BatteryMessage {
+    public static let address: UInt8 = 0xb6
+    public static let getVoltage: UInt8 = 0x10
+
+    public struct Reading: Equatable, Sendable {
+        public let volts: Double
+        public let level: UInt8
+        public let state: UInt8
+    }
+
+    public static func reading(_ data: [UInt8]) -> Reading? {
+        guard data.count == 6 else { return nil }
+        let microvolts = data[2...].reduce(UInt32(0)) { $0 << 8 | UInt32($1) }
+        return Reading(volts: Double(microvolts) / 1e6, level: data[1], state: data[0])
+    }
+}
+
 /// StarSense camera message IDs, from community captures rather than
 /// Celestron (docs/references.md): the meanings are best guesses, and IDs
 /// not listed, such as 0x05, are unknown.
