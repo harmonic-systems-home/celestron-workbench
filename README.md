@@ -20,6 +20,7 @@ Developed on a NexStar Evolution 8 EdgeHD with StarSense, an iPhone 17 Pro Max a
 | [docs/adr/](docs/adr/) | Architecture decisions: time, frames, storage, transport, mount safety |
 | [docs/building.md](docs/building.md) | Build and test instructions |
 | [docs/assumptions.md](docs/assumptions.md) | What still has to be verified on real hardware |
+| [docs/night-card.md](docs/night-card.md) | Keys and steps for a night at the telescope |
 | [schemas/](schemas/) | JSON Schema for the phone–Mac protocol, shared examples, SQL migrations |
 | [rust/](rust/) | Mac side: `protocol`, `storage`, `receiver`, `analysis`, `mount-core` (safety state machine and interlocks), `mount-sim` (simulated mount and safety suite), `celestron-discovery` (read-only hand controller queries and compatibility report), `celestron-setup` (hand controller time and location), `mount-celestron` (the only code that moves the mount), `mount-runner` (the interactive runner's core), `cli` (`cwb`) |
 | [analysis/](analysis/) | Versioned analysis configs for `cwb analyze` |
