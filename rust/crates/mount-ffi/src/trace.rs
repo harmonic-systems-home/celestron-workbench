@@ -6,8 +6,9 @@
 //! a hand controller that stops answering can be worked out afterwards.
 //!
 //! Nothing in it locates the site: the adapter exchanges versions, modes,
-//! backlash and motor counts from power-on, never the hand controller's
-//! time or location, and the port name is redacted. The app writes it to
+//! backlash and motor counts from power-on. When the app asks for setup,
+//! the time and location are sent before the trace wraps the link, and the
+//! trace keeps only whether each was confirmed. The port name is redacted. The app writes it to
 //! its local sessions folder, never to the repo.
 
 use std::{

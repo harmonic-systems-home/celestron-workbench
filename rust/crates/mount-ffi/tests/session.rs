@@ -162,3 +162,74 @@ fn the_trace_records_traffic_and_reads_are_slow_until_armed() {
         .count();
     assert!(after >= 3, "{after} reads in the second after arming");
 }
+
+mod setup {
+    use cwb_celestron_setup::fake::{FakeSetter, Quirks};
+    use cwb_mount_ffi::session::{SetupOptions, apply_setup};
+
+    // Synthetic site (fixtures only; docs/privacy.md).
+    fn site() -> SetupOptions {
+        SetupOptions {
+            latitude: 12.5,
+            longitude: -45.25,
+            time_zone: Some("UTC".into()),
+        }
+    }
+
+    #[test]
+    fn sets_time_then_location_and_confirms_both() {
+        let mut fake = FakeSetter::new(Quirks::default());
+        let report = apply_setup(&mut fake, &site());
+        assert_eq!(report.time, "confirmed");
+        assert_eq!(report.location, "confirmed");
+        let firsts: Vec<u8> = fake.received.iter().map(|c| c[0]).collect();
+        assert_eq!(firsts, b"HhWw");
+        assert_eq!(fake.location, Some([12, 30, 0, 0, 45, 15, 0, 1]));
+    }
+
+    #[test]
+    fn a_forgetful_hand_controller_is_reported_not_confirmed() {
+        let mut fake = FakeSetter::new(Quirks {
+            forgets: true,
+            ..Quirks::default()
+        });
+        let report = apply_setup(&mut fake, &site());
+        assert_ne!(report.time, "confirmed");
+        assert_ne!(report.location, "confirmed");
+    }
+
+    #[test]
+    fn an_unset_site_sends_no_location() {
+        let mut fake = FakeSetter::new(Quirks::default());
+        let mut s = site();
+        s.latitude = 0.0;
+        s.longitude = 0.0;
+        let report = apply_setup(&mut fake, &s);
+        assert!(report.location.starts_with("not sent"));
+        assert!(fake.received.iter().all(|c| c[0] != b'W'));
+    }
+
+    #[test]
+    fn coordinates_stay_out_of_debug() {
+        let text = format!("{:?}", site());
+        assert!(!text.contains("12.5") && !text.contains("45.25"), "{text}");
+    }
+}
+
+#[test]
+fn a_simulated_open_reports_setup_skipped_and_traces_no_coordinates() {
+    let dir = tempfile::tempdir().unwrap();
+    let trace = dir.path().join("t.ndjson");
+    let options = serde_json::json!({
+        "port": "simulate",
+        "trace": trace.to_str().unwrap(),
+        "setup": { "latitude": 12.5, "longitude": -45.25 },
+    });
+    let reply = open_json(&options.to_string());
+    assert_eq!(reply["ok"], true, "{reply}");
+    assert_eq!(reply["opened"]["setup"]["time"], "skipped (simulated)");
+    close(reply["session"].as_u64().unwrap());
+    let text = std::fs::read_to_string(trace).unwrap();
+    assert!(text.contains("\"setup\""));
+    assert!(!text.contains("12.5") && !text.contains("45.25"));
+}

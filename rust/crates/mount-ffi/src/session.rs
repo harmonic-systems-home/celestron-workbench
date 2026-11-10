@@ -13,6 +13,10 @@ use std::{
 };
 
 use cwb_celestron_discovery::{Link, SerialLink, redact_path};
+use cwb_celestron_setup::{
+    Applied, Dms, HandTime, Location, ReadBack, apply::until_next_second, set_location, set_time,
+};
+use jiff::{Timestamp, tz::TimeZone};
 use cwb_mount_celestron::{
     CelestronAdapter, CelestronSettings, adapter::Clock, fake::SimHandController, prepare::prepare,
 };
@@ -56,6 +60,76 @@ pub struct OpenOptions {
     /// A file for the session trace (see [`crate::trace`]), if wanted.
     #[serde(default)]
     pub trace: Option<String>,
+    /// Set the hand controller's time and location before anything else.
+    #[serde(default)]
+    pub setup: Option<SetupOptions>,
+}
+
+/// The site to send. Coordinates are private (docs/privacy.md): `Debug`
+/// hides them, and they're sent before the trace sees the link.
+#[derive(Clone, Deserialize)]
+pub struct SetupOptions {
+    /// Degrees, north positive.
+    pub latitude: f64,
+    /// Degrees, east positive.
+    pub longitude: f64,
+    /// IANA name, e.g. "America/Los_Angeles". Default: this Mac's zone.
+    #[serde(default)]
+    pub time_zone: Option<String>,
+}
+
+impl std::fmt::Debug for SetupOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SetupOptions(<private>)")
+    }
+}
+
+/// What became of each setting: "confirmed", or why not. Never the values.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct SetupReport {
+    pub time: String,
+    pub location: String,
+}
+
+/// Sends Set Time at the next whole second, then Set Location, reading each
+/// back. Nothing here can move the mount (cwb-celestron-setup sends only
+/// `H`, `W`, `h` and `w`).
+pub fn apply_setup(link: &mut impl Link, s: &SetupOptions) -> SetupReport {
+    let tz = match &s.time_zone {
+        Some(name) => TimeZone::get(name).map_err(|e| format!("time zone {name}: {e}")),
+        None => Ok(TimeZone::system()),
+    };
+    let time = tz.and_then(|tz| {
+        thread::sleep(until_next_second(Timestamp::now()));
+        HandTime::at(Timestamp::now(), &tz).map_err(|e| e.to_string())
+    });
+    let time = match time {
+        Ok(t) => describe(&set_time(link, &t)),
+        Err(e) => format!("not sent: {e}"),
+    };
+    let valid = (-90.0..=90.0).contains(&s.latitude)
+        && (-180.0..=180.0).contains(&s.longitude)
+        && (s.latitude != 0.0 || s.longitude != 0.0);
+    let location = if valid {
+        let location = Location {
+            latitude: Dms::from_degrees(s.latitude),
+            longitude: Dms::from_degrees(s.longitude),
+        };
+        describe(&set_location(link, &location))
+    } else {
+        "not sent: the site isn't set".into()
+    };
+    SetupReport { time, location }
+}
+
+fn describe(applied: &Applied) -> String {
+    match &applied.read_back {
+        _ if applied.confirmed() => "confirmed".into(),
+        None => format!("not acknowledged ({:?})", applied.acknowledged),
+        Some(ReadBack::Differs(why)) => format!("sent, but {why}"),
+        Some(ReadBack::NotAnswered(o)) => format!("sent, read-back unanswered ({o:?})"),
+        Some(ReadBack::Matches) => "confirmed".into(),
+    }
 }
 
 /// What the hand controller reported when the session opened.
@@ -68,6 +142,8 @@ pub struct Opened {
     pub anti_backlash: [Option<u8>; 4],
     pub positions_deg: [f64; 2],
     pub simulated: bool,
+    /// Present when setup was asked for.
+    pub setup: Option<SetupReport>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -149,17 +225,27 @@ impl Session {
                 json!({ "port": redact_path(&options.port), "safety": safety, "celestron": settings }),
             );
         }
-        let (adapter, opened, sim) = if options.port == "simulate" {
+        let (adapter, mut opened, sim, setup) = if options.port == "simulate" {
             let mount = Arc::new(Mutex::new(SimMount::new(SimFaults::default(), 30.0, 1)));
             let link = SimHandController::new(mount.clone(), clock.clone());
             let (adapter, opened) = start_traced(link, &trace, settings, clock.clone(), true)?;
-            (adapter, opened, Some(mount))
+            let setup = options.setup.as_ref().map(|_| SetupReport {
+                time: "skipped (simulated)".into(),
+                location: "skipped (simulated)".into(),
+            });
+            (adapter, opened, Some(mount), setup)
         } else {
-            let link = SerialLink::open(&options.port)
+            let mut link = SerialLink::open(&options.port)
                 .map_err(|e| format!("couldn't open the hand controller's port: {e}"))?;
+            // Before the trace wraps the link, so no coordinate reaches it.
+            let setup = options.setup.as_ref().map(|s| apply_setup(&mut link, s));
             let (adapter, opened) = start_traced(link, &trace, settings, clock.clone(), false)?;
-            (adapter, opened, None)
+            (adapter, opened, None, setup)
         };
+        if let (Some(t), Some(s)) = (&trace, &setup) {
+            t.write("setup", json!({ "setup": s }));
+        }
+        opened.setup = setup;
         if let Some(t) = &trace {
             t.write("opened", json!({ "opened": opened }));
         }
@@ -525,6 +611,7 @@ fn start_adapter<L: Link + Send + 'static>(
         anti_backlash: [azp, azn, alp, aln],
         positions_deg: p.positions_deg,
         simulated,
+        setup: None,
     };
     Ok((
         CelestronAdapter::spawn(link, settings, clock, Some(POSITION_EVERY)),

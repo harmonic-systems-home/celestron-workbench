@@ -14,6 +14,8 @@ crate-type = ["staticlib", "rlib"]
 
 [dependencies]
 cwb-celestron-discovery.workspace = true
+cwb-celestron-setup.workspace = true
+jiff.workspace = true
 cwb-mount-celestron.workspace = true
 cwb-mount-core.workspace = true
 cwb-mount-sim.workspace = true

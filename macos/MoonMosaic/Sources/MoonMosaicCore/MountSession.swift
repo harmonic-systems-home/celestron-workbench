@@ -22,6 +22,14 @@ public final class MountSession: @unchecked Sendable {
         public let antiBacklash: [Int?]
         public let positionsDeg: [Double]
         public let simulated: Bool
+        /// Present when setup was asked for.
+        public let setup: Setup?
+    }
+
+    /// What became of each setting: "confirmed", or why not.
+    public struct Setup: Decodable, Sendable {
+        public let time: String
+        public let location: String
     }
 
     public struct Status: Decodable, Sendable {
@@ -74,9 +82,20 @@ public final class MountSession: @unchecked Sendable {
     /// controller's safety settings (encoder-only is always on). `trace`:
     /// a file for every byte to and from the hand controller and every
     /// request, state change and message, for working out faults later.
-    public init(port: String, safety: [String: Any] = [:], trace: URL? = nil) throws {
+    /// `setup`: set the hand controller's time (this Mac's clock and zone)
+    /// and location to this site first. No motion; never traced.
+    public init(
+        port: String, safety: [String: Any] = [:], trace: URL? = nil,
+        setup: (latitudeDeg: Double, longitudeDeg: Double)? = nil
+    ) throws {
         var options: [String: Any] = ["port": port, "safety": safety]
         if let trace { options["trace"] = trace.path }
+        if let setup {
+            options["setup"] = [
+                "latitude": setup.latitudeDeg, "longitude": setup.longitudeDeg,
+                "time_zone": TimeZone.current.identifier,
+            ]
+        }
         let reply = try Self.call { cwb_session_open(Self.json(options)) }
         guard let id = (reply["session"] as? NSNumber)?.uint64Value,
             let opened = reply["opened"]

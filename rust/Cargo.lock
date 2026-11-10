@@ -342,9 +342,11 @@ name = "cwb-mount-ffi"
 version = "0.1.0"
 dependencies = [
  "cwb-celestron-discovery",
+ "cwb-celestron-setup",
  "cwb-mount-celestron",
  "cwb-mount-core",
  "cwb-mount-sim",
+ "jiff",
  "serde",
  "serde_json",
  "tempfile",

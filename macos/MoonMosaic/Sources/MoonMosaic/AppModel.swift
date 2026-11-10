@@ -26,6 +26,8 @@ final class AppModel: ObservableObject {
         }
     }
     @Published var simulate: Bool { didSet { save() } }
+    /// Send this Mac's time and the site to the hand controller on connect.
+    @Published var setHandController: Bool { didSet { save() } }
     /// "auto" (red from civil dusk to dawn at the site), "day" or "night".
     @Published var paletteMode: String {
         didSet {
@@ -108,6 +110,7 @@ final class AppModel: ObservableObject {
         exposureMs = d["exposureMs"] as? Double ?? 2
         gain = d["gain"] as? Int ?? 100
         simulate = d["simulate"] as? Bool ?? false
+        setHandController = d["setHandController"] as? Bool ?? true
         paletteMode = d["paletteMode"] as? String ?? "auto"
         folder =
             (d["folder"] as? String).map { URL(fileURLWithPath: $0) }
@@ -123,7 +126,7 @@ final class AppModel: ObservableObject {
         let d: [String: Any] = [
             "latitude": latitude, "longitude": longitude, "focalLengthMm": focalLengthMm,
             "overlap": overlap, "videoSeconds": videoSeconds, "exposureMs": exposureMs,
-            "gain": gain, "simulate": simulate, "paletteMode": paletteMode, "folder": folder.path,
+            "gain": gain, "simulate": simulate, "setHandController": setHandController, "paletteMode": paletteMode, "folder": folder.path,
         ]
         do {
             try FileManager.default.createDirectory(
@@ -192,6 +195,7 @@ final class AppModel: ObservableObject {
             return
         }
         let simulate = self.simulate
+        let setup = setHandController ? (latitudeDeg: latitude, longitudeDeg: longitude) : nil
         let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(
             of: ":", with: "-")
         let trace = folder.appendingPathComponent("mount-traces")
@@ -212,7 +216,7 @@ final class AppModel: ObservableObject {
                     port = p
                 }
                 let mount = try MountSession(
-                    port: port, safety: ["max_goto_deg": 1.0], trace: trace)
+                    port: port, safety: ["max_goto_deg": 1.0], trace: trace, setup: setup)
                 let camera = SharedCamera(
                     simulate
                         ? FakeCamera(width: 1920, height: 1080, scale: 0.3, rotationDeg: 25)
@@ -265,6 +269,9 @@ final class AppModel: ObservableObject {
         say(
             "Connected\(o.simulated ? " (SIMULATED)" : "") to \(o.model ?? "?") on \(port); camera \(camera.info.name), \(camera.info.width)×\(camera.info.height)."
         )
+        if let s = o.setup {
+            say("Hand controller time: \(s.time); site: \(s.location).")
+        }
         startLive()
     }
 

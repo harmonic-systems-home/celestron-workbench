@@ -37,8 +37,11 @@ fn error(e: impl std::fmt::Display) -> Value {
     json!({ "ok": false, "error": e.to_string() })
 }
 
-/// Opens a session: `{"port": "/dev/cu.…" | "simulate", "safety": {…}, "celestron": {…}}`.
-/// Returns `{"ok": true, "session": n, "opened": {…}}`.
+/// Opens a session: `{"port": "/dev/cu.…" | "simulate", "safety": {…}, "celestron": {…}}`,
+/// optionally with `"setup": {"latitude": x, "longitude": y, "time_zone": "…"}` to set
+/// the hand controller's time and location first.
+/// Returns `{"ok": true, "session": n, "opened": {…}}`; `opened.setup` says
+/// whether each setting was confirmed.
 pub fn open_json(options: &str) -> Value {
     let options: OpenOptions = match serde_json::from_str(options) {
         Ok(o) => o,

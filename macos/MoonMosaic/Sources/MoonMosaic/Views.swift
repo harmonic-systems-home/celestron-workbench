@@ -372,6 +372,11 @@ struct SettingsView: View {
             Section("Site (stays on this Mac)") {
                 TextField("Latitude (north +)", value: $model.latitude, format: .number)
                 TextField("Longitude (east +)", value: $model.longitude, format: .number)
+                Toggle(
+                    "Set the hand controller's time and site when connecting",
+                    isOn: $model.setHandController
+                )
+                .disabled(model.connected)
             }
             Section("Optics and camera") {
                 TextField("Focal length (mm)", value: $model.focalLengthMm, format: .number)
