@@ -273,9 +273,14 @@ struct ContentView: View {
 }
 
 /// Large, dim buttons that light up while pressed.
+@MainActor
 struct BigButton: ButtonStyle {
     var height: CGFloat
     var width: CGFloat?
+    /// SwiftUI redraws a button only when its style's stored values change,
+    /// and it can't see `Palette.isNight`. Keeping a copy here lets a switch
+    /// between day and night (at dusk, say) recolour the buttons too.
+    var night = Palette.isNight
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label

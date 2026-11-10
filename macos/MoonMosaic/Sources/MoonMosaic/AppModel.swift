@@ -41,7 +41,10 @@ final class AppModel: ObservableObject {
     /// The red night palette is showing.
     @Published private(set) var isNight = true
     private var paletteCheckedAt = Date.distantPast
-    @Published private(set) var connected = false
+    @Published private(set) var connected = false {
+        didSet { keepAwake.isOn = connected }
+    }
+    private let keepAwake = KeepAwake(reason: "Connected to the mount")
     @Published private(set) var mountState = "Not connected"
     @Published private(set) var altitude: Double?
     /// Why the mount is latched, while it is: the app then stops any motion,

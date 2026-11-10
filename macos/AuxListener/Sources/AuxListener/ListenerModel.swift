@@ -48,7 +48,10 @@ final class ListenerModel: ObservableObject {
     }
 
     @Published private(set) var link: Link = .waiting
-    @Published private(set) var recording: String?
+    @Published private(set) var recording: String? {
+        didSet { keepAwake.isOn = recording != nil }
+    }
+    private let keepAwake = KeepAwake(reason: "Recording the AUX bus")
     @Published private(set) var packetsPerSecond = 0
     @Published private(set) var lastPacketAt: UInt64?
     @Published private(set) var counts: [AnomalyKind: Int] = [:]
