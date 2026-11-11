@@ -163,6 +163,56 @@ public enum StarSenseMessage {
     }
 }
 
+/// The stars the StarSense camera found in a capture, sent in a `3C` bulk
+/// frame after its answer to GET_CAPTURE_DATA (ADR 0018). The data is
+/// little-endian 32-bit float pairs, x then y in pixels, brightest first;
+/// the answer's second byte is how many. From 10 captures on 2026-11-10:
+/// positions fell within 1280 × 960, the brightest star in the calibration
+/// capture sat 1.6 px from the centre the hand controller then set, and the
+/// list stopped at 100 with the last pair 0, 0.
+public struct StarList: Equatable, Sendable {
+    public struct Star: Equatable, Sendable {
+        public let x: Float
+        public let y: Float
+    }
+
+    /// Every pair sent, empty ones included.
+    public let stars: [Star]
+
+    /// From a whole unstuffed frame (`3C`, length, data, checksum); nil if
+    /// the data isn't whole pairs.
+    public init?(frame: [UInt8]) {
+        guard frame.count > Bulk.headerCount else { return nil }
+        let data = frame[Bulk.headerCount..<(frame.count - 1)]
+        guard !data.isEmpty, data.count % 8 == 0 else { return nil }
+        var stars: [Star] = []
+        var i = data.startIndex
+        while i < data.endIndex {
+            guard let x = littleEndian32(data[i..<(i + 4)]),
+                let y = littleEndian32(data[(i + 4)..<(i + 8)])
+            else { return nil }
+            stars.append(Star(x: Float(bitPattern: x), y: Float(bitPattern: y)))
+            i += 8
+        }
+        self.stars = stars
+    }
+
+    /// The pairs that aren't 0, 0.
+    public var found: [Star] { stars.filter { $0.x != 0 || $0.y != 0 } }
+
+    public var text: String {
+        let found = found
+        var line = "Star list: \(found.count) star\(found.count == 1 ? "" : "s")"
+        if let first = found.first {
+            line += String(format: ", brightest at x %.1f, y %.1f", first.x, first.y)
+        }
+        if found.count < stars.count {
+            line += " (\(stars.count) sent, \(stars.count - found.count) empty)"
+        }
+        return line
+    }
+}
+
 public func hex(_ byte: UInt8) -> String {
     let digits = String(byte, radix: 16, uppercase: true)
     return "0x" + (digits.count == 1 ? "0" + digits : digits)

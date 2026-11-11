@@ -65,11 +65,16 @@ public struct BusMonitor: Sendable {
 
     public mutating func process(_ event: FramerEvent) -> [BusEvent] {
         switch event {
-        case .bulk(let bytes, let at):
-            let length = bytes.count - Bulk.headerCount - 1
-            let note = KnownFrame(
-                at: at, bytes: bytes, kind: "bulk_3c",
-                text: "3C bulk frame: \(length) data bytes (StarSense capture data?), not decoded")
+        case .bulk(let bytes, let frame, let at):
+            let note: KnownFrame
+            if let list = StarList(frame: frame) {
+                note = KnownFrame(at: at, bytes: bytes, kind: "star_list", text: list.text)
+            } else {
+                let length = frame.count - Bulk.headerCount - 1
+                note = KnownFrame(
+                    at: at, bytes: bytes, kind: "bulk_3c",
+                    text: "3C bulk frame: \(length) data bytes, not whole star pairs")
+            }
             return expire(at: at) + [.known(note)]
         case .split(let outer, let inner, let raw, let at, let innerAt):
             // Seen with SkySafari over Wi-Fi: its request stops after the
@@ -252,14 +257,26 @@ public struct BusMonitor: Sendable {
 
     private func starSenseValue(_ p: AuxPacket, reply: Bool) -> String? {
         let d = p.data[...]
-        guard reply else { return nil }
-        switch p.id {
-        case 0x3f:
-            guard let x = littleEndian32(d.prefix(4)), let y = littleEndian32(d.dropFirst(4)) else {
+        guard reply else {
+            switch p.id {
+            case 0x3e:
+                // The new centre, as GET_ALIGN_CENTER answers, then a 00.
+                return alignCenter(d)
+            case 0x90:
+                // 03 E8 is 1000, perhaps the exposure in ms; the last byte
+                // was 0, 1, 2 for the alignment points and 6 for calibration.
+                guard d.count == 3 else { return nil }
+                return "\(Int(d[d.startIndex]) << 8 | Int(d[d.startIndex + 1])), slot \(d[d.startIndex + 2])"
+            case 0x94:
+                return d.first.map { "slot \($0)" }
+            default:
                 return nil
             }
-            return "x \(x), y \(y)"
-        case 0x91:
+        }
+        switch p.id {
+        case 0x3f:
+            return alignCenter(d)
+        case 0x91, 0x92, 0x94:
             guard let status = d.first else { return nil }
             let stars = d.dropFirst().first.map { ", \($0) stars" } ?? ""
             return "status \(status)\(stars)"
@@ -269,6 +286,12 @@ public struct BusMonitor: Sendable {
         default:
             return nil
         }
+    }
+
+    private func alignCenter(_ d: ArraySlice<UInt8>) -> String? {
+        guard let x = littleEndian32(d.prefix(4)), let y = littleEndian32(d.dropFirst(4).prefix(4))
+        else { return nil }
+        return "x \(x), y \(y)"
     }
 
     private func motorValue(_ p: AuxPacket, reply: Bool) -> String? {

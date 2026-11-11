@@ -300,7 +300,7 @@ private func anomalies(_ events: [FramerEvent]) -> [AnomalyKind] {
     let reply = Aux.encode(source: 0xb4, destination: 0x20, id: 0x92, data: [9, 9])
     let events = framer.feed(reply + frame + reply, at: 0).flatMap { monitor.process($0) }
     let known = events.compactMap { if case .known(let k) = $0 { k } else { nil } }
-    #expect(known.map(\.kind) == ["bulk_3c"])
+    #expect(known.map(\.kind) == ["star_list"])
     #expect(known.first?.bytes == frame)
     #expect(events.allSatisfy { if case .anomaly = $0 { false } else { true } })
     // A 3C with an impossible length is a stray byte, and framing recovers.
@@ -308,6 +308,86 @@ private func anomalies(_ events: [FramerEvent]) -> [AnomalyKind] {
     let stray = other.feed([0x3c, 0xff, 0xff, 0xff, 0xff] + reply, at: 0)
     #expect(anomalies(stray) == [.noise])
     #expect(packets(stray) == [AuxPacket(raw: reply)!])
+}
+
+/// A bulk frame of star pairs as the camera sends it: little-endian floats,
+/// then every 3B in the length or data stuffed as 3B 02 02.
+private func starFrame(_ stars: [(Float, Float)]) -> (wire: [UInt8], frame: [UInt8]) {
+    var data: [UInt8] = []
+    for (x, y) in stars {
+        for v in [x, y] { withUnsafeBytes(of: v.bitPattern.littleEndian) { data += $0 } }
+    }
+    let n = UInt32(data.count)
+    let body = [UInt8(n >> 24), UInt8(n >> 16 & 0xff), UInt8(n >> 8 & 0xff), UInt8(n & 0xff)] + data
+    let sum = Aux.checksum(body)
+    var wire: [UInt8] = [Bulk.preamble]
+    for byte in body {
+        wire.append(byte)
+        if byte == Aux.preamble { wire += [2, 2] }
+    }
+    wire.append(sum)
+    return (wire, [Bulk.preamble] + body + [sum])
+}
+
+/// 3B 02 A8 2E 43 reads as 174.66 when unstuffed: a float with a 3B in it.
+private let floatWith3B = Float(bitPattern: 0x432E_A83B)
+
+@Test func aStuffed3BInsideAStarListIsOneByte() {
+    let (wire, frame) = starFrame([(845.59, 396.78), (floatWith3B, 512), (1202.09, 358.99)])
+    #expect(wire.count == frame.count + 2)
+    var framer = Framer()
+    var monitor = BusMonitor()
+    let reply = Aux.encode(source: 0xb4, destination: 0x0e, id: 0x92, data: [9, 3])
+    let events = framer.feed(reply + wire + reply, at: 0).flatMap { monitor.process($0) }
+    #expect(events.allSatisfy { if case .anomaly = $0 { false } else { true } })
+    let known = events.compactMap { if case .known(let k) = $0 { k } else { nil } }
+    #expect(known.map(\.kind) == ["star_list"])
+    // The log keeps the bytes as they came.
+    #expect(known.first?.bytes == wire)
+    #expect(known.first?.text == "Star list: 3 stars, brightest at x 845.6, y 396.8")
+    #expect(StarList(frame: frame)?.stars[1] == StarList.Star(x: floatWith3B, y: 512))
+}
+
+@Test func aStuffedFrameStillFramesWhenSplitAcrossReads() {
+    let (wire, frame) = starFrame([(floatWith3B, floatWith3B), (40, 30)])
+    var framer = Framer()
+    var events: [FramerEvent] = []
+    for (i, byte) in wire.enumerated() {
+        events += framer.feed([byte], at: UInt64(i) * 1_000_000)
+    }
+    #expect(events == [.bulk(bytes: wire, frame: frame, at: 0)])
+}
+
+@Test func aFullStarListEndsWithAnEmptyPair() {
+    let (_, frame) = starFrame([(100, 200), (300, 400), (0, 0)])
+    let list = StarList(frame: frame)
+    #expect(list?.found.count == 2)
+    #expect(list?.text == "Star list: 2 stars, brightest at x 100.0, y 200.0 (3 sent, 1 empty)")
+    // Data that isn't whole pairs isn't a star list.
+    let odd = [Bulk.preamble, 0, 0, 0, 4, 1, 2, 3, 4, 0]
+    #expect(StarList(frame: odd) == nil)
+}
+
+@Test func aBulkFrameWithABadChecksumKeepsItsWireBytes() {
+    var (wire, _) = starFrame([(floatWith3B, 10)])
+    wire[wire.count - 1] &+= 1
+    var framer = Framer()
+    let events = framer.feed(wire, at: 0)
+    #expect(events == [.anomaly(.badChecksum, bytes: wire, at: 0)])
+}
+
+@Test func captureRequestsDecode() {
+    var monitor = BusMonitor()
+    func text(_ id: UInt8, _ data: [UInt8]) -> String? {
+        let ask = AuxPacket(raw: Aux.encode(source: 0x0e, destination: 0xb4, id: id, data: data))!
+        guard case .packet(let p) = monitor.process(.packet(ask, at: 0)).first else { return nil }
+        return p.text
+    }
+    #expect(text(0x90, [0x03, 0xe8, 0x06]) == "StarSense HC → StarSense  RESET_CAPTURE 1000, slot 6")
+    #expect(text(0x94, [2]) == "StarSense HC → StarSense  START_CAPTURE slot 2")
+    #expect(
+        text(0x3e, [0x4c, 0x03, 0, 0, 0x8d, 0x01, 0, 0, 0])
+            == "StarSense HC → StarSense  SET_ALIGN_CENTER x 844, y 397")
 }
 
 @Test func starSenseMessagesDecode() {

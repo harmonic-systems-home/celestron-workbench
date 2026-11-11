@@ -35,21 +35,27 @@ public enum FramerEvent: Equatable, Sendable {
     /// gap. `raw` is every byte as it arrived.
     case split(outer: AuxPacket, inner: AuxPacket, raw: [UInt8], at: UInt64, innerAt: UInt64)
     /// A `3C` bulk frame with a valid checksum: seen after the StarSense
-    /// camera's capture data answer. `bytes` is the whole frame.
-    case bulk(bytes: [UInt8], at: UInt64)
+    /// camera's capture data answer. `bytes` is the whole frame as it came
+    /// over the wire; `frame` is the same with the stuffing taken out.
+    case bulk(bytes: [UInt8], frame: [UInt8], at: UInt64)
     /// A frame cut short, then more broken bytes soon after: `bytes` is all
     /// of them in order, from `at` to `resumedAt` (see `PauseJoiner`).
     case paused(bytes: [UInt8], at: UInt64, resumedAt: UInt64)
 }
 
-/// The `3C` bulk frame, from one capture on this mount (ADR 0018): `3C`, a
+/// The `3C` bulk frame, from captures on this mount (ADR 0018): `3C`, a
 /// 4-byte big-endian data length, the data, and a checksum like a packet's
-/// (two's complement of the sum from the first length byte on).
+/// (two's complement of the sum from the first length byte on). A `3B` in
+/// the length or data is sent as `3B 02 02`, so that nothing listening
+/// takes it for the start of a packet; the length and checksum count it as
+/// one byte. The checksum itself was sent unstuffed when it was `3B`.
 public enum Bulk {
     public static let preamble: UInt8 = 0x3C
     /// Longest data length accepted; longer is treated as stray bytes.
     public static let maxLength = 4096
     static let headerCount = 5
+    /// The two bytes that follow a stuffed `3B`.
+    static let stuffing: UInt8 = 0x02
 }
 
 /// Splits the bus's byte stream into packets. Reads arrive in chunks, each
@@ -70,8 +76,13 @@ public struct Framer: Sendable {
     /// Where a second frame seems to start inside the current one, after the
     /// current one's checksum failed; nil while framing normally.
     private var weave: (index: Int, at: UInt64)?
+    /// A bulk frame so far: as it came over the wire, and unstuffed.
     private var bulk: [UInt8] = []
+    private var bulkFrame: [UInt8] = []
     private var bulkStart: UInt64 = 0
+    /// How many stuffing bytes have followed the last `3B`, while waiting
+    /// for the second; nil otherwise.
+    private var stuffed: Int?
 
     public init(gapNs: UInt64 = 50_000_000) {
         self.gapNs = gapNs
@@ -90,23 +101,42 @@ public struct Framer: Sendable {
         while let byte = rest.popFirst() {
             if !bulk.isEmpty {
                 bulk.append(byte)
-                guard bulk.count >= Bulk.headerCount else { continue }
-                let length = bulk[1..<Bulk.headerCount].reduce(0) { $0 << 8 | Int($1) }
-                guard length <= Bulk.maxLength else {
+                if let n = stuffed {
+                    if byte == Bulk.stuffing {
+                        stuffed = n == 0 ? 1 : nil
+                        continue
+                    }
+                    // Not stuffing after all: a lone 02 that followed is data.
+                    stuffed = nil
+                    if n == 1 { bulkFrame.append(Bulk.stuffing) }
+                }
+                let length =
+                    bulkFrame.count >= Bulk.headerCount
+                    ? bulkFrame[1..<Bulk.headerCount].reduce(0) { $0 << 8 | Int($1) } : nil
+                if let length, bulkFrame.count == Bulk.headerCount + length {
+                    // The checksum, sent as it is.
+                    bulkFrame.append(byte)
+                    if Aux.checksum(bulkFrame[1..<(bulkFrame.count - 1)]) == byte {
+                        out.append(.bulk(bytes: bulk, frame: bulkFrame, at: bulkStart))
+                    } else {
+                        out.append(.anomaly(.badChecksum, bytes: bulk, at: bulkStart))
+                    }
+                    bulk = []
+                    bulkFrame = []
+                    continue
+                }
+                bulkFrame.append(byte)
+                if byte == Aux.preamble { stuffed = 0 }
+                if bulkFrame.count == Bulk.headerCount,
+                    bulkFrame[1...].reduce(0, { $0 << 8 | Int($1) }) > Bulk.maxLength
+                {
                     // Not a bulk frame: the 3C is stray, the rest is framed again.
                     if stray.isEmpty { strayStart = bulkStart }
                     stray.append(Bulk.preamble)
                     rest = bulk[1...] + rest
                     bulk = []
-                    continue
-                }
-                if bulk.count == Bulk.headerCount + length + 1 {
-                    if Aux.checksum(bulk[1..<(bulk.count - 1)]) == bulk[bulk.count - 1] {
-                        out.append(.bulk(bytes: bulk, at: bulkStart))
-                    } else {
-                        out.append(.anomaly(.badChecksum, bytes: bulk, at: bulkStart))
-                    }
-                    bulk = []
+                    bulkFrame = []
+                    stuffed = nil
                 }
                 continue
             }
@@ -114,6 +144,7 @@ public struct Framer: Sendable {
                 if byte == Bulk.preamble {
                     out += takeStray()
                     bulk = [byte]
+                    bulkFrame = [byte]
                     bulkStart = t
                     continue
                 }
@@ -216,6 +247,8 @@ public struct Framer: Sendable {
         if !bulk.isEmpty {
             out.append(.anomaly(.truncated, bytes: bulk, at: bulkStart))
             bulk = []
+            bulkFrame = []
+            stuffed = nil
         }
         return out
     }
