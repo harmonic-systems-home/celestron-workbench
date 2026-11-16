@@ -60,7 +60,8 @@ public struct MosaicPreview: Sendable {
             switch states[tile.id] {
             case .done(_, _, let s): sharpness[tile.id] = s
             case .failed: failed.append(tile.id)
-            default: missing.append(tile.id)
+            // A dark tile not taken isn't missing: it waits for earthshine.
+            default: if tile.lit { missing.append(tile.id) }
             }
         }
         let sorted = sharpness.values.sorted()

@@ -114,7 +114,7 @@ struct ContentView: View {
                     model.connect()
                 }
             }
-            Text("Centre the Moon with the arrow keys (rate 5), then:")
+            Text("Put the lit Moon in view with the arrow keys (rate 5), then:")
                 .font(.system(size: 13, design: .rounded)).foregroundStyle(palette.dim)
             button("1  Here", enabled: model.connected && model.busy == nil) { model.here() }
             button(
@@ -124,8 +124,16 @@ struct ContentView: View {
             button("2  Calibrate", enabled: model.hereSet && model.busy == nil) {
                 model.calibrate()
             }
-            button("3  Plan", enabled: model.calibrated && model.busy == nil) { model.makePlan() }
-            button("4  Start", enabled: model.plan != nil && model.busy == nil) { model.start() }
+            button(
+                model.centreFound ? "3  Find centre (found)" : "3  Find centre",
+                enabled: model.calibrated && model.busy == nil
+            ) { model.findCentre() }
+            button("4  Plan", enabled: model.calibrated && model.busy == nil) { model.makePlan() }
+            button("5  Start", enabled: model.plan != nil && model.busy == nil) { model.start() }
+            button(
+                model.darkTiles > 0 ? "Earthshine: \(model.darkTiles) dark tiles" : "Earthshine",
+                enabled: model.darkTiles > 0 && model.busy == nil
+            ) { model.startEarthshine() }
             HStack(spacing: 10) {
                 button("Pause", enabled: model.busy == "Capturing") { model.pause() }
                 button("Stop", enabled: model.connected) { model.stop() }
@@ -386,6 +394,12 @@ struct SettingsView: View {
                 TextField("Focal length (mm)", value: $model.focalLengthMm, format: .number)
                 TextField("Exposure (ms)", value: $model.exposureMs, format: .number)
                 TextField("Gain", value: $model.gain, format: .number)
+            }
+            Section("Finding the centre (survey)") {
+                TextField("Survey exposure (ms)", value: $model.surveyExposureMs, format: .number)
+                TextField("Survey gain", value: $model.surveyGain, format: .number)
+                Text("Long enough for earthshine to show above the sky; the sunlit part can saturate.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             Section("Mosaic") {
                 Slider(value: $model.overlap, in: 0.15...0.4, step: 0.05) {

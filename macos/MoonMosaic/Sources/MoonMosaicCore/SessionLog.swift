@@ -53,6 +53,8 @@ public final class SessionLog {
         let center: XY
         /// Where the camera is aimed, arcseconds from the Moon's centre.
         let pointing: XY
+        /// Sunlit in the survey (true without one).
+        let lit: Bool
     }
 
     public struct TileRecord: Encodable {
@@ -90,7 +92,7 @@ public final class SessionLog {
                     PlannedTile(
                         id: $0.id, row: $0.row, column: $0.column,
                         center: XY(x: $0.center.x, y: $0.center.y),
-                        pointing: XY(x: $0.pointing.x, y: $0.pointing.y))
+                        pointing: XY(x: $0.pointing.x, y: $0.pointing.y), lit: $0.lit)
                 }))
     }
 

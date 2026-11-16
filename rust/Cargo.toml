@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/protocol", "crates/storage", "crates/receiver", "crates/analysis", "crates/mount-core", "crates/mount-sim", "crates/mount-celestron", "crates/mount-ffi", "crates/mount-runner", "crates/celestron-discovery", "crates/celestron-setup", "crates/cli"]
+members = ["crates/protocol", "crates/storage", "crates/receiver", "crates/analysis", "crates/mount-core", "crates/mount-sim", "crates/mount-celestron", "crates/mount-ffi", "crates/mount-runner", "crates/celestron-discovery", "crates/celestron-setup", "crates/aux-gps", "crates/cli"]
 
 [workspace.package]
 version = "0.1.0"
@@ -40,6 +40,7 @@ cwb-mount-celestron = { path = "crates/mount-celestron" }
 cwb-mount-runner = { path = "crates/mount-runner" }
 cwb-celestron-discovery = { path = "crates/celestron-discovery" }
 cwb-celestron-setup = { path = "crates/celestron-setup" }
+cwb-aux-gps = { path = "crates/aux-gps" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

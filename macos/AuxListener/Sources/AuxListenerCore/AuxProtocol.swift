@@ -163,6 +163,49 @@ public enum StarSenseMessage {
     }
 }
 
+/// GPS message IDs (0xB0), from the AUX command set and two GPS emulators
+/// (docs/references.md, ADR 0020). The hand controller asks with no data;
+/// the GPS answers. Times are UTC.
+public enum GpsMessage {
+    public static let address: UInt8 = 0xb0
+
+    public static func name(_ id: UInt8) -> String? {
+        switch id {
+        case 0x01: "GET_LAT"
+        case 0x02: "GET_LONG"
+        case 0x03: "GET_DATE"
+        case 0x04: "GET_YEAR"
+        case 0x07: "GET_SAT_INFO"
+        case 0x08: "GET_RCVR_STATUS"
+        case 0x33: "GET_TIME"
+        case 0x36: "TIME_VALID"
+        case 0x37: "LINKED"
+        case 0x55: "GET_HW_VER"
+        case 0xa0: "GET_COMPASS"
+        case 0xfe: "GET_VERSION"
+        default: nil
+        }
+    }
+
+    /// The data of a GPS answer, in words. Latitude and longitude are not
+    /// shown: a real GPS would put the site on screen (docs/privacy.md). The
+    /// raw bytes stay in the private log.
+    public static func value(id: UInt8, data: [UInt8]) -> String? {
+        let d = data
+        switch (id, d.count) {
+        case (0x01, 3), (0x02, 3): return "(position not shown)"
+        case (0x03, 2): return String(format: "month %d, day %d", d[0], d[1])
+        case (0x04, 2): return "\(Int(d[0]) << 8 | Int(d[1]))"
+        case (0x33, 3): return String(format: "%02d:%02d:%02d UTC", d[0], d[1], d[2])
+        case (0x36, 1), (0x37, 1): return d[0] == 1 ? "yes" : d[0] == 0 ? "no" : "\(d[0])"
+        case (0x07, 2): return "\(d[0]) in view, \(d[1]) tracked"
+        case (0x55, 1): return hex(d[0])
+        case (0xfe, 2): return "\(d[0]).\(d[1])"
+        default: return nil
+        }
+    }
+}
+
 /// The stars the StarSense camera found in a capture, sent in a `3C` bulk
 /// frame after its answer to GET_CAPTURE_DATA (ADR 0018). The data is
 /// little-endian 32-bit float pairs, x then y in pixels, brightest first;

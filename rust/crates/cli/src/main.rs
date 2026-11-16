@@ -2,8 +2,9 @@
 //!
 //! Only `cwb mount run` can move a mount (plan Prompt 8, ADR 0013): `cwb
 //! celestron` sends read-only queries, plus the hand controller's time and
-//! location with `setup`.
+//! location with `setup`, and decoy GPS replies with `gps-test`.
 
+mod gps_test;
 mod mount;
 
 use std::{
@@ -273,6 +274,42 @@ enum CelestronCommand {
         /// Set only the location.
         #[arg(long)]
         location_only: bool,
+        /// Don't ask for confirmation.
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Test whether the hand controller takes time and location from GPS
+    /// replies on the AUX bus (ADR 0020): speaking as the GPS through the
+    /// mount's Wi-Fi, push the replies a GPS gives and answer any GPS
+    /// request heard. The location is always a decoy. No motion.
+    GpsTest {
+        /// The mount's Wi-Fi address (default: the access-point default).
+        #[arg(
+            long,
+            env = "CWB_MOUNT_HOST",
+            default_value = "1.2.3.4",
+            hide_env_values = true,
+            hide_default_value = true
+        )]
+        host: String,
+        /// A simulated hand controller that asks the GPS for the time.
+        #[arg(long)]
+        simulate: bool,
+        /// The time sent.
+        #[arg(long, value_enum, default_value_t = gps_test::GpsTime::Decoy)]
+        time: gps_test::GpsTime,
+        /// How long to run, in seconds.
+        #[arg(long, default_value_t = 60.0)]
+        seconds: f64,
+        /// Push the replies unasked this often (seconds); 0 only answers requests.
+        #[arg(long, default_value_t = 10.0)]
+        push_every: f64,
+        /// Hand controller address: 0e (StarSense), 0d (NexStar+) or 04.
+        #[arg(long, default_value = "0e", value_parser = gps_test::parse_hand_controller)]
+        hand_controller: u8,
+        /// Where the trace goes (git-ignored).
+        #[arg(long, short, default_value = "reports/gps-test")]
+        out: PathBuf,
         /// Don't ask for confirmation.
         #[arg(long)]
         yes: bool,
@@ -762,6 +799,25 @@ fn celestron(command: CelestronCommand) -> Result<ExitCode> {
                 setup(link, &plan, yes)
             }
         }
+        CelestronCommand::GpsTest {
+            host,
+            simulate,
+            time,
+            seconds,
+            push_every,
+            hand_controller,
+            out,
+            yes,
+        } => gps_test::gps_test(gps_test::Options {
+            host: &host,
+            simulate,
+            time,
+            seconds,
+            push_every,
+            hand_controller,
+            out: &out,
+            yes,
+        }),
     }
 }
 

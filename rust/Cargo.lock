@@ -274,6 +274,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "cwb-aux-gps"
+version = "0.1.0"
+dependencies = [
+ "jiff",
+]
+
+[[package]]
 name = "cwb-celestron-discovery"
 version = "0.1.0"
 dependencies = [
@@ -303,6 +310,7 @@ dependencies = [
  "anyhow",
  "clap",
  "cwb-analysis",
+ "cwb-aux-gps",
  "cwb-celestron-discovery",
  "cwb-celestron-setup",
  "cwb-mount-celestron",

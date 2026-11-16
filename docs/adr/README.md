@@ -23,3 +23,5 @@ Each ADR records one decision, why it was made, and what it costs. To change a d
 | [0017](0017-mount-report.md) | The Phase 2 mount report | Accepted |
 | [0018](0018-aux-bus-listener.md) | A listen-only AUX bus monitor, as a Mac app | Accepted |
 | [0019](0019-moon-mosaic-app.md) | A Moon mosaic app driven by motor positions | Accepted |
+| [0020](0020-gps-replies-test.md) | Testing whether the hand controller takes GPS replies | Accepted |
+| [0021](0021-moon-centre-by-survey.md) | Finding the Moon's centre by survey, and earthshine tiles | Proposed |

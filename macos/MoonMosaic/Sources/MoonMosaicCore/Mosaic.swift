@@ -83,6 +83,9 @@ public struct Tile: Sendable, Equatable, Identifiable {
     public let center: PixelOffset
     /// The pointing, relative to the Moon's centre, that puts the tile in view.
     public let pointing: SkyOffset
+    /// Whether the survey saw sunlit Moon in the tile (true without a
+    /// survey). Dark tiles are left for an earthshine pass.
+    public var lit: Bool = true
 }
 
 public struct MosaicPlan: Sendable, Equatable {
@@ -132,6 +135,30 @@ public enum MosaicPlanner {
         return MosaicPlan(
             tiles: tiles, overlap: overlap, moonRadiusPixels: radius, frameWidth: frameWidth,
             frameHeight: frameHeight)
+    }
+
+    /// Marks each tile lit if a sunlit survey cell falls in its frame (a
+    /// cell's width of margin either way). A part of the Moon at sky offset
+    /// s from the centre shows at −M·s in the camera's frame.
+    public static func markLit(
+        _ plan: MosaicPlan, litSky: [SkyOffset], calibration: CameraCalibration,
+        marginPixels: Double = 80
+    ) -> MosaicPlan {
+        let lit = litSky.map { s -> PixelOffset in
+            let p = calibration.image(for: s)
+            return PixelOffset(x: -p.x, y: -p.y)
+        }
+        let (hw, hh) = (
+            Double(plan.frameWidth) / 2 + marginPixels, Double(plan.frameHeight) / 2 + marginPixels
+        )
+        let tiles = plan.tiles.map { t -> Tile in
+            var t = t
+            t.lit = lit.contains { abs($0.x - t.center.x) <= hw && abs($0.y - t.center.y) <= hh }
+            return t
+        }
+        return MosaicPlan(
+            tiles: tiles, overlap: plan.overlap, moonRadiusPixels: plan.moonRadiusPixels,
+            frameWidth: plan.frameWidth, frameHeight: plan.frameHeight)
     }
 
     /// The mount's move, in its own axes (degrees), that turns a sky offset

@@ -200,6 +200,9 @@ public struct BusMonitor: Sendable {
         }
         if let latencyMs {
             text += " (\(Int(latencyMs.rounded())) ms)"
+        } else if reply, p.source == GpsMessage.address {
+            // `cwb celestron gps-test` pushes GPS answers unasked (ADR 0020).
+            text += " (unasked)"
         } else if reply {
             text += " (late)"
         }
@@ -232,6 +235,8 @@ public struct BusMonitor: Sendable {
             message = MotorMessage.name(id)
         } else if source == StarSenseMessage.address || destination == StarSenseMessage.address {
             message = StarSenseMessage.name(id)
+        } else if source == GpsMessage.address || destination == GpsMessage.address {
+            message = GpsMessage.name(id)
         } else {
             message = nil
         }
@@ -246,6 +251,10 @@ public struct BusMonitor: Sendable {
         }
         if p.source == StarSenseMessage.address || p.destination == StarSenseMessage.address {
             return starSenseValue(p, reply: reply)
+        }
+        // A GPS answer, asked for or not (ADR 0020 pushes them unasked).
+        if p.source == GpsMessage.address, !p.data.isEmpty {
+            return GpsMessage.value(id: p.id, data: p.data)
         }
         if reply, p.source == BatteryMessage.address, p.id == BatteryMessage.getVoltage,
             let b = BatteryMessage.reading(p.data)

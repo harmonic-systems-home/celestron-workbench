@@ -29,6 +29,16 @@ public final class FakeCamera: Camera, @unchecked Sendable {
         set { lock.withLock { _pointing = newValue } }
     }
     public var provider: (@Sendable () -> (x: Double, y: Double))?
+    /// The phase: the Moon's angle from the Sun (180 is full), and the
+    /// direction of the Sun on the sky, degrees from +x (azimuth) towards +y
+    /// (altitude). The dark side shows earthshine at `earthshine` of the lit
+    /// side's brightness; the sky adds `skyGlow` per unit of exposure.
+    public var elongationDeg: Double = 180
+    public var sunDirectionDeg: Double = 0
+    public var earthshine: Double = 0
+    public var skyGlow: Double = 0
+    /// Brightness against 2 ms at gain 100 (ZWO gain is in 0.1 dB).
+    private var brightness = 1.0
     /// Every frame's pointing, in order, for tests.
     public private(set) var history: [(x: Double, y: Double)] = []
 
@@ -64,7 +74,10 @@ public final class FakeCamera: Camera, @unchecked Sendable {
         craters = grid
     }
 
-    public func configure(exposureUs: Int, gain: Int) throws {}
+    public func configure(exposureUs: Int, gain: Int) throws {
+        let b = Double(exposureUs) / 2000 * pow(10, Double(gain - 100) / 200)
+        lock.withLock { brightness = b }
+    }
     public func start() throws { running = true }
     public func stop() { running = false }
 
@@ -93,6 +106,12 @@ public final class FakeCamera: Camera, @unchecked Sendable {
         let t = rotationDeg * .pi / 180
         let (ct, st) = (cos(t), sin(t))
         let n = cells
+        let m = lock.withLock { brightness }
+        let sun = sunDirectionDeg * .pi / 180
+        let e = elongationDeg * .pi / 180
+        let (sa, ca, se, ce) = (sin(sun), cos(sun), sin(e), cos(e))
+        let r = moonRadiusArcsec
+        let sky = UInt8(max(0, min(255, 6 + skyGlow * m)))
         for y in 0..<h {
             let v = Double(y) - Double(h) / 2
             for x in 0..<w {
@@ -100,9 +119,13 @@ public final class FakeCamera: Camera, @unchecked Sendable {
                 let q = (x: p.x + scale * (u * ct - v * st), y: p.y - scale * (u * st + v * ct))
                 let d2 = q.x * q.x + q.y * q.y
                 guard d2 < r2 else {
-                    pixels[y * w + x] = 6
+                    pixels[y * w + x] = sky
                     continue
                 }
+                // Lit where the surface faces the Sun.
+                let sx = (q.x * ca + q.y * sa) / r
+                let z = max(0, 1 - d2 / r2).squareRoot()
+                let lit = sx * se - z * ce > 0
                 // Maria and highlands, then craters.
                 var b = 0.62 + 0.18 * sin(q.x / 210) * cos(q.y / 170) + 0.08 * sin((q.x + q.y) / 47)
                 let cx = Int((q.x / Self.cell).rounded(.down)) + n
@@ -117,7 +140,8 @@ public final class FakeCamera: Camera, @unchecked Sendable {
                         }
                     }
                 }
-                pixels[y * w + x] = UInt8(max(10, min(245, b * 200)))
+                let v = lit ? b * 200 * m : b * 200 * m * earthshine + Double(sky)
+                pixels[y * w + x] = UInt8(max(lit ? 10 : 0, min(lit && m <= 1 ? 245 : 255, v)))
             }
         }
         return Frame(width: w, height: h, pixels: pixels, time: taken)

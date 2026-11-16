@@ -16,6 +16,15 @@ public struct MosaicSettings: Sendable {
     public var minSunSeparationDeg: Double = 40
     /// How long to wait after a goto before using the image.
     public var settleSeconds: Double = 0.7
+    /// The survey that finds the Moon's centre (amendment 1): long enough
+    /// for earthshine to show above the sky, the sunlit part saturated.
+    public var surveyExposureUs: Int = 100_000
+    public var surveyGain: Int = 300
+    /// How far the survey reaches from Here, in Moon radii. Here only has
+    /// to be on the Moon, so 1.5 always reaches past the nearest limb.
+    public var surveyReach: Double = 1.5
+    /// Survey frames' spacing, in frames.
+    public var surveySpacing: Double = 1.4
 
     public init(site: Site) {
         self.site = site
@@ -60,7 +69,17 @@ public final class MosaicSession: @unchecked Sendable {
     public private(set) var settings: MosaicSettings
     public private(set) var here: Here?
     public private(set) var calibration: CameraCalibration?
+    /// The survey's fit, once the centre has been found.
+    public private(set) var centreFit: MoonCentre.Fit?
+    /// The survey's sunlit cells, relative to the Moon's centre.
+    private var litSky: [SkyOffset] = []
     public private(set) var plan: MosaicPlan?
+    /// The dark tiles not yet done, for an earthshine pass.
+    public var darkTilesToDo: [Int] {
+        (plan?.tiles ?? []).filter { !$0.lit }.map(\.id).filter {
+            if case .done = states[$0] { return false } else { return true }
+        }
+    }
     /// The folder whose session log has this plan in it.
     private var loggedPlanIn: URL?
     public private(set) var states: [Int: TileState] = [:]
@@ -93,6 +112,12 @@ public final class MosaicSession: @unchecked Sendable {
     public func setCamera(exposureUs: Int, gain: Int) {
         settings.exposureUs = exposureUs
         settings.gain = gain
+    }
+
+    /// The survey's exposure and gain, for the next survey.
+    public func setSurvey(exposureUs: Int, gain: Int) {
+        settings.surveyExposureUs = exposureUs
+        settings.surveyGain = gain
     }
 
     /// Records where the Moon is centred, checks the Sun and ties the
@@ -134,6 +159,8 @@ public final class MosaicSession: @unchecked Sendable {
         }
         try mount.setAltitudeReference(moon.horizontal.altDeg)
         here = Here(time: now, azimuthDeg: p[0], altitudeDeg: p[1], moon: moon)
+        centreFit = nil
+        litSky = []
         let later = Ephemeris.moon(at: now.addingTimeInterval(60), from: settings.site).horizontal
         approach = (
             wrap180(later.azDeg - moon.horizontal.azDeg) >= 0 ? .positive : .negative,
@@ -227,19 +254,109 @@ public final class MosaicSession: @unchecked Sendable {
         return SkyOffset(x: dAz * cos(mb.altDeg * .pi / 180) * 3600, y: dAlt * 3600)
     }
 
+    // MARK: Finding the centre
+
+    /// Surveys a grid of frames around Here at the survey exposure, fits the
+    /// Moon's disk, and moves Here to its centre (amendment 1). Every move
+    /// is a small goto near the Moon, checked like any other; none goes
+    /// further than `surveyReach` Moon radii from Here.
+    @discardableResult
+    public func findCentre() async throws -> MoonCentre.Fit {
+        guard let calibration, let here else { throw MosaicError(description: "Calibrate first.") }
+        let radius = here.moon.diameterDeg / 2 * 3600
+        let reach = settings.surveyReach * radius
+        // Frames 1.4 frames apart over a circle of `reach`: the fit needs
+        // cells across the limb, not every part of the sky.
+        let grid = MosaicPlanner.plan(
+            moonDiameterDeg: 2 * reach / 3600, calibration: calibration,
+            frameWidth: camera.info.width, frameHeight: camera.info.height,
+            overlap: -settings.surveySpacing + 1, margin: 0)
+        let stops = grid.tiles.map(\.pointing).filter {
+            hypot($0.x, $0.y) <= reach + Double(max(camera.info.width, camera.info.height))
+                * calibration.arcsecPerPixel
+        }
+        onEvent(.message("Survey: \(stops.count) frames, to \(Int(reach / 60))′ from Here."))
+        try await armForStep()
+        defer { endStep() }
+        try camera.configure(exposureUs: settings.surveyExposureUs, gain: settings.surveyGain)
+        try camera.start()
+        defer {
+            camera.stop()
+            try? camera.configure(exposureUs: settings.exposureUs, gain: settings.gain)
+        }
+        var samples: [MoonCentre.Sample] = []
+        let origin = (here.time, [here.azimuthDeg, here.altitudeDeg])
+        for (i, stop) in stops.enumerated() {
+            // One goto, no touch-ups: where it really pointed is read below.
+            let aim = try target(stop, at: clock().addingTimeInterval(settings.settleSeconds + 1))
+            try await goTo(az: aim.az, alt: aim.alt)
+            let (frame, t, p) = try await still()
+            // Where the camera really pointed, from the mount's own position.
+            let pointing = relativeMove(from: origin, to: (t, p))
+            samples += MoonCentre.samples(
+                frame, pointing: pointing, calibration: calibration,
+                cellPixels: Int((25 / calibration.arcsecPerPixel).rounded()))
+            if (i + 1) % 10 == 0 { onEvent(.message("Survey: \(i + 1) of \(stops.count).")) }
+        }
+        guard
+            let fit = MoonCentre.fit(samples, radiusArcsec: radius, searchArcsec: 1.1 * radius),
+            fit.agreement > 0.85
+        else {
+            try await goToSky(SkyOffset(x: 0, y: 0))
+            throw MosaicError(
+                description:
+                    "Couldn't find the Moon's edge in the survey. Is Here on the lit Moon, and the survey exposure right (Settings)?")
+        }
+        // Here moves to the centre: the same moment, the axes shifted.
+        let shift = MosaicPlanner.axes(for: fit.centre, altitudeDeg: here.moon.horizontal.altDeg)
+        self.here = Here(
+            time: here.time, azimuthDeg: Ephemeris.normalize(here.azimuthDeg + shift.azDeg),
+            altitudeDeg: here.altitudeDeg + shift.altDeg, moon: here.moon)
+        litSky = samples.filter { $0.mean >= fit.levels.lit }.map {
+            SkyOffset(x: $0.sky.x - fit.centre.x, y: $0.sky.y - fit.centre.y)
+        }
+        centreFit = fit
+        plan = nil
+        // The altitude reference was set off-centre at Here: set it again,
+        // from where the mount points now against where the centre is.
+        let now = clock()
+        let pos = try await freshPosition()
+        let centreNow = try target(SkyOffset(x: 0, y: 0), at: now)
+        let moonNow = Ephemeris.moon(at: now, from: settings.site).horizontal
+        try mount.setAltitudeReference(moonNow.altDeg + (pos[1] - centreNow.alt))
+        try await goToSky(SkyOffset(x: 0, y: 0))
+        onEvent(
+            .message(
+                String(
+                    format:
+                        "Centre found %.0f″ from Here (%.0f″, %.0f″); %.0f%% of cells agree; %@.",
+                    hypot(fit.centre.x, fit.centre.y), fit.centre.x, fit.centre.y,
+                    fit.agreement * 100,
+                    fit.earthshine ? "earthshine seen" : "no earthshine above the sky")))
+        return fit
+    }
+
     // MARK: Plan and run
 
     @discardableResult
     public func makePlan() throws -> MosaicPlan {
         guard let calibration, let here else { throw MosaicError(description: "Calibrate first.") }
-        let plan = MosaicPlanner.plan(
+        var plan = MosaicPlanner.plan(
             moonDiameterDeg: here.moon.diameterDeg, calibration: calibration,
             frameWidth: camera.info.width, frameHeight: camera.info.height,
             overlap: settings.overlap)
+        if centreFit != nil {
+            plan = MosaicPlanner.markLit(plan, litSky: litSky, calibration: calibration)
+        }
         self.plan = plan
         states = Dictionary(uniqueKeysWithValues: plan.tiles.map { ($0.id, .pending) })
         stacks = [:]
-        onEvent(.message("Plan: \(plan.tiles.count) tiles."))
+        let lit = plan.tiles.filter(\.lit).count
+        onEvent(
+            .message(
+                lit == plan.tiles.count
+                    ? "Plan: \(plan.tiles.count) tiles."
+                    : "Plan: \(lit) lit tiles, and \(plan.tiles.count - lit) dark ones for earthshine."))
         return plan
     }
 
@@ -264,7 +381,7 @@ public final class MosaicSession: @unchecked Sendable {
         }
         let ids =
             tiles
-            ?? plan.tiles.map(\.id).filter {
+            ?? plan.tiles.filter(\.lit).map(\.id).filter {
                 if case .done = states[$0] { return false } else { return true }
             }
         for id in ids {

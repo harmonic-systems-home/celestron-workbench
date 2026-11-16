@@ -1,6 +1,6 @@
 # ADR 0019: A Moon mosaic app driven by motor positions
 
-**Status:** Accepted
+**Status:** Accepted. Finding the Moon's centre amended by [ADR 0021](0021-moon-centre-by-survey.md).
 
 ## Context
 

@@ -18,6 +18,7 @@ clap.workspace = true
 cwb-analysis.workspace = true
 cwb-celestron-discovery.workspace = true
 cwb-celestron-setup.workspace = true
+cwb-aux-gps.workspace = true
 cwb-mount-celestron.workspace = true
 cwb-mount-core.workspace = true
 cwb-mount-runner.workspace = true

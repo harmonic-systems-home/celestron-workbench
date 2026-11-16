@@ -525,3 +525,29 @@ private let floatWith3B = Float(bitPattern: 0x432E_A83B)
     #expect(anomalies(joiner.process(framer.feed([0xDD], at: 0), at: 0)).isEmpty)
     #expect(anomalies(joiner.process(framer.flush(at: 100 * ms), at: 100 * ms)) == [.noise])
 }
+
+@Test func gpsAnswersAreNamedAndDecodedButNotThePosition() {
+    var monitor = BusMonitor()
+    let ask = AuxPacket(raw: Aux.encode(source: 0x0e, destination: 0xb0, id: 0x33))!
+    let time = AuxPacket(
+        raw: Aux.encode(source: 0xb0, destination: 0x0e, id: 0x33, data: [12, 0, 5]))!
+    // Paquette's example latitude, +45°20′30″: not shown.
+    let lat = AuxPacket(
+        raw: Aux.encode(source: 0xb0, destination: 0x0e, id: 0x01, data: [0x20, 0x3e, 0x35]))!
+    let year = AuxPacket(
+        raw: Aux.encode(source: 0xb0, destination: 0x0e, id: 0x04, data: [0x07, 0xee]))!
+    let linked = AuxPacket(
+        raw: Aux.encode(source: 0xb0, destination: 0x0e, id: 0x37, data: [1]))!
+    var texts: [String] = []
+    for (i, p) in [ask, time, lat, year, linked].enumerated() {
+        for case .packet(let d) in monitor.process(.packet(p, at: UInt64(i) * 20 * ms)) {
+            texts.append(d.text)
+        }
+    }
+    #expect(texts[0] == "StarSense HC → GPS  GET_TIME")
+    #expect(texts[1] == "GPS → StarSense HC  GET_TIME = 12:00:05 UTC (20 ms)")
+    #expect(texts[2] == "GPS → StarSense HC  GET_LAT = (position not shown) (unasked)")
+    #expect(texts[3] == "GPS → StarSense HC  GET_YEAR = 2030 (unasked)")
+    #expect(texts[4] == "GPS → StarSense HC  LINKED = yes (unasked)")
+    #expect(!texts.joined().contains("45"))
+}

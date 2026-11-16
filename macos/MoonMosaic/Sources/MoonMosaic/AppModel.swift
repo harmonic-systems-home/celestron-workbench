@@ -25,6 +25,19 @@ final class AppModel: ObservableObject {
             applyCamera()
         }
     }
+    /// The survey that finds the Moon's centre (ADR 0019, amendment 1).
+    @Published var surveyExposureMs: Double {
+        didSet {
+            save()
+            applySurvey()
+        }
+    }
+    @Published var surveyGain: Int {
+        didSet {
+            save()
+            applySurvey()
+        }
+    }
     @Published var simulate: Bool { didSet { save() } }
     /// Send this Mac's time and the site to the hand controller on connect.
     @Published var setHandController: Bool { didSet { save() } }
@@ -70,6 +83,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var bestFocus: Double = 0
     @Published private(set) var hereSet = false
     @Published private(set) var calibrated = false
+    @Published private(set) var centreFound = false
+    @Published private(set) var darkTiles = 0
     /// Capture progress: tiles finished of those asked for, and when the
     /// rest should be done (re-estimated as each tile finishes).
     @Published private(set) var captureDone = 0
@@ -118,6 +133,8 @@ final class AppModel: ObservableObject {
         videoSeconds = d["videoSeconds"] as? Double ?? 3
         exposureMs = d["exposureMs"] as? Double ?? 2
         gain = d["gain"] as? Int ?? 100
+        surveyExposureMs = d["surveyExposureMs"] as? Double ?? 100
+        surveyGain = d["surveyGain"] as? Int ?? 300
         simulate = d["simulate"] as? Bool ?? false
         setHandController = d["setHandController"] as? Bool ?? true
         paletteMode = d["paletteMode"] as? String ?? "auto"
@@ -135,7 +152,8 @@ final class AppModel: ObservableObject {
         let d: [String: Any] = [
             "latitude": latitude, "longitude": longitude, "focalLengthMm": focalLengthMm,
             "overlap": overlap, "videoSeconds": videoSeconds, "exposureMs": exposureMs,
-            "gain": gain, "simulate": simulate, "setHandController": setHandController, "paletteMode": paletteMode, "folder": folder.path,
+            "gain": gain, "surveyExposureMs": surveyExposureMs, "surveyGain": surveyGain,
+            "simulate": simulate, "setHandController": setHandController, "paletteMode": paletteMode, "folder": folder.path,
         ]
         do {
             try FileManager.default.createDirectory(
@@ -253,6 +271,8 @@ final class AppModel: ObservableObject {
         settings.videoSeconds = videoSeconds
         settings.exposureUs = Int(exposureMs * 1000)
         settings.gain = gain
+        settings.surveyExposureUs = Int(surveyExposureMs * 1000)
+        settings.surveyGain = surveyGain
         // Rehearsing: the clock runs from the next time the Moon is high here.
         let realTime: @Sendable () -> Date = { Date() }
         let clock = simulate ? Self.rehearsalClock(site: site) : realTime
@@ -310,6 +330,8 @@ final class AppModel: ObservableObject {
         connected = false
         hereSet = false
         calibrated = false
+        centreFound = false
+        darkTiles = 0
         mountState = "Not connected"
         battery = nil
         batterySummary = nil
@@ -487,6 +509,24 @@ final class AppModel: ObservableObject {
         perform("Calibrating") { try await $0.calibrate() }
     }
 
+    func findCentre() {
+        perform("Finding the centre") { try await $0.findCentre() }
+    }
+
+    private func applySurvey() {
+        session?.setSurvey(exposureUs: Int(surveyExposureMs * 1000), gain: surveyGain)
+    }
+
+    /// The dark tiles, at the exposure and gain set now (turn them up for
+    /// earthshine first).
+    func startEarthshine() {
+        guard let session else { return }
+        let tiles = session.darkTilesToDo
+        guard !tiles.isEmpty else { return }
+        say("Earthshine: \(tiles.count) dark tiles at the current exposure and gain.")
+        start(tiles: tiles)
+    }
+
     func makePlan() {
         guard let session else { return }
         do {
@@ -582,6 +622,8 @@ final class AppModel: ObservableObject {
         tileStates = session.states
         hereSet = session.here != nil
         calibrated = session.calibration != nil
+        centreFound = session.centreFit != nil
+        darkTiles = session.darkTilesToDo.count
     }
 
     private func poll() {
