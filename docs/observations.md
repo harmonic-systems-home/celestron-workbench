@@ -225,6 +225,15 @@ Outside sources (Celestron, the community AUX command set, forums) are listed in
 - **Also seen in the same session:** at keypad rate 9 a short tap moves 0.04–0.1° and never reaches speed (0.1–0.3 °/s against about 3 °/s held), and the briefest taps reach the motor not at all; at rate 5 taps move 70–115″ (1–2′) consistently, and the first tap after a reversal adds the anti-backlash take-up (about 143″ at 35). The arrow keys' "slow tap, fast press" at high rates is at least mostly the motor's acceleration ramp; the AUX listener will show whether the hand controller also sends a lower rate on short presses.
 - **Status:** fixed in the adapter, not yet seen again on hardware. Menus on the hand controller during an armed session remain something to avoid.
 
+## O19. A set time isn't saved: the next start-up restores a scrambled copy
+
+- **Seen:** 2026-11-16, StarSense hand controller firmware 1.22, read with `cwb celestron read-time` (it sends only `h`).
+- **No running clock:** at start-up the hand controller restores the date, time, zone and DST last saved, and the time doesn't advance. A keypad entry is saved and survives a restart intact; it reads back as zone byte 248 (−8) and DST 0.
+- **After a set by command:** `H` (Moon Mosaic, `cwb celestron setup`) is taken and reads back exactly as sent, with zone byte 248, the same byte the keypad gives. But after a restart the hand controller restores a scrambled copy, the same in both of two tries: about two hours earlier than the restart, the date 5 days later, zone byte 109 and DST on. The display shows the zone as a strange character. The scrambling doesn't follow from the bytes sent, so it can't be corrected for.
+- **Fix, for the operator:** after anything has set the time, press ENTER through the hand controller's time screen without changing anything. That saves a clean copy: the next restart restored the date, zone and DST correctly, with the time of the press-through. On the night card.
+- **Also:** the hand controller stalls at start-up if it can't find the StarSense camera: when the camera is unplugged, or when its USB cable goes in before the AUX cable. A stalled hand controller answers nothing on USB or the bus.
+- **Status:** a hand controller bug, as far as we can tell; worth reporting to Celestron. ASIAIR presumably sends `H` too, so the same press-through applies after an ASIAIR session.
+
 ## From earlier use (not yet reproduced)
 
 Problems from about two years ago, before this project, without a known sequence. To be pinned down one at a time once basic motion is characterized; fill in details as they come back.

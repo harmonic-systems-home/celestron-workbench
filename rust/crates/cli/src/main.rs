@@ -251,6 +251,14 @@ enum CelestronCommand {
     },
     /// Set the hand controller's time (from this Mac's clock) and location
     /// (from the site file), then read each back to confirm. No motion.
+    /// Read the hand controller's time, date, zone and DST (`h`) and print
+    /// the 8 bytes as sent, then decoded. Sends only `h`: no location, no
+    /// motion.
+    ReadTime {
+        /// Serial device, e.g. /dev/cu.usbserial-… (see `cwb celestron ports`).
+        #[arg(long)]
+        port: String,
+    },
     Setup {
         /// Serial device, e.g. /dev/cu.usbserial-… (see `cwb celestron ports`).
         #[arg(long, required_unless_present = "simulate")]
@@ -798,6 +806,41 @@ fn celestron(command: CelestronCommand) -> Result<ExitCode> {
                 let link = open_serial(&path);
                 setup(link, &plan, yes)
             }
+        }
+        CelestronCommand::ReadTime { port } => {
+            use cwb_celestron_discovery::{Outcome, transact};
+            use cwb_celestron_setup::command::{GET_TIME, HandTime};
+            let mut link = open_serial(&port);
+            let (outcome, got) = transact(&mut link, &[GET_TIME], 8, false);
+            if outcome != Outcome::Ok || got.len() < 8 {
+                println!("no time read: {outcome:?}");
+                return Ok(ExitCode::FAILURE);
+            }
+            let b = &got[..8];
+            println!(
+                "bytes: {}",
+                b.iter()
+                    .map(|x| format!("{x:02X}"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            );
+            println!(
+                "time {:02}:{:02}:{:02}  date {}/{}/{}  zone byte {} (as signed {})  dst byte {}",
+                b[0],
+                b[1],
+                b[2],
+                b[3],
+                b[4],
+                2000 + u32::from(b[5]),
+                b[6],
+                b[6] as i8,
+                b[7]
+            );
+            match HandTime::decode(b) {
+                Some(t) => println!("decoded: {t}"),
+                None => println!("decoded: not a valid time by the protocol document"),
+            }
+            Ok(ExitCode::SUCCESS)
         }
         CelestronCommand::GpsTest {
             host,

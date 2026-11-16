@@ -12,14 +12,19 @@ A one-page sequence for a night at the telescope: the StarSense hand controller'
 
 ## Power-up
 
-1. Plug the hand controller into the mount, then plug the USB cable into the laptop. To restart a frozen hand controller, unplug both and plug them back in, mount first.
+1. Plug the hand controller into the mount, then plug the USB cable into the laptop. The StarSense camera must be connected, and the mount cable must go in first: otherwise the hand controller stalls at start-up looking for the camera. To restart a frozen hand controller, unplug both and plug them back in, mount first.
 2. Wait for **"StarSense Ready"** (about 30 s).
 3. Open the AUX Listener, then connect Moon Mosaic. Check its log for **"Hand controller time: confirmed; site: confirmed."**
 4. Keep SkySafari and every other Wi-Fi client off. All six freezes on 2026-11-09 happened while something was using the mount's Wi-Fi.
 
 ## Time and site prompts (p.11)
 
-Moon Mosaic has already set them, so accept them.
+The hand controller has no running clock: at start-up it shows the date, time, zone and DST last saved, and the time hasn't moved on (O19).
+
+- **Hand controller only:** enter the time and date. The zone, DST, year and site stay as saved.
+- **Moon Mosaic connected:** it has already set them, so accept them. (Moon Mosaic itself doesn't need the hand controller's time; only the hand controller's own GoTos and alignment do.)
+- **Planets:** Moon Mosaic sets the time and site, StarSense aligns, the hand controller goes to the planet, and ASIStudio captures.
+- **If the zone shows a strange character, or the date is days off,** an app set the time last session and it wasn't saved: re-enter every field.
 
 - At the time/date/location screen, **BACK accepts** and **ENTER edits**.
 - If it asks anyway:
@@ -49,11 +54,19 @@ Moon Mosaic has already set them, so accept them.
 
 ## After moving the mount
 
-The old alignment no longer fits. Don't add points to it; start a new one.
+The old alignment no longer fits. Clear it, then start a new one; don't add points to it.
 
-- Run **StarSense Auto** or **Manual** again from the start. The manual doesn't say outright that this replaces the old model, but it treats a new Auto run as a fresh alignment.
+- **Clear it:** **OPTION + BACK** together clears alignment data. This comes from Celestron's firmware notes for 1.17 and 1.18, not the manual. The notes list it beside saved alignments, so it may clear a saved slot rather than the current alignment: try it once at home to see which screen it works on.
 - The Align menu also has **Reset Alignment**. The manual doesn't describe it, so test it once before relying on it.
+- Then run **StarSense Auto** or **Manual** again from the start.
 - Changing the location in the menu also drops the alignment (p.24).
+
+## If the hand controller freezes
+
+Save the alignment to a slot as soon as it's good (see Save / Load Align above). Then a freeze costs one camera image, not a new alignment, as long as the tripod hasn't moved:
+
+1. Unplug the hand controller and its USB cable, and plug them back in, mount first.
+2. At StarSense Ready, **Load** the slot and sync with **Camera**, as above.
 
 ## Camera calibration (p.12)
 
@@ -66,6 +79,7 @@ Only needed if the StarSense camera has been bumped or rotated. It needs an alig
 
 ## Ending the night
 
+- **If Moon Mosaic, ASIAIR or anything else set the time tonight:** before powering off, open the hand controller's time screen and press ENTER through every field without changing anything. That saves a clean copy; otherwise the next start-up shows scrambled values (O19).
 - To keep the alignment for the next session: MENU, **Telescope**, **Hibernate** (p.23). Put the tube where you want it, press ENTER and power off without moving it. Next time, at "Wake Up" press ENTER, confirm the time and site, and press ENTER again.
 - Disconnect Moon Mosaic, then stop the AUX Listener, before unplugging cables.
 - Copy the night's recordings to the private data repo.
