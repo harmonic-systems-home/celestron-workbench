@@ -254,6 +254,94 @@ public final class MosaicSession: @unchecked Sendable {
         return SkyOffset(x: dAz * cos(mb.altDeg * .pi / 180) * 3600, y: dAlt * 3600)
     }
 
+    // MARK: Search (ADR 0022)
+
+    /// What a search found.
+    public struct SearchOutcome: Sendable {
+        /// A bright-enough target came into view.
+        public let found: Bool
+        /// The mount's position (az, alt degrees) at the found stop, or the
+        /// last stop otherwise.
+        public let atAzAltDeg: [Double]?
+        /// The blob that satisfied `found`.
+        public let blob: Blob.Found?
+        /// Stops visited (gotos issued).
+        public let stops: Int
+    }
+
+    /// Walks an expanding spiral from the current position (ADR 0022), a frame
+    /// at each stop, asking `found` whether the target is in view. Attended and
+    /// minimal: each stop is one self-terminating goto, so there is no
+    /// latched-runaway path. Ends at the first found stop, when `cancelled` is
+    /// raised (the operator's "I see it"), or at the pattern's end. `found`
+    /// gets each stop's brightest blob, or nil.
+    @discardableResult
+    public func searchSpiral(
+        stepDeg: Double, reachDeg: Double,
+        found: @escaping @Sendable (Blob.Found?) -> Bool,
+        cancelled: @escaping @Sendable () -> Bool = { false }
+    ) async throws -> SearchOutcome {
+        let spiral = SpiralSearch(stepDeg: stepDeg, reachDeg: reachDeg)
+        return try await walk(spiral.steps.map { ($0.azDeg, $0.altDeg) }, found, cancelled)
+    }
+
+    /// Walks a serpentine raster from the current position (ADR 0022), as
+    /// capture stops `captureStepDeg` apart along each row. (A continuous row
+    /// sweep is a later optimisation; these stops drive and test the same
+    /// coverage.) Otherwise like `searchSpiral`.
+    @discardableResult
+    public func searchRaster(
+        halfWidthDeg: Double, halfHeightDeg: Double, rowSpacingDeg: Double, captureStepDeg: Double,
+        found: @escaping @Sendable (Blob.Found?) -> Bool,
+        cancelled: @escaping @Sendable () -> Bool = { false }
+    ) async throws -> SearchOutcome {
+        precondition(captureStepDeg > 0, "captureStepDeg must be positive")
+        let raster = RasterSearch(
+            halfWidthDeg: halfWidthDeg, halfHeightDeg: halfHeightDeg, rowSpacingDeg: rowSpacingDeg)
+        var offsets: [(Double, Double)] = []
+        for row in raster.rows {
+            let span = row.toAzDeg - row.fromAzDeg
+            let n = max(1, Int((abs(span) / captureStepDeg).rounded(.up)))
+            for k in 0...n {
+                offsets.append((row.fromAzDeg + span * Double(k) / Double(n), row.altDeg))
+            }
+        }
+        return try await walk(offsets, found, cancelled)
+    }
+
+    /// Shared drive: arm, open the camera, goto each offset (from the start)
+    /// in turn, and check the frame's brightest blob.
+    private func walk(
+        _ offsets: [(Double, Double)],
+        _ found: @escaping @Sendable (Blob.Found?) -> Bool,
+        _ cancelled: @escaping @Sendable () -> Bool
+    ) async throws -> SearchOutcome {
+        try await armForStep()
+        defer { endStep() }
+        try camera.configure(exposureUs: settings.exposureUs, gain: settings.gain)
+        try camera.start()
+        defer { camera.stop() }
+        let start = try await freshPosition()
+        var stops = 0
+        for (dAz, dAlt) in offsets {
+            if cancelled() { break }
+            try await goTo(az: start[0] + dAz, alt: start[1] + dAlt)
+            stops += 1
+            let (frame, _, pos) = try await still()
+            // Acquisition detects a bright region against dark sky, so count
+            // the whole lit target (a low fraction of its peak), not just its
+            // brightest parts: brightFraction then reads as "how much of the
+            // frame is lit".
+            let blob = Blob.find(frame, thresholdFraction: 0.3)
+            if found(blob) {
+                onEvent(.message("Search: target in view after \(stops) stops."))
+                return SearchOutcome(found: true, atAzAltDeg: pos, blob: blob, stops: stops)
+            }
+        }
+        return SearchOutcome(
+            found: false, atAzAltDeg: try? await freshPosition(), blob: nil, stops: stops)
+    }
+
     // MARK: Finding the centre
 
     /// Surveys a grid of frames around Here at the survey exposure, fits the
