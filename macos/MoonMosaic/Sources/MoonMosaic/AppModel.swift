@@ -58,7 +58,14 @@ final class AppModel: ObservableObject {
     /// the search patterns and focus with no tracking. The reference altitude
     /// ties the encoder to the sky for the envelope, since there's no Moon to
     /// take it from — set the tube roughly there first.
-    @Published var testMode: Bool { didSet { save() } }
+    @Published var testMode: Bool {
+        didSet {
+            save()
+            // Swap the simulated target (drifting Moon ↔ fixed drainpipe) so
+            // the toggle dry-runs too.
+            if connected, simulate { installSimProvider() }
+        }
+    }
     @Published var testAltitudeDeg: Double { didSet { save() } }
 
     // State.
@@ -130,6 +137,12 @@ final class AppModel: ObservableObject {
     private let focusAid = FocusAssist()
     private var liveTask: Task<Void, Never>?
     private var pollTimer: Timer?
+    /// Simulate-only fake-sky anchor (ADR 0022 dry-run): where the tube
+    /// started, when it connected, and the rehearsal clock. The live view's
+    /// target sits off this, so the search has something to hunt for.
+    private var simStart: [Double]?
+    private var simConnect: Date?
+    private var simClock: (@Sendable () -> Date)?
 
     /// One settings file however the app is started (as Moon Mosaic.app or
     /// from the build folder, which macOS would give separate preferences).
@@ -306,17 +319,15 @@ final class AppModel: ObservableObject {
             onEvent: { [weak self] event in
                 Task { @MainActor in self?.handle(event) }
             })
-        if let fake = camera.camera as? FakeCamera {
-            fake.provider = { [weak session] in
-                guard let session, let here = session.here,
-                    let p = try? session.mount.status().positionsDeg
-                else { return (0, 0) }
-                let s = session.relativeMove(
-                    from: (here.time, [here.azimuthDeg, here.altitudeDeg]), to: (clock(), p))
-                return (s.x, s.y)
-            }
-        }
         self.session = session
+        if simulate {
+            // The fake sky keys off the real mount position with an off-centre
+            // target, so the whole search dry-runs with no scope (ADR 0022).
+            simStart = mount.opened.positionsDeg
+            simConnect = clock()
+            simClock = clock
+            installSimProvider()
+        }
         connected = true
         busy = nil
         let o = mount.opened
@@ -352,6 +363,9 @@ final class AppModel: ObservableObject {
         stopHold()
         stopLive()
         try? mount?.stop()
+        simStart = nil
+        simConnect = nil
+        simClock = nil
         session = nil
         camera = nil
         mount = nil
@@ -410,6 +424,44 @@ final class AppModel: ObservableObject {
     private func stopLive() {
         liveTask?.cancel()
         liveTask = nil
+    }
+
+    /// Installs the fake sky the live view renders in simulate mode (ADR 0022
+    /// dry-run). The target sits off where the tube started — far enough to be
+    /// out of frame — so the search must hunt and click-to-recentre visibly
+    /// walks it in. For the Moon it drifts with the ephemeris, so Here,
+    /// calibrate and the mosaic rehearse exactly as before; the test-mode
+    /// "drainpipe" is a fixed terrestrial target that doesn't drift.
+    private func installSimProvider() {
+        guard let fake = camera?.camera as? FakeCamera,
+            let start = simStart, let connect = simConnect, let clock = simClock,
+            let mount
+        else { return }
+        let site = Site(latitudeDeg: latitude, longitudeDeg: longitude)
+        let test = testMode
+        let fixedAlt = testAltitudeDeg
+        // Off-centre at connect, within the search reach and out of frame.
+        let anchorAz = start[0] + 0.4
+        let anchorAlt = start[1] + 0.25
+        fake.provider = { [weak mount] in
+            guard let p = try? mount?.status().positionsDeg else { return (1e6, 1e6) }
+            var targetAz = anchorAz
+            var targetAlt = anchorAlt
+            let altForCos: Double
+            if test {
+                altForCos = fixedAlt
+            } else {
+                let now = clock()
+                let m0 = Ephemeris.moon(at: connect, from: site).horizontal
+                let mNow = Ephemeris.moon(at: now, from: site).horizontal
+                targetAz += wrap180app(mNow.azDeg - m0.azDeg)
+                targetAlt += mNow.altDeg - m0.altDeg
+                altForCos = mNow.altDeg
+            }
+            let dAz = wrap180app(p[0] - targetAz) * cos(altForCos * .pi / 180) * 3600
+            let dAlt = (p[1] - targetAlt) * 3600
+            return (dAz, dAlt)
+        }
     }
 
     // MARK: - Steps
@@ -920,6 +972,14 @@ final class AppModel: ObservableObject {
 /// The two attended search patterns (ADR 0022).
 enum SearchPattern: String, CaseIterable {
     case spiral, raster
+}
+
+/// Wrap degrees to −180…180 (the app can't see MoonMosaicCore's own copy).
+private func wrap180app(_ d: Double) -> Double {
+    let x = d.truncatingRemainder(dividingBy: 360)
+    if x > 180 { return x - 360 }
+    if x < -180 { return x + 360 }
+    return x
 }
 
 enum LinkAlarm: Equatable {

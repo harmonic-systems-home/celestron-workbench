@@ -166,3 +166,10 @@ Implementing the GUI drive (step 4) surfaced two concrete decisions.
   the operator ends the search with "I see it." This is the drift gap of §5 made
   concrete: everything but drift-cancellation (which needs a moving sky target) is
   testable here. The reference altitude above is what lets it arm indoors.
+- **The simulator dry-runs the whole UI.** In simulate mode the fake sky keys
+  off the real (simulated) mount position with a target **offset from where the
+  tube starts** — out of frame at first — so the search genuinely hunts and
+  click-to-recentre visibly walks it in, no scope needed. The Moon drifts with
+  the ephemeris (so Here, calibrate and the mosaic rehearse unchanged); the
+  test-mode drainpipe is a fixed, non-drifting stand-in. This replaces the
+  earlier behaviour where the fake Moon sat centred until Here.

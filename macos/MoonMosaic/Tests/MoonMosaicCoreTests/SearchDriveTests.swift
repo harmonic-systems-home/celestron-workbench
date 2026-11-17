@@ -107,6 +107,26 @@ func aRasterSearchFindsABrightTargetOnTheSimulator() async throws {
     #expect(abs(wrap180(at[0] - targetAz)) < 0.12, "az \(at[0]) vs \(targetAz)")
 }
 
+/// The app's simulate dry-run (ADR 0022): with the large simulate camera and
+/// the default search params, an off-centre Moon-sized target — anchored where
+/// the app puts it (start + 0.4°, 0.25°) — is still hunted down, so the no-scope
+/// UI run actually acquires.
+@Test(.timeLimit(.minutes(3)))
+func theSimulateDryRunFindsTheOffCentreTarget() async throws {
+    let camera = FakeCamera(
+        width: 1920, height: 1080, scale: 0.3, rotationDeg: 25, moonRadiusArcsec: 930)
+    let (mount, session) = try await simulatedSession(camera)
+    let start = try #require(try mount.status().positionsDeg)
+    camera.provider = aimAt(mount, targetAz: start[0] + 0.4, targetAlt: start[1] + 0.25)
+
+    let outcome = try await session.searchSpiral(
+        stepDeg: 0.3, reachDeg: 2.0,
+        found: { ($0?.peak ?? 0) >= 120 && ($0?.brightFraction ?? 0) >= 0.1 })
+
+    #expect(outcome.found)
+    #expect(outcome.stops > 1, "must hunt for it, not find it at the start")
+}
+
 /// A search with no altitude reference set yet ties the encoder to the sky
 /// from the given reference before arming (the app passes the rough aim), so
 /// it can run before Here.
