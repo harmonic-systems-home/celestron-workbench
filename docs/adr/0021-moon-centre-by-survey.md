@@ -1,6 +1,9 @@
 # ADR 0021: Finding the Moon's centre by survey, and earthshine tiles
 
-**Status:** Proposed. Amends ADR 0019, "Where the Moon is" (centre by hand).
+**Status:** Superseded by [ADR 0022](0022-attended-moon-acquisition.md) as the
+acquisition path (camera brightness centroid replaces the survey + circle fit).
+The circle fit may still inform mosaic centring later. Originally: Proposed,
+amends ADR 0019, "Where the Moon is" (centre by hand).
 
 ## Context
 

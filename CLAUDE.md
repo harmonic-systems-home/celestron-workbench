@@ -1,6 +1,6 @@
 # Celestron Workbench
 
-The build spec is [docs/plan.md](docs/plan.md). Work through its prompts in order and stop after each one for review. Hardware motion stays disabled until the simulator safety suite and the operator checklist pass.
+The build spec is [docs/plan.md](docs/plan.md). Work through its prompts in order and stop after each one for review. Automated or unattended mount motion stays disabled until the simulator safety suite and the operator checklist pass. **Attended, operator-present Moon acquisition** (the camera-closed-loop spiral search and tracking of [ADR 0022](docs/adr/0022-attended-moon-acquisition.md)) runs under its minimal motion profile, with the operator within reach of the clutches and the power switch.
 
 ## Public repo: privacy rules
 

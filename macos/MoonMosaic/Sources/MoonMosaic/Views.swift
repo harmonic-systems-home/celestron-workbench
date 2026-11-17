@@ -114,7 +114,17 @@ struct ContentView: View {
                     model.connect()
                 }
             }
-            Text("Put the lit Moon in view with the arrow keys (rate 5), then:")
+            Text("Get close with the spotting scope, then spiral-search for the target:")
+                .font(.system(size: 13, design: .rounded)).foregroundStyle(palette.dim)
+            HStack(spacing: 10) {
+                button(
+                    model.spiraling ? "Searching…" : "Spiral search",
+                    enabled: model.connected && model.busy == nil && !model.spiraling
+                ) { model.startSpiral() }
+                button("I see it", enabled: model.spiraling) { model.sawIt() }
+            }
+            button("Stop search", enabled: model.spiraling) { model.stopSpiral() }
+            Text("Or centre it by hand with the arrow keys, then:")
                 .font(.system(size: 13, design: .rounded)).foregroundStyle(palette.dim)
             button("1  Here", enabled: model.connected && model.busy == nil) { model.here() }
             button(
@@ -209,6 +219,54 @@ struct ContentView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            if panel == .focus {
+                focusGraph().frame(height: 96)
+            }
+        }
+    }
+
+    /// A line graph of the recent sharpness trace (ADR 0022), so the operator
+    /// can run a manual binary search on the focus knob and watch the trend.
+    /// A dashed line marks the best settled sharpness to return to; the badge
+    /// says whether the image has settled (touch-shake gone) or is still
+    /// shaking, so only settled readings are trusted.
+    private func focusGraph() -> some View {
+        let values = model.focusHistory.map(\.sharpness)
+        return ZStack(alignment: .topTrailing) {
+            RoundedRectangle(cornerRadius: 10).fill(palette.panel)
+            if values.count >= 2 {
+                GeometryReader { geo in
+                    let maxV = max(values.max() ?? 1, 1)
+                    let dx = geo.size.width / CGFloat(max(values.count - 1, 1))
+                    let yOf: (Double) -> CGFloat = { v in
+                        geo.size.height * (1 - CGFloat(max(0, min(1, v / maxV))))
+                    }
+                    if model.bestFocus > 0 {
+                        Path { p in
+                            let y = yOf(model.bestFocus)
+                            p.move(to: CGPoint(x: 0, y: y))
+                            p.addLine(to: CGPoint(x: geo.size.width, y: y))
+                        }
+                        .stroke(palette.dim, style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
+                    }
+                    Path { p in
+                        for (i, v) in values.enumerated() {
+                            let pt = CGPoint(x: CGFloat(i) * dx, y: yOf(v))
+                            if i == 0 { p.move(to: pt) } else { p.addLine(to: pt) }
+                        }
+                    }
+                    .stroke(palette.bright, lineWidth: 2)
+                }
+                .padding(8)
+            } else {
+                Text("Sharpness trace — turn the focus knob")
+                    .foregroundStyle(palette.dim)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            Text(model.focusSettled ? "settled" : "shaking")
+                .font(.system(size: 12, weight: .semibold, design: .rounded))
+                .foregroundStyle(model.focusSettled ? palette.bright : palette.dim)
+                .padding(8)
         }
     }
 

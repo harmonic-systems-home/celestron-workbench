@@ -81,6 +81,10 @@ final class AppModel: ObservableObject {
     @Published private(set) var focusImage: CGImage?
     @Published private(set) var focusSharpness: Double?
     @Published private(set) var bestFocus: Double = 0
+    /// A rolling sharpness trace for the focus line graph (ADR 0022), and
+    /// whether the image has settled (touch-shake gone, only seeing left).
+    @Published private(set) var focusHistory: [FocusAssist.Sample] = []
+    @Published private(set) var focusSettled = false
     @Published private(set) var hereSet = false
     @Published private(set) var calibrated = false
     @Published private(set) var centreFound = false
@@ -110,6 +114,9 @@ final class AppModel: ObservableObject {
     private var session: MosaicSession?
     private var runFolder: URL?
     private let paused = Flag()
+    /// Per-frame sharpness, shake state and history for the focus assist
+    /// (ADR 0022). Fed from the live loop, read by the focus line graph.
+    private let focusAid = FocusAssist()
     private var liveTask: Task<Void, Never>?
     private var pollTimer: Timer?
 
@@ -354,23 +361,23 @@ final class AppModel: ObservableObject {
                 return
             }
             let color = camera.info.isColor
-            var recentSharpness: [Double] = []
             while !Task.isCancelled {
                 // The session's frames while it is reading (a goto's
                 // check, a tile's video); otherwise one of our own.
                 let recent = camera.latest.map { Date().timeIntervalSince($0.time) < 0.5 }
                 if let frame = recent == true ? camera.latest : try? camera.frame(timeoutMs: 500) {
                     let image = Imaging.image(fromFrame: frame)
-                    let crop = Focus.crop(frame)
-                    let focus = Imaging.image(crop: crop, binned: color)
-                    recentSharpness = (recentSharpness + [Focus.sharpness(crop)]).suffix(5)
-                    let sharpness = recentSharpness.reduce(0, +) / Double(recentSharpness.count)
+                    let focus = Imaging.image(crop: Focus.crop(frame), binned: color)
                     await MainActor.run {
                         guard let self else { return }
+                        // Score, shake-gate and record this frame (ADR 0022).
+                        let sample = self.focusAid.add(frame)
                         self.liveImage = image
                         self.focusImage = focus
-                        self.focusSharpness = sharpness
-                        self.bestFocus = max(self.bestFocus, sharpness)
+                        self.focusSharpness = sample.sharpness
+                        self.focusSettled = sample.settled
+                        self.focusHistory = self.focusAid.history
+                        self.bestFocus = self.focusAid.settledBest?.sharpness ?? self.bestFocus
                     }
                 }
                 try? await Task.sleep(for: .milliseconds(300))
@@ -412,7 +419,45 @@ final class AppModel: ObservableObject {
     }
 
     func resetBestFocus() {
-        bestFocus = focusSharpness ?? 0
+        focusAid.reset()
+        focusHistory = []
+        focusSettled = false
+        bestFocus = 0
+    }
+
+    // MARK: - Spiral search (ADR 0022)
+
+    /// The target is in view (operator flag), to end the spiral where it is.
+    private let sawTarget = Flag()
+    @Published private(set) var spiraling = false
+
+    /// Build the search spiral and begin (ADR 0022): an expanding square of
+    /// short, self-terminating gotos around where the spotting scope left the
+    /// mount, watching the frame's brightness. The mount drive itself belongs
+    /// in `MosaicSession` (tested against the simulator) and lands with the
+    /// owned live view; for now this readies the spiral and the operator flag
+    /// so the layout and controls are in place.
+    func startSpiral() {
+        guard connected, busy == nil, !spiraling else { return }
+        let spiral = SpiralSearch(stepDeg: 0.1, reachDeg: 1.0)
+        sawTarget.value = false
+        spiraling = true
+        say(
+            "Spiral search ready: \(spiral.steps.count) stops, 0.1° step, 1.0° reach. "
+                + "Drive lands with the live view (ADR 0022).")
+    }
+
+    func stopSpiral() {
+        guard spiraling else { return }
+        spiraling = false
+        say("Spiral search stopped.")
+    }
+
+    /// Operator flag: the target is in view — stop the spiral here.
+    func sawIt() {
+        sawTarget.value = true
+        if spiraling { stopSpiral() }
+        say("Marked: target in view.")
     }
 
     /// Exposure steps, in milliseconds.
@@ -439,6 +484,8 @@ final class AppModel: ObservableObject {
         let (us, g) = (Int(exposureMs * 1000), gain)
         // Brightness changes the sharpness scale: a new best from here.
         bestFocus = 0
+        focusAid.reset()
+        focusHistory = []
         session?.setCamera(exposureUs: us, gain: g)
         guard let camera else { return }
         Task.detached { [weak self] in

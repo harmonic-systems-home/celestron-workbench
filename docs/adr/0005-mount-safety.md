@@ -1,6 +1,10 @@
 # ADR 0005: Mount safety state machine and interlocks
 
-**Status:** Accepted
+**Status:** Accepted. Narrowed by [ADR 0022](0022-attended-moon-acquisition.md):
+the layer-3 interlocks below govern **unattended/automated** motion; **attended**
+Moon acquisition (operator present, hands on clutches and power) runs a minimal
+profile that keeps layers 1–2 and the positional/comms guards but omits the
+motion-integrity interlocks.
 
 ## Context
 

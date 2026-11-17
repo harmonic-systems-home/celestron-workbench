@@ -365,6 +365,30 @@ Treat ASIAIR as a later peer system. Begin with file and event import: FITS or i
 
 - Outdoor reports distinguish phone-relative, mount-commanded, and optically observed orientation.
 
+# Phase 3b — Attended Moon acquisition (ADR 0022)
+
+*Added 2026-11-17, after the first field night.* The practical blocker on the
+scope is not tiling precision but **acquiring and holding the Moon at all**:
+finding it in a ~5′ field, learning the image's orientation, and tracking its
+~15″/s drift while focusing — today all manual, slow, and fragile. This line makes
+Moon Mosaic do that work, **attended**.
+
+Because operation is attended (operator present, hands on clutches and power; the
+mount is slow and cannot damage itself at jog speed), this line runs motion under
+the **minimal profile** of ADR 0022 — layers 1–2 of ADR 0005 plus the
+positional/comms guards, without the layer-3 motion-integrity interlocks that were
+faulting legitimate motion. The motion-integrity interlocks and the
+positional-envelope work remain for **unattended** motion (M4, the mosaic capture).
+
+Pipeline (each step usable before the next): owned live view → brightness-blob
+acquisition → **drift-aware orientation calibration** (measure the Moon's image
+drift first, subtract it to isolate each axis's commanded response) → app-driven
+**spiral search** with an operator "I see it" flag and stop/resume → **centroid
+tracking** (feedforward the measured drift, close the loop on residual error) →
+focus/gain tuning → mosaic. The ZWO camera binding and phase-correlation
+registration from ADR 0019 (proven in O17) are reused; acquisition is closed-loop
+on **image brightness**, which is focus-independent.
+
 # Milestones and deliverables
 
 | **Milestone** | **Deliverable** | **Exit evidence** |
@@ -438,6 +462,10 @@ Add camera file ingestion and a plate-solve observation schema. Wrap a user-sele
 ## Prompt 10 ASIAIR interoperability
 
 Design an ASIAIR adapter that starts with supported file and metadata import. Document exactly which data the user exports and how it maps to the session schema. If a supported API is available in the actual environment, isolate it behind a trait and integration tests; otherwise do not guess endpoints. Implement exclusive control ownership so ASIAIR and this diagnostic service cannot both issue mount motion. Keep all safety stopping local to mount-core and independent of ASIAIR.
+
+## Prompt 11 attended Moon acquisition (ADR 0022)
+
+Build Moon Mosaic's attended acquisition pipeline, functionality first. Core logic lives in `MoonMosaicCore`, testable against the fake camera: a brightness-blob detector (focus-independent centroid); drift-aware orientation calibration (measure the Moon's image-space drift with the mount still, then subtract drift × duration from each axis's commanded move to build a 2×2 image↔mount map); an expanding **spiral-search** generator emitting small self-terminating gotos, with stop/resume-from-current and an operator "I see it" flag; and centroid tracking (feedforward the measured drift through the orientation map, close the loop on residual centroid error). Wire these to GUI buttons; MM owns the camera (no ASICap). Attended motion uses the minimal profile; prefer gotos over timed slews so there is no latched-runaway path. Do not gate this behind the M4 safety suite — but keep layers 1–2 (operator, power, firmware limits) and the altitude and deadline guards.
 
 # Operator checklists
 

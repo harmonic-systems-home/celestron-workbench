@@ -1,6 +1,9 @@
 # ADR 0019: A Moon mosaic app driven by motor positions
 
-**Status:** Accepted. Finding the Moon's centre amended by [ADR 0021](0021-moon-centre-by-survey.md).
+**Status:** Accepted. Finding the Moon's centre amended by [ADR 0021](0021-moon-centre-by-survey.md),
+then superseded for acquisition by [ADR 0022](0022-attended-moon-acquisition.md)
+(camera brightness-centroid acquisition, orientation and tracking; attended,
+functionality-first). The dead-reckoning **mosaic capture** here still stands.
 
 ## Context
 
