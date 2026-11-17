@@ -49,6 +49,17 @@ final class AppModel: ObservableObject {
         }
     }
     @Published var folder: URL { didSet { save() } }
+    /// Search (ADR 0022): the pattern to run, and its coarseness. The step can
+    /// be wider than the frame — the Moon's glow shows before its disk.
+    @Published var searchPattern: SearchPattern { didSet { save() } }
+    @Published var searchStepDeg: Double { didSet { save() } }
+    @Published var searchReachDeg: Double { didSet { save() } }
+    /// Test mode (ADR 0022): find a fixed target (the drainpipe) to exercise
+    /// the search patterns and focus with no tracking. The reference altitude
+    /// ties the encoder to the sky for the envelope, since there's no Moon to
+    /// take it from — set the tube roughly there first.
+    @Published var testMode: Bool { didSet { save() } }
+    @Published var testAltitudeDeg: Double { didSet { save() } }
 
     // State.
     /// The red night palette is showing.
@@ -148,6 +159,11 @@ final class AppModel: ObservableObject {
         folder =
             (d["folder"] as? String).map { URL(fileURLWithPath: $0) }
             ?? Self.support.appendingPathComponent("sessions")
+        searchPattern = SearchPattern(rawValue: d["searchPattern"] as? String ?? "") ?? .spiral
+        searchStepDeg = d["searchStepDeg"] as? Double ?? 0.3
+        searchReachDeg = d["searchReachDeg"] as? Double ?? 2.0
+        testMode = d["testMode"] as? Bool ?? false
+        testAltitudeDeg = d["testAltitudeDeg"] as? Double ?? 10
         save()
         updatePalette()
         pollTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
@@ -161,6 +177,8 @@ final class AppModel: ObservableObject {
             "overlap": overlap, "videoSeconds": videoSeconds, "exposureMs": exposureMs,
             "gain": gain, "surveyExposureMs": surveyExposureMs, "surveyGain": surveyGain,
             "simulate": simulate, "setHandController": setHandController, "paletteMode": paletteMode, "folder": folder.path,
+            "searchPattern": searchPattern.rawValue, "searchStepDeg": searchStepDeg,
+            "searchReachDeg": searchReachDeg, "testMode": testMode, "testAltitudeDeg": testAltitudeDeg,
         ]
         do {
             try FileManager.default.createDirectory(
@@ -328,6 +346,9 @@ final class AppModel: ObservableObject {
     func disconnect() {
         silenceAlarm()
         linkAlarm = nil
+        searchStop.value = true
+        searching = false
+        searchTask = nil
         stopHold()
         stopLive()
         try? mount?.stop()
@@ -425,39 +446,186 @@ final class AppModel: ObservableObject {
         bestFocus = 0
     }
 
-    // MARK: - Spiral search (ADR 0022)
+    // MARK: - Search (ADR 0022)
 
-    /// The target is in view (operator flag), to end the spiral where it is.
+    /// The operator has the target in view ("I see it"), to end the search
+    /// where it is; and a plain stop. Either ends it between stops.
     private let sawTarget = Flag()
-    @Published private(set) var spiraling = false
+    private let searchStop = Flag()
+    @Published private(set) var searching = false
+    private var searchTask: Task<Void, Never>?
+    /// A recentre is taking over from a search: it keeps `busy` while the old
+    /// search winds down, so no other step slips in during the slew.
+    private var recentring = false
 
-    /// Build the search spiral and begin (ADR 0022): an expanding square of
-    /// short, self-terminating gotos around where the spotting scope left the
-    /// mount, watching the frame's brightness. The mount drive itself belongs
-    /// in `MosaicSession` (tested against the simulator) and lands with the
-    /// owned live view; for now this readies the spiral and the operator flag
-    /// so the layout and controls are in place.
-    func startSpiral() {
-        guard connected, busy == nil, !spiraling else { return }
-        let spiral = SpiralSearch(stepDeg: 0.1, reachDeg: 1.0)
+    /// Runs the chosen search (ADR 0022): an expanding square spiral, or a
+    /// serpentine raster, of short self-terminating gotos from where the
+    /// spotting scope left the mount, watching each frame's brightest blob.
+    /// Attended and minimal — one goto per stop, no latched-runaway path. It
+    /// ends at a bright target, at "I see it", at Stop, or at the pattern's
+    /// end. In test mode nothing stops it automatically (a daytime drainpipe
+    /// isn't a bright blob): the operator flags it with "I see it".
+    func startSearch() {
+        guard let session, connected, busy == nil, !searching else { return }
+        let pattern = searchPattern
+        let test = testMode
+        let (step, reach) = (max(searchStepDeg, 0.02), max(searchReachDeg, searchStepDeg))
+        // The reference altitude for the envelope: the Moon's computed altitude
+        // (the spotting scope is on it), or the test target's rough altitude.
+        let refAlt =
+            test
+            ? testAltitudeDeg
+            : Ephemeris.moon(
+                at: Date(), from: Site(latitudeDeg: latitude, longitudeDeg: longitude)
+            ).horizontal.altDeg
+        searchStop.value = false
         sawTarget.value = false
-        spiraling = true
+        searching = true
+        busy = "Searching"
         say(
-            "Spiral search ready: \(spiral.steps.count) stops, 0.1° step, 1.0° reach. "
-                + "Drive lands with the live view (ADR 0022).")
+            test
+                ? "Test search (\(pattern.rawValue)): finding the target; tracking off. Use “I see it”."
+                : "\(pattern.rawValue.capitalized) search: hunting for the Moon; \(step)° step, \(reach)° reach."
+        )
+        runSearch(session, pattern: pattern, test: test, step: step, reach: reach, refAlt: refAlt)
     }
 
-    func stopSpiral() {
-        guard spiraling else { return }
-        spiraling = false
-        say("Spiral search stopped.")
+    /// Drives one search off the main thread, then reports and tidies up.
+    private func runSearch(
+        _ session: MosaicSession, pattern: SearchPattern, test: Bool,
+        step: Double, reach: Double, refAlt: Double
+    ) {
+        let (stop, saw) = (searchStop, sawTarget)
+        let cancelled: @Sendable () -> Bool = { stop.value || saw.value }
+        // Automatic acquisition: a clearly bright region against dark sky.
+        // Off in test mode, where the operator flags the target by eye.
+        let found: @Sendable (Blob.Found?) -> Bool
+        if test {
+            found = { _ in false }
+        } else {
+            found = { ($0?.peak ?? 0) >= 120 && ($0?.brightFraction ?? 0) >= 0.1 }
+        }
+        let hold = holdTask
+        stopHold()
+        searchTask = Task.detached { [weak self] in
+            await hold?.value
+            do {
+                let outcome: MosaicSession.SearchOutcome
+                switch pattern {
+                case .spiral:
+                    outcome = try await session.searchSpiral(
+                        stepDeg: step, reachDeg: reach, referenceAltitudeDeg: refAlt,
+                        found: found, cancelled: cancelled)
+                case .raster:
+                    outcome = try await session.searchRaster(
+                        halfWidthDeg: reach, halfHeightDeg: reach * 0.6, rowSpacingDeg: step,
+                        captureStepDeg: step, referenceAltitudeDeg: refAlt,
+                        found: found, cancelled: cancelled)
+                }
+                await MainActor.run { self?.searchFinished(outcome, byOperator: saw.value) }
+            } catch {
+                await MainActor.run {
+                    self?.say("Search failed: \(error)")
+                    self?.searchEnded()
+                }
+            }
+        }
     }
 
-    /// Operator flag: the target is in view — stop the spiral here.
+    private func searchFinished(_ outcome: MosaicSession.SearchOutcome, byOperator: Bool) {
+        // A recentre superseded this search: it logs and keeps the mount.
+        if recentring {
+            searchEnded()
+            return
+        }
+        if byOperator {
+            say("Marked in view after \(outcome.stops) stops; search stopped.")
+        } else if outcome.found, let b = outcome.blob {
+            say(
+                String(
+                    format: "Found a bright target after %d stops (peak %d, %.0f%% lit).",
+                    outcome.stops, b.peak, b.brightFraction * 100))
+        } else {
+            say("Search finished (\(outcome.stops) stops) without a clear target.")
+        }
+        searchEnded()
+    }
+
+    private func searchEnded() {
+        searching = false
+        searchTask = nil
+        // A recentre holds `busy` ("Recentring") across the handover.
+        if !recentring { busy = nil }
+        sync()
+    }
+
+    /// Operator flag: the target is in view — stop the search here.
     func sawIt() {
+        guard searching else { return }
         sawTarget.value = true
-        if spiraling { stopSpiral() }
         say("Marked: target in view.")
+    }
+
+    /// Stop the running search, between stops (never mid-move).
+    func stopSearch() {
+        guard searching else { return }
+        searchStop.value = true
+        say("Stopping search.")
+    }
+
+    /// Click-to-recentre (ADR 0022): the operator clicked a spot in the live
+    /// image. `fraction` is that spot from the frame's centre, each axis in
+    /// −0.5…0.5 of the displayed image (x right, y down). Slew it to the
+    /// centre, then start a finer search there to settle the target in.
+    func recentre(fraction: CGSize) {
+        // A recentre may interrupt a running search, but not capture or any
+        // other step.
+        guard let session, connected, busy == nil || searching else { return }
+        let px = PixelOffset(
+            x: Double(fraction.width) * Double(session.camera.info.width),
+            y: Double(fraction.height) * Double(session.camera.info.height))
+        // Hand off any running search cleanly, then recentre and go finer.
+        let running = searchTask
+        if searching { searchStop.value = true }
+        let test = testMode
+        let (step, reach) = (max(searchStepDeg / 2, 0.02), max(searchReachDeg / 2, searchStepDeg))
+        let refAlt =
+            test
+            ? testAltitudeDeg
+            : Ephemeris.moon(
+                at: Date(), from: Site(latitudeDeg: latitude, longitudeDeg: longitude)
+            ).horizontal.altDeg
+        say("Recentring on the clicked point, then a finer search there.")
+        recentring = true
+        busy = "Recentring"
+        searching = false
+        let hold = holdTask
+        stopHold()
+        Task.detached { [weak self] in
+            await running?.value
+            await hold?.value
+            do {
+                try await session.recentre(pixelOffset: px)
+                await MainActor.run {
+                    guard let self else { return }
+                    self.recentring = false
+                    self.searchStop.value = false
+                    self.sawTarget.value = false
+                    self.searching = true
+                    self.busy = "Searching"
+                    self.runSearch(
+                        session, pattern: self.searchPattern, test: test,
+                        step: step, reach: reach, refAlt: refAlt)
+                }
+            } catch {
+                await MainActor.run {
+                    guard let self else { return }
+                    self.recentring = false
+                    self.say("Recentre failed: \(error)")
+                    self.searchEnded()
+                }
+            }
+        }
     }
 
     /// Exposure steps, in milliseconds.
@@ -747,6 +915,11 @@ final class AppModel: ObservableObject {
         alarmBeeps = nil
     }
 
+}
+
+/// The two attended search patterns (ADR 0022).
+enum SearchPattern: String, CaseIterable {
+    case spiral, raster
 }
 
 enum LinkAlarm: Equatable {

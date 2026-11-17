@@ -114,50 +114,85 @@ struct ContentView: View {
                     model.connect()
                 }
             }
-            Text("Get close with the spotting scope, then spiral-search for the target:")
-                .font(.system(size: 13, design: .rounded)).foregroundStyle(palette.dim)
-            HStack(spacing: 10) {
+            searchControls
+            if !model.testMode {
+                Text("Or centre it by hand with the arrow keys, then:")
+                    .font(.system(size: 13, design: .rounded)).foregroundStyle(palette.dim)
+                button("1  Here", enabled: model.connected && model.busy == nil) { model.here() }
                 button(
-                    model.spiraling ? "Searching…" : "Spiral search",
-                    enabled: model.connected && model.busy == nil && !model.spiraling
-                ) { model.startSpiral() }
-                button("I see it", enabled: model.spiraling) { model.sawIt() }
+                    model.holding ? "Holding (tap to release)" : "Hold on Moon",
+                    enabled: model.hereSet && model.busy == nil
+                ) { model.toggleHold() }
+                button("2  Calibrate", enabled: model.hereSet && model.busy == nil) {
+                    model.calibrate()
+                }
+                button(
+                    model.centreFound ? "3  Find centre (found)" : "3  Find centre",
+                    enabled: model.calibrated && model.busy == nil
+                ) { model.findCentre() }
+                button("4  Plan", enabled: model.calibrated && model.busy == nil) {
+                    model.makePlan()
+                }
+                button("5  Start", enabled: model.plan != nil && model.busy == nil) { model.start() }
+                button(
+                    model.darkTiles > 0 ? "Earthshine: \(model.darkTiles) dark tiles" : "Earthshine",
+                    enabled: model.darkTiles > 0 && model.busy == nil
+                ) { model.startEarthshine() }
             }
-            button("Stop search", enabled: model.spiraling) { model.stopSpiral() }
-            Text("Or centre it by hand with the arrow keys, then:")
-                .font(.system(size: 13, design: .rounded)).foregroundStyle(palette.dim)
-            button("1  Here", enabled: model.connected && model.busy == nil) { model.here() }
-            button(
-                model.holding ? "Holding (tap to release)" : "Hold on Moon",
-                enabled: model.hereSet && model.busy == nil
-            ) { model.toggleHold() }
-            button("2  Calibrate", enabled: model.hereSet && model.busy == nil) {
-                model.calibrate()
-            }
-            button(
-                model.centreFound ? "3  Find centre (found)" : "3  Find centre",
-                enabled: model.calibrated && model.busy == nil
-            ) { model.findCentre() }
-            button("4  Plan", enabled: model.calibrated && model.busy == nil) { model.makePlan() }
-            button("5  Start", enabled: model.plan != nil && model.busy == nil) { model.start() }
-            button(
-                model.darkTiles > 0 ? "Earthshine: \(model.darkTiles) dark tiles" : "Earthshine",
-                enabled: model.darkTiles > 0 && model.busy == nil
-            ) { model.startEarthshine() }
             HStack(spacing: 10) {
                 button("Pause", enabled: model.busy == "Capturing") { model.pause() }
                 button("Stop", enabled: model.connected) { model.stop() }
             }
-            button("Preview", enabled: model.plan != nil && model.busy == nil) {
-                model.makePreview()
-                panel = .preview
+            if !model.testMode {
+                button("Preview", enabled: model.plan != nil && model.busy == nil) {
+                    model.makePreview()
+                    panel = .preview
+                }
+                button(
+                    model.selected.isEmpty
+                        ? "Redo selected" : "Redo \(model.selected.count) selected",
+                    enabled: !model.selected.isEmpty && model.busy == nil
+                ) { model.redoSelected() }
             }
-            button(
-                model.selected.isEmpty ? "Redo selected" : "Redo \(model.selected.count) selected",
-                enabled: !model.selected.isEmpty && model.busy == nil
-            ) { model.redoSelected() }
             Spacer()
             button("Settings", enabled: model.busy == nil) { model.showSettings = true }
+        }
+    }
+
+    /// Test-mode toggle, the spiral/raster choice, and the search buttons
+    /// (ADR 0022). Click a spot in the camera view to recentre there.
+    private var searchControls: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Toggle(isOn: $model.testMode) {
+                Text("Test mode (drainpipe) — no tracking")
+                    .font(.system(size: 13, design: .rounded))
+            }
+            .toggleStyle(.switch)
+            .tint(palette.bright)
+            .disabled(!model.connected || model.searching || model.busy != nil)
+
+            Text(
+                model.testMode
+                    ? "Find a fixed target to try the search and focus. Aim the tube near \(Int(model.testAltitudeDeg))° altitude, then:"
+                    : "Get close with the spotting scope, then search for the Moon:"
+            )
+            .font(.system(size: 13, design: .rounded)).foregroundStyle(palette.dim)
+
+            Picker("", selection: $model.searchPattern) {
+                Text("Spiral").tag(SearchPattern.spiral)
+                Text("Raster").tag(SearchPattern.raster)
+            }
+            .pickerStyle(.segmented)
+            .disabled(model.searching || model.busy != nil)
+
+            HStack(spacing: 10) {
+                button(
+                    model.searching ? "Searching…" : "Search",
+                    enabled: model.connected && model.busy == nil && !model.searching
+                ) { model.startSearch() }
+                button("I see it", enabled: model.searching) { model.sawIt() }
+            }
+            button("Stop search", enabled: model.searching) { model.stopSearch() }
         }
     }
 
@@ -219,6 +254,15 @@ struct ContentView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .overlay {
+                if panel == .camera, model.connected, let img = model.liveImage {
+                    clickToRecentre(img)
+                }
+            }
+            if panel == .camera {
+                Text("Click the image to recentre there and search finer.")
+                    .font(.system(size: 12, design: .rounded)).foregroundStyle(palette.dim)
+            }
             if panel == .focus {
                 focusGraph().frame(height: 96)
             }
@@ -268,6 +312,41 @@ struct ContentView: View {
                 .foregroundStyle(model.focusSettled ? palette.bright : palette.dim)
                 .padding(8)
         }
+    }
+
+    /// A transparent layer over the camera image that turns a click into a
+    /// recentre (ADR 0022): the click's position as a fraction of the shown
+    /// image (aspect-fit inside the panel, 6 pt padding) goes to the model.
+    private func clickToRecentre(_ img: CGImage) -> some View {
+        GeometryReader { geo in
+            Color.clear
+                .contentShape(Rectangle())
+                .gesture(
+                    SpatialTapGesture().onEnded { value in
+                        if let f = recentreFraction(
+                            at: value.location, in: geo.size, image: img)
+                        {
+                            model.recentre(fraction: f)
+                        }
+                    })
+        }
+    }
+
+    /// The click's offset from the image centre, each axis in −0.5…0.5 of the
+    /// shown image, or nil when the click is outside the image.
+    private func recentreFraction(at point: CGPoint, in size: CGSize, image img: CGImage) -> CGSize?
+    {
+        let pad = 6.0
+        let (availW, availH) = (size.width - 2 * pad, size.height - 2 * pad)
+        guard availW > 0, availH > 0, img.height > 0 else { return nil }
+        let aspect = Double(img.width) / Double(img.height)
+        var (w, h) = (availW, availW / aspect)
+        if h > availH { (w, h) = (availH * aspect, availH) }
+        let (rectX, rectY) = ((size.width - w) / 2, (size.height - h) / 2)
+        let fx = (point.x - rectX) / w - 0.5
+        let fy = (point.y - rectY) / h - 0.5
+        guard abs(fx) <= 0.5, abs(fy) <= 0.5 else { return nil }
+        return CGSize(width: fx, height: fy)
     }
 
     private var shownImage: CGImage? {
@@ -457,6 +536,21 @@ struct SettingsView: View {
                 TextField("Survey exposure (ms)", value: $model.surveyExposureMs, format: .number)
                 TextField("Survey gain", value: $model.surveyGain, format: .number)
                 Text("Long enough for earthshine to show above the sky; the sunlit part can saturate.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Section("Search (ADR 0022)") {
+                Picker("Pattern", selection: $model.searchPattern) {
+                    Text("Spiral").tag(SearchPattern.spiral)
+                    Text("Raster").tag(SearchPattern.raster)
+                }
+                TextField("Step between stops (°)", value: $model.searchStepDeg, format: .number)
+                TextField("Reach from the start (°)", value: $model.searchReachDeg, format: .number)
+                Text("The step can be wider than the frame — the Moon's glow shows before its disk.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Toggle("Test mode (drainpipe): find a fixed target, no tracking", isOn: $model.testMode)
+                    .disabled(model.searching)
+                TextField("Test target altitude (°)", value: $model.testAltitudeDeg, format: .number)
+                Text("Aim the tube roughly here first; it ties the encoder to the sky for the motion envelope.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Mosaic") {

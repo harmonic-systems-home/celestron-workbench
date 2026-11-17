@@ -277,12 +277,13 @@ public final class MosaicSession: @unchecked Sendable {
     /// gets each stop's brightest blob, or nil.
     @discardableResult
     public func searchSpiral(
-        stepDeg: Double, reachDeg: Double,
+        stepDeg: Double, reachDeg: Double, referenceAltitudeDeg: Double? = nil,
         found: @escaping @Sendable (Blob.Found?) -> Bool,
         cancelled: @escaping @Sendable () -> Bool = { false }
     ) async throws -> SearchOutcome {
         let spiral = SpiralSearch(stepDeg: stepDeg, reachDeg: reachDeg)
-        return try await walk(spiral.steps.map { ($0.azDeg, $0.altDeg) }, found, cancelled)
+        return try await walk(
+            spiral.steps.map { ($0.azDeg, $0.altDeg) }, referenceAltitudeDeg, found, cancelled)
     }
 
     /// Walks a serpentine raster from the current position (ADR 0022), as
@@ -292,6 +293,7 @@ public final class MosaicSession: @unchecked Sendable {
     @discardableResult
     public func searchRaster(
         halfWidthDeg: Double, halfHeightDeg: Double, rowSpacingDeg: Double, captureStepDeg: Double,
+        referenceAltitudeDeg: Double? = nil,
         found: @escaping @Sendable (Blob.Found?) -> Bool,
         cancelled: @escaping @Sendable () -> Bool = { false }
     ) async throws -> SearchOutcome {
@@ -306,16 +308,29 @@ public final class MosaicSession: @unchecked Sendable {
                 offsets.append((row.fromAzDeg + span * Double(k) / Double(n), row.altDeg))
             }
         }
-        return try await walk(offsets, found, cancelled)
+        return try await walk(offsets, referenceAltitudeDeg, found, cancelled)
     }
 
     /// Shared drive: arm, open the camera, goto each offset (from the start)
     /// in turn, and check the frame's brightest blob.
     private func walk(
         _ offsets: [(Double, Double)],
+        _ referenceAltitudeDeg: Double?,
         _ found: @escaping @Sendable (Blob.Found?) -> Bool,
         _ cancelled: @escaping @Sendable () -> Bool
     ) async throws -> SearchOutcome {
+        // The controller won't arm without a true altitude. A search runs
+        // before Here, so tie the encoder to the sky from the rough aim (the
+        // Moon's computed altitude, or a terrestrial target's) when nothing
+        // has set it yet.
+        if let referenceAltitudeDeg, try mount.status().altitudeDeg == nil {
+            try mount.setAltitudeReference(referenceAltitudeDeg)
+            onEvent(
+                .message(
+                    String(
+                        format: "Search: altitude reference set to %.1f° for the envelope.",
+                        referenceAltitudeDeg)))
+        }
         try await armForStep()
         defer { endStep() }
         try camera.configure(exposureUs: settings.exposureUs, gain: settings.gain)
@@ -340,6 +355,25 @@ public final class MosaicSession: @unchecked Sendable {
         }
         return SearchOutcome(
             found: false, atAzAltDeg: try? await freshPosition(), blob: nil, stops: stops)
+    }
+
+    /// Slews so the point at `pixelOffset` from the frame's centre comes to
+    /// the centre (ADR 0022 click-to-recentre). With a calibration the move is
+    /// exact; before one it uses the scale from the focal length with the
+    /// camera assumed square to the sky (x right → azimuth, y down → lower
+    /// altitude), so the direction is a guess the operator can correct by
+    /// clicking again. One self-terminating goto per axis; the altitude
+    /// reference must already be set (a search sets it).
+    public func recentre(pixelOffset: PixelOffset) async throws {
+        let sky =
+            calibration?.sky(for: pixelOffset)
+            ?? SkyOffset(x: pixelOffset.x * scaleGuess, y: -pixelOffset.y * scaleGuess)
+        try await armForStep()
+        defer { endStep() }
+        let pos = try await freshPosition()
+        let alt = (try? mount.status())?.altitudeDeg ?? pos[1]
+        let m = MosaicPlanner.axes(for: sky, altitudeDeg: alt)
+        try await goTo(az: pos[0] + m.azDeg, alt: pos[1] + m.altDeg)
     }
 
     // MARK: Finding the centre

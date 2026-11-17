@@ -144,3 +144,25 @@ configuration on top:
   the operator present.
 - The dead-reckoning **positional-envelope** interlock (previously drafted for the
   capture profile) is **deferred** to the unattended mosaic, where it belongs.
+
+## Amendment 1 — search wiring, the altitude reference, and a test mode
+
+Implementing the GUI drive (step 4) surfaced two concrete decisions.
+
+- **The altitude reference comes from the rough aim, before Here.** The controller
+  won't arm without a true altitude (the envelope's floor/ceiling need it), but a
+  search runs *before* Here, so nothing has set one yet. The search sets it itself
+  on the first arm: from the **Moon's computed altitude** for a Moon search (the
+  spotting scope is already on the Moon, so the tube is within a degree of it — good
+  enough for the envelope), or from a stated **test altitude** for a terrestrial
+  target. Once set, Here and the survey refine it as before. `searchSpiral` /
+  `searchRaster` take an optional `referenceAltitudeDeg` and set it only when the
+  mount reports none.
+- **A test mode for the bench.** A first-class toggle runs the whole search-and-focus
+  path against a **fixed daytime target** (the O17 drainpipe) with **tracking off**:
+  it exercises both search patterns, click-to-recentre, the live view and the focus
+  assist on the bench, no Moon or night needed. Because a daytime drainpipe isn't a
+  bright blob against dark sky, **automatic acquisition is disabled in test mode** —
+  the operator ends the search with "I see it." This is the drift gap of §5 made
+  concrete: everything but drift-cancellation (which needs a moving sky target) is
+  testable here. The reference altitude above is what lets it arm indoors.

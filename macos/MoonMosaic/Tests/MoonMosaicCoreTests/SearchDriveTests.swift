@@ -24,15 +24,18 @@ private func aimAt(
     }
 }
 
-private func simulatedSession(_ camera: FakeCamera) async throws -> (MountSession, MosaicSession) {
+private func simulatedSession(
+    _ camera: FakeCamera, setReference: Bool = true
+) async throws -> (MountSession, MosaicSession) {
     let mount = try MountSession(port: "simulate", safety: ["max_goto_deg": 1.0])
     for _ in 0..<60 where (try mount.status().positionsDeg) == nil {
         try await Task.sleep(for: .milliseconds(50))
     }
     // The caller ties the altitude encoder to the sky before searching (as the
     // app does from the rough spotting-scope aim); 45° keeps a small search
-    // inside the altitude envelope.
-    try mount.setAltitudeReference(45)
+    // inside the altitude envelope. A search can set it itself instead, which
+    // `setReference: false` leaves to it.
+    if setReference { try mount.setAltitudeReference(45) }
     var settings = MosaicSettings(site: Site(latitudeDeg: 40, longitudeDeg: -100))
     settings.settleSeconds = 0.02
     let session = MosaicSession(
@@ -102,4 +105,46 @@ func aRasterSearchFindsABrightTargetOnTheSimulator() async throws {
     #expect(outcome.found)
     let at = try #require(outcome.atAzAltDeg)
     #expect(abs(wrap180(at[0] - targetAz)) < 0.12, "az \(at[0]) vs \(targetAz)")
+}
+
+/// A search with no altitude reference set yet ties the encoder to the sky
+/// from the given reference before arming (the app passes the rough aim), so
+/// it can run before Here.
+@Test(.timeLimit(.minutes(3)))
+func aSearchSetsTheAltitudeReferenceWhenNoneIsSet() async throws {
+    let camera = FakeCamera(
+        width: 320, height: 240, scale: 1.0, rotationDeg: 0, moonRadiusArcsec: 200)
+    let (mount, session) = try await simulatedSession(camera, setReference: false)
+    #expect(try mount.status().altitudeDeg == nil, "no reference to begin with")
+    let start = try #require(try mount.status().positionsDeg)
+    let targetAz = start[0] + 0.2
+    camera.provider = aimAt(mount, targetAz: targetAz, targetAlt: start[1])
+
+    let outcome = try await session.searchSpiral(
+        stepDeg: 0.1, reachDeg: 0.3, referenceAltitudeDeg: 45,
+        found: { ($0?.peak ?? 0) >= 120 && ($0?.brightFraction ?? 0) > 0.15 })
+
+    #expect(outcome.found)
+    #expect(try mount.status().altitudeDeg != nil, "the search set the reference")
+}
+
+/// Click-to-recentre: a point below the frame's centre (image y down) moves
+/// the tube down by the pixel offset at the focal-length scale, azimuth held.
+@Test(.timeLimit(.minutes(2)))
+func recentreSlewsTheClickedPointTowardTheCentre() async throws {
+    let camera = FakeCamera(width: 320, height: 240, scale: 1.0, moonRadiusArcsec: 200)
+    let (mount, session) = try await simulatedSession(camera)
+    let before = try #require(try mount.status().positionsDeg)
+
+    try await session.recentre(pixelOffset: PixelOffset(x: 0, y: 200))
+
+    let after = try #require(try mount.status().positionsDeg)
+    let arcsecPerPixel = 206.265 * camera.info.pixelSizeUm / 2000  // no calibration yet
+    let expectedAltDrop = 200 * arcsecPerPixel / 3600
+    // The raw encoder angle wraps (0° → ~360°), so compare the wrapped delta.
+    let altDelta = wrap180(after[1] - before[1])
+    #expect(altDelta < 0, "altitude should drop: delta \(altDelta)")
+    #expect(abs(altDelta + expectedAltDrop) < 0.005, "alt delta \(altDelta) vs -\(expectedAltDrop)")
+    #expect(abs(wrap180(after[0] - before[0])) < 0.01, "azimuth should hold")
+    #expect(try mount.status().state == "ConnectedReadOnly")
 }
