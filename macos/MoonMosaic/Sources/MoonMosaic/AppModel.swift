@@ -281,7 +281,7 @@ final class AppModel: ObservableObject {
                     port = p
                 }
                 let mount = try MountSession(
-                    port: port, safety: ["max_goto_deg": 1.0], trace: trace, setup: setup)
+                    port: port, safety: attendedSafety, trace: trace, setup: setup)
                 let camera = SharedCamera(
                     simulate
                         ? FakeCamera(width: 1920, height: 1080, scale: 0.3, rotationDeg: 25)
@@ -972,6 +972,34 @@ final class AppModel: ObservableObject {
 /// The two attended search patterns (ADR 0022).
 enum SearchPattern: String, CaseIterable {
     case spiral, raster
+}
+
+/// The minimal, attended motion profile (ADR 0022 §1). With the operator
+/// present (hands on the clutches and power — layer 1) and the Celestron
+/// firmware limits (layer 2), the layer-3 motion-integrity interlocks are
+/// omitted: they were faulting *legitimate* attended motion — the
+/// backlash-canceling approach overshoot tripped OppositeMotion on about
+/// half of the first-night tile moves. We keep the positional/comms guards
+/// that don't impede the work (the altitude envelope, the command/ack/goto
+/// deadlines, the goto tolerance), which stay at their defaults.
+///
+/// - `max_goto_deg` 3°: a raster's jump to its first corner is ~2.3°; gotos
+///   self-terminate and the mount is slow, so a few seconds of travel per leg
+///   is fine. (Was 1°, which refused the raster.)
+/// - `motion_deg_s` 0.3: OppositeMotion/UnexpectedMotion ignore a slow
+///   settling or backlash reversal (the −0.134°/s first-night trip); a real
+///   runaway at the jog speed (≤1°/s) still faults.
+/// - `overspeed_fraction` 2.0: the anti-backlash slack take-up may briefly
+///   outrun the commanded rate without faulting.
+/// - `min_observed_fraction` 0.1: a reversal leg whose travel is eaten by
+///   gear slack is not read as a stall.
+private var attendedSafety: [String: Any] {
+    [
+        "max_goto_deg": 3.0,
+        "motion_deg_s": 0.3,
+        "overspeed_fraction": 2.0,
+        "min_observed_fraction": 0.1,
+    ]
 }
 
 /// Wrap degrees to −180…180 (the app can't see MoonMosaicCore's own copy).
