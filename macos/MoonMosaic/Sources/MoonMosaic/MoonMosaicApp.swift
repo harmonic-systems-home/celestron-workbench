@@ -13,9 +13,9 @@ struct MoonMosaicApp: App {
     var body: some Scene {
         WindowGroup("Moon Mosaic") {
             ContentView(model: model)
-                .frame(minWidth: 1150, minHeight: 820)
+                .frame(minWidth: 1150, minHeight: 600)
                 .onAppear { NSApplication.shared.activate() }
         }
-        .defaultSize(width: 1300, height: 860)
+        .defaultSize(width: 1300, height: 820)
     }
 }

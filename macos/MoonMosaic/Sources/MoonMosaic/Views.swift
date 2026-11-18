@@ -35,7 +35,13 @@ struct ContentView: View {
         VStack(spacing: 12) {
             if let alarm = model.linkAlarm { alarmBanner(alarm) }
             HStack(alignment: .top, spacing: 14) {
-                controls.frame(width: 300)
+                // Scrolls on its own so the long button column stays reachable
+                // on a short laptop screen.
+                ScrollView(.vertical) {
+                    controls.frame(width: 300)
+                }
+                .frame(width: 300)
+                .scrollIndicators(.automatic)
                 VStack(spacing: 12) {
                     imagePanel
                     HStack(alignment: .top, spacing: 12) {
@@ -154,7 +160,7 @@ struct ContentView: View {
                     enabled: !model.selected.isEmpty && model.busy == nil
                 ) { model.redoSelected() }
             }
-            Spacer()
+            Spacer(minLength: 12)
             button("Settings", enabled: model.busy == nil) { model.showSettings = true }
         }
     }
