@@ -340,9 +340,15 @@ public final class MosaicSession: @unchecked Sendable {
         var stops = 0
         for (dAz, dAlt) in offsets {
             if cancelled() { break }
-            try await goTo(az: start[0] + dAz, alt: start[1] + dAlt)
+            // A search move is lean: a straight goto (no anti-backlash
+            // overshoot — the search doesn't need backlash precision) and no
+            // settle wait. A few-ms exposure freezes any residual motion, so
+            // the brightness read is good the instant the move ends. This is
+            // what keeps a 40-stop search to seconds, not minutes.
+            try await searchGoTo(az: start[0] + dAz, alt: start[1] + dAlt)
             stops += 1
-            let (frame, _, pos) = try await still()
+            let pos = try await freshPosition()
+            let frame = try await grabFrame()
             // Acquisition detects a bright region against dark sky, so count
             // the whole lit target (a low fraction of its peak), not just its
             // brightest parts: brightFraction then reads as "how much of the
@@ -685,6 +691,27 @@ public final class MosaicSession: @unchecked Sendable {
             }
         }
         try await Task.sleep(for: .seconds(settings.settleSeconds))
+    }
+
+    /// A search move: straight gotos (no anti-backlash approach overshoot) and
+    /// no settle wait. For acquisition only, where the target is a bright blob
+    /// and a few-ms exposure freezes the image — not for mosaic capture.
+    private func searchGoTo(az: Double, alt: Double) async throws {
+        for (axis, target) in [(MountSession.Axis.azimuth, az), (.altitude, alt)] {
+            let position = try await freshPosition()
+            let delta = wrap180(target - position[axis == .azimuth ? 0 : 1])
+            if abs(delta) < 0.000_05 { continue }
+            try await retrying { try self.mount.goto(axis, by: delta, approach: nil) }
+            try await waitForMotionToEnd()
+        }
+    }
+
+    /// The latest camera frame, without waiting for the image to settle.
+    private func grabFrame() async throws -> Frame {
+        for _ in 0..<20 {
+            if let f = try camera.frame(timeoutMs: 1_000) { return f }
+        }
+        throw MosaicError(description: "No frames from the camera.")
     }
 
     private func freshPosition() async throws -> [Double] {

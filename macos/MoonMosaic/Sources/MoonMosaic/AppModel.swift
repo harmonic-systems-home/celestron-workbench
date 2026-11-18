@@ -993,9 +993,15 @@ enum SearchPattern: String, CaseIterable {
 ///   outrun the commanded rate without faulting.
 /// - `min_observed_fraction` 0.1: a reversal leg whose travel is eaten by
 ///   gear slack is not read as a stall.
+/// The attended, operator-present motion profile (ADR 0022 §1). The equipment
+/// is slow and can't damage itself at jog speed, and the operator is standing
+/// by with hands on the clutches and the power. So the layer-3 interlocks are
+/// off (they faulted legitimate motion), and the per-goto distance cap is a
+/// full turn — effectively no limit — so a search sweeps as wide as asked in
+/// one self-terminating move. Every goto still ends itself at its target.
 private var attendedSafety: [String: Any] {
     [
-        "max_goto_deg": 3.0,
+        "max_goto_deg": 360.0,
         "motion_deg_s": 0.3,
         "overspeed_fraction": 2.0,
         "min_observed_fraction": 0.1,
