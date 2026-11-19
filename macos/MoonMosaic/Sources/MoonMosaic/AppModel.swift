@@ -557,6 +557,9 @@ final class AppModel: ObservableObject {
         } else {
             found = { ($0?.peak ?? 0) >= 120 && ($0?.brightFraction ?? 0) >= 0.1 }
         }
+        // Automatic acquisition then steps onto the disk (track 2, 2c): the
+        // first frame that passes is often only glow or a sliver of limb.
+        let converge: MosaicSession.Converge? = test ? nil : MosaicSession.Converge()
         let hold = holdTask
         stopHold()
         searchTask = Task.detached { [weak self] in
@@ -567,12 +570,12 @@ final class AppModel: ObservableObject {
                 case .spiral:
                     outcome = try await session.searchSpiral(
                         stepDeg: step, reachDeg: reach, referenceAltitudeDeg: refAlt,
-                        found: found, cancelled: cancelled)
+                        converge: converge, found: found, cancelled: cancelled)
                 case .raster:
                     outcome = try await session.searchRaster(
                         halfWidthDeg: reach, halfHeightDeg: reach * 0.6, rowSpacingDeg: step,
                         captureStepDeg: step, referenceAltitudeDeg: refAlt,
-                        found: found, cancelled: cancelled)
+                        converge: converge, found: found, cancelled: cancelled)
                 }
                 await MainActor.run { self?.searchFinished(outcome, byOperator: saw.value) }
             } catch {
@@ -593,10 +596,19 @@ final class AppModel: ObservableObject {
         if byOperator {
             say("Marked in view after \(outcome.stops) stops; search stopped.")
         } else if outcome.found, let b = outcome.blob {
-            say(
-                String(
-                    format: "Found a bright target after %d stops (peak %d, %.0f%% lit).",
-                    outcome.stops, b.peak, b.brightFraction * 100))
+            if outcome.convergeSteps == 0 && outcome.converged {
+                say(String(format: "Found the Moon after %d stops, on the disk (%.0f%% lit). Press Here.", outcome.stops, b.brightFraction * 100))
+            } else if outcome.converged {
+                say(
+                    String(
+                        format: "Found the Moon after %d stops and stepped onto the disk in %d moves (%.0f%% lit). Press Here.",
+                        outcome.stops, outcome.convergeSteps, b.brightFraction * 100))
+            } else {
+                say(
+                    String(
+                        format: "Sighted the Moon after %d stops but couldn't step onto the disk (%.0f%% lit). Centre it by hand before Here.",
+                        outcome.stops, b.brightFraction * 100))
+            }
         } else {
             say("Search finished (\(outcome.stops) stops) without a clear target.")
         }
@@ -794,10 +806,23 @@ final class AppModel: ObservableObject {
         start(tiles: tiles)
     }
 
+    /// When the operator was warned that planning has no centre fit; a
+    /// second press soon after plans around Here anyway.
+    private var uncentredPlanWarnedAt: Date?
+
     func makePlan() {
         guard let session else { return }
+        let confirmed = uncentredPlanWarnedAt.map { Date().timeIntervalSince($0) < 30 } ?? false
+        if session.centreFit == nil && !confirmed {
+            uncentredPlanWarnedAt = Date()
+            say(
+                "Find centre hasn't succeeded: the plan would be centred on Here, which may be off the Moon's centre (on 2026-11-17 it put the grid 3 rows high). Run 3 Find centre, or press Plan again within 30 s to plan around Here anyway."
+            )
+            return
+        }
+        uncentredPlanWarnedAt = nil
         do {
-            try session.makePlan()
+            try session.makePlan(allowWithoutCentre: true)
             let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(
                 of: ":", with: "-")
             runFolder = folder.appendingPathComponent(stamp)

@@ -73,6 +73,10 @@ public final class MosaicSession: @unchecked Sendable {
     public private(set) var centreFit: MoonCentre.Fit?
     /// The survey's sunlit cells, relative to the Moon's centre.
     private var litSky: [SkyOffset] = []
+    /// The image orientation a converging search found works before a
+    /// calibration (the guess can be mirrored by a star diagonal). Recentre
+    /// uses it too.
+    public private(set) var searchOrientation: SearchOrientation = .asGuessed
     public private(set) var plan: MosaicPlan?
     /// The dark tiles not yet done, for an earthshine pass.
     public var darkTilesToDo: [Int] {
@@ -263,10 +267,42 @@ public final class MosaicSession: @unchecked Sendable {
         /// The mount's position (az, alt degrees) at the found stop, or the
         /// last stop otherwise.
         public let atAzAltDeg: [Double]?
-        /// The blob that satisfied `found`.
+        /// The blob that satisfied `found` (after converging, the final one).
         public let blob: Blob.Found?
         /// Stops visited (gotos issued).
         public let stops: Int
+        /// Converging (`Converge`): whether it ended with the frame on the
+        /// lit disk, and the gotos it took (each a bounded step).
+        public var converged: Bool = false
+        public var convergeSteps: Int = 0
+    }
+
+    /// Converging onto the disk after the first sighting (track 2, 2c). The
+    /// first frame that passes `found` is often only the Moon's glow or a
+    /// sliver of limb along one edge; stopping there leaves Here — and the
+    /// plan centred on it — off the disk. Converging re-centres on the bright
+    /// region's centroid (at a sighting it sits at the frame's edge, towards
+    /// the Moon) in bounded steps until the frame is on the lit disk.
+    public struct Converge: Sendable {
+        /// "Lit" here means above this fraction of the frame's peak: low
+        /// enough that maria count against a bright crater (at 30% they
+        /// don't, and a frame wholly on the disk reads half lit), high above
+        /// the black sky.
+        public var litThresholdFraction: Double = 0.15
+        /// The frame counts as on the disk at this lit fraction…
+        public var onDiskFraction: Double = 0.8
+        /// …or at this lower fraction with the lit region's centroid within
+        /// `centredFraction` of the frame's short side from the centre.
+        public var centredOnDiskFraction: Double = 0.5
+        public var centredFraction: Double = 0.1
+        /// At most this many steps, each at most `maxStepFrames` of the
+        /// frame's short side, and never further than `maxTravelDeg` (sky)
+        /// from the sighting.
+        public var maxSteps: Int = 12
+        public var maxStepFrames: Double = 1.0
+        public var maxTravelDeg: Double = 1.0
+
+        public init() {}
     }
 
     /// Walks an expanding spiral from the current position (ADR 0022), a frame
@@ -278,12 +314,14 @@ public final class MosaicSession: @unchecked Sendable {
     @discardableResult
     public func searchSpiral(
         stepDeg: Double, reachDeg: Double, referenceAltitudeDeg: Double? = nil,
+        converge: Converge? = nil,
         found: @escaping @Sendable (Blob.Found?) -> Bool,
         cancelled: @escaping @Sendable () -> Bool = { false }
     ) async throws -> SearchOutcome {
         let spiral = SpiralSearch(stepDeg: stepDeg, reachDeg: reachDeg)
         return try await walk(
-            spiral.steps.map { ($0.azDeg, $0.altDeg) }, referenceAltitudeDeg, found, cancelled)
+            spiral.steps.map { ($0.azDeg, $0.altDeg) }, referenceAltitudeDeg, converge, found,
+            cancelled)
     }
 
     /// Walks a serpentine raster from the current position (ADR 0022), as
@@ -294,6 +332,7 @@ public final class MosaicSession: @unchecked Sendable {
     public func searchRaster(
         halfWidthDeg: Double, halfHeightDeg: Double, rowSpacingDeg: Double, captureStepDeg: Double,
         referenceAltitudeDeg: Double? = nil,
+        converge: Converge? = nil,
         found: @escaping @Sendable (Blob.Found?) -> Bool,
         cancelled: @escaping @Sendable () -> Bool = { false }
     ) async throws -> SearchOutcome {
@@ -308,14 +347,16 @@ public final class MosaicSession: @unchecked Sendable {
                 offsets.append((row.fromAzDeg + span * Double(k) / Double(n), row.altDeg))
             }
         }
-        return try await walk(offsets, referenceAltitudeDeg, found, cancelled)
+        return try await walk(offsets, referenceAltitudeDeg, converge, found, cancelled)
     }
 
     /// Shared drive: arm, open the camera, goto each offset (from the start)
-    /// in turn, and check the frame's brightest blob.
+    /// in turn, and check the frame's brightest blob; then, with `converge`,
+    /// step onto the disk.
     private func walk(
         _ offsets: [(Double, Double)],
         _ referenceAltitudeDeg: Double?,
+        _ converge: Converge?,
         _ found: @escaping @Sendable (Blob.Found?) -> Bool,
         _ cancelled: @escaping @Sendable () -> Bool
     ) async throws -> SearchOutcome {
@@ -354,13 +395,114 @@ public final class MosaicSession: @unchecked Sendable {
             // brightest parts: brightFraction then reads as "how much of the
             // frame is lit".
             let blob = Blob.find(frame, thresholdFraction: 0.3)
-            if found(blob) {
+            if found(blob), let blob {
                 onEvent(.message("Search: target in view after \(stops) stops."))
-                return SearchOutcome(found: true, atAzAltDeg: pos, blob: blob, stops: stops)
+                guard let converge else {
+                    return SearchOutcome(found: true, atAzAltDeg: pos, blob: blob, stops: stops)
+                }
+                var outcome = try await convergeOnDisk(from: blob, converge, cancelled)
+                outcome = SearchOutcome(
+                    found: true, atAzAltDeg: outcome.atAzAltDeg ?? pos, blob: outcome.blob,
+                    stops: stops, converged: outcome.converged,
+                    convergeSteps: outcome.convergeSteps)
+                return outcome
             }
         }
         return SearchOutcome(
             found: false, atAzAltDeg: try? await freshPosition(), blob: nil, stops: stops)
+    }
+
+    /// Steps from a sighting onto the lit disk (`Converge`). Each step is one
+    /// bounded, self-terminating search goto that moves the lit region's
+    /// centroid to the frame's centre. Before a calibration the image's
+    /// orientation is a guess that a star diagonal mirrors, so a step that
+    /// loses ground (less of the frame lit, the centroid no nearer the
+    /// centre) is undone and the next orientation tried: as guessed, mirrored
+    /// left-right, mirrored top-bottom, turned 180°. The one that works is
+    /// kept for later steps and for recentre. Runs inside `walk`'s armed step.
+    private func convergeOnDisk(
+        from sighting: Blob.Found, _ c: Converge,
+        _ cancelled: @escaping @Sendable () -> Bool
+    ) async throws -> SearchOutcome {
+        let (w, h) = (Double(camera.info.width), Double(camera.info.height))
+        let short = min(w, h)
+        let maxStepPx = c.maxStepFrames * short
+        func distance(_ b: Blob.Found) -> Double { hypot(b.offsetFromCentre.x, b.offsetFromCentre.y) }
+        func onDisk(_ b: Blob.Found) -> Bool {
+            b.brightFraction >= c.onDiskFraction
+                || (b.brightFraction >= c.centredOnDiskFraction && distance(b) <= c.centredFraction * short)
+        }
+        let origin = try await freshPosition()
+        let alt = { [mount] (p: [Double]) in (try? mount.status())?.altitudeDeg ?? p[1] }
+        let lit = { (f: Frame) in Blob.find(f, thresholdFraction: c.litThresholdFraction) }
+        var blob = lit(try await grabFrame()) ?? sighting
+        var steps = 0
+        var orientation = calibration == nil ? searchOrientation : .asGuessed
+        var failures = 0
+        while !onDisk(blob) {
+            if cancelled() || steps >= c.maxSteps || failures >= SearchOrientation.allCases.count {
+                break
+            }
+            // Move the centroid to the centre, at most one step's worth.
+            var px = blob.offsetFromCentre
+            let len = hypot(px.x, px.y)
+            if len > maxStepPx { px = PixelOffset(x: px.x * maxStepPx / len, y: px.y * maxStepPx / len) }
+            let before = try await freshPosition()
+            let m = MosaicPlanner.axes(for: sky(for: px, orientation), altitudeDeg: alt(before))
+            let target = (az: before[0] + m.azDeg, alt: before[1] + m.altDeg)
+            let travel = hypot(
+                wrap180(target.az - origin[0]) * cos(alt(before) * .pi / 180), target.alt - origin[1])
+            if travel > c.maxTravelDeg {
+                onEvent(.message(String(format: "Converge: stopped at the %.1f° travel limit.", c.maxTravelDeg)))
+                break
+            }
+            try await searchGoTo(az: target.az, alt: target.alt)
+            steps += 1
+            let next = lit(try await grabFrame())
+            let gained =
+                next.map {
+                    $0.brightFraction > blob.brightFraction + 0.02
+                        || ($0.brightFraction >= blob.brightFraction - 0.02
+                            && distance($0) < distance(blob) - 0.05 * short)
+                } ?? false
+            if gained, let next {
+                blob = next
+                failures = 0
+                continue
+            }
+            // Lost ground: back to where this step began, next orientation.
+            failures += 1
+            try await searchGoTo(az: before[0], alt: before[1])
+            steps += 1
+            if let again = lit(try await grabFrame()) { blob = again }
+            orientation = orientation.next
+            onEvent(.message("Converge: that step lost ground; trying the image \(orientation.label)."))
+        }
+        let converged = onDisk(blob)
+        if converged, calibration == nil { searchOrientation = orientation }
+        onEvent(
+            .message(
+                converged
+                    ? String(
+                        format: "Converge: on the disk after %d steps (%.0f%% of the frame lit)%@.",
+                        steps, blob.brightFraction * 100,
+                        orientation == .asGuessed || calibration != nil ? "" : "; image \(orientation.label)")
+                    : String(
+                        format: "Converge: not on the disk after %d steps (%.0f%% lit). Centre it by hand.",
+                        steps, blob.brightFraction * 100)))
+        return SearchOutcome(
+            found: true, atAzAltDeg: try? await freshPosition(), blob: blob, stops: 0,
+            converged: converged, convergeSteps: steps)
+    }
+
+    /// Sky offset for an image offset: calibrated, or the guess (camera
+    /// square to the sky, x right → azimuth, y down → lower altitude) with
+    /// `orientation`'s flips applied first.
+    private func sky(for px: PixelOffset, _ orientation: SearchOrientation) -> SkyOffset {
+        if let calibration { return calibration.sky(for: px) }
+        let f = orientation.flips
+        let p = PixelOffset(x: f.x * px.x, y: f.y * px.y)
+        return SkyOffset(x: p.x * scaleGuess, y: -p.y * scaleGuess)
     }
 
     /// Slews so the point at `pixelOffset` from the frame's centre comes to
@@ -371,9 +513,7 @@ public final class MosaicSession: @unchecked Sendable {
     /// clicking again. One self-terminating goto per axis; the altitude
     /// reference must already be set (a search sets it).
     public func recentre(pixelOffset: PixelOffset) async throws {
-        let sky =
-            calibration?.sky(for: pixelOffset)
-            ?? SkyOffset(x: pixelOffset.x * scaleGuess, y: -pixelOffset.y * scaleGuess)
+        let sky = sky(for: pixelOffset, searchOrientation)
         try await armForStep()
         defer { endStep() }
         let pos = try await freshPosition()
@@ -466,9 +606,18 @@ public final class MosaicSession: @unchecked Sendable {
 
     // MARK: Plan and run
 
+    /// Plans the tiles around Here. Without a centre fit, Here is wherever
+    /// the operator (or a search) left the mount, so the grid can sit off
+    /// the disk (2026-11-17: ~0.7 Moon radii high). That needs
+    /// `allowWithoutCentre`: the app asks the operator first.
     @discardableResult
-    public func makePlan() throws -> MosaicPlan {
+    public func makePlan(allowWithoutCentre: Bool = false) throws -> MosaicPlan {
         guard let calibration, let here else { throw MosaicError(description: "Calibrate first.") }
+        guard centreFit != nil || allowWithoutCentre else {
+            throw MosaicError(
+                description:
+                    "Find centre hasn't succeeded, so the plan would be centred on Here, which may be off the Moon's centre.")
+        }
         var plan = MosaicPlanner.plan(
             moonDiameterDeg: here.moon.diameterDeg, calibration: calibration,
             frameWidth: camera.info.width, frameHeight: camera.info.height,
@@ -777,4 +926,35 @@ public final class MosaicSession: @unchecked Sendable {
 func wrap180(_ d: Double) -> Double {
     let x = Ephemeris.normalize(d + 180) - 180
     return x
+}
+
+/// The image orientation a converging search tries before a calibration
+/// (track 2, 2c): the guess, mirrored either way (a star diagonal), or
+/// turned 180°.
+public enum SearchOrientation: Sendable, CaseIterable, Equatable {
+    case asGuessed, mirroredLeftRight, mirroredTopBottom, turned180
+
+    /// Signs applied to the image offset's x and y before the guess.
+    var flips: (x: Double, y: Double) {
+        switch self {
+        case .asGuessed: (1, 1)
+        case .mirroredLeftRight: (-1, 1)
+        case .mirroredTopBottom: (1, -1)
+        case .turned180: (-1, -1)
+        }
+    }
+
+    var next: SearchOrientation {
+        let all = Self.allCases
+        return all[(all.firstIndex(of: self)! + 1) % all.count]
+    }
+
+    public var label: String {
+        switch self {
+        case .asGuessed: "as guessed"
+        case .mirroredLeftRight: "mirrored left-right"
+        case .mirroredTopBottom: "mirrored top-bottom"
+        case .turned180: "turned 180°"
+        }
+    }
 }

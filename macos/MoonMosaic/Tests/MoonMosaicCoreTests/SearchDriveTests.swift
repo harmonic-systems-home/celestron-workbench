@@ -119,12 +119,16 @@ func theSimulateDryRunFindsTheOffCentreTarget() async throws {
     let start = try #require(try mount.status().positionsDeg)
     camera.provider = aimAt(mount, targetAz: start[0] + 0.4, targetAlt: start[1] + 0.25)
 
+    // As the app runs it: converging onto the disk after the sighting.
     let outcome = try await session.searchSpiral(
-        stepDeg: 0.3, reachDeg: 2.0,
+        stepDeg: 0.3, reachDeg: 2.0, converge: MosaicSession.Converge(),
         found: { ($0?.peak ?? 0) >= 120 && ($0?.brightFraction ?? 0) >= 0.1 })
 
     #expect(outcome.found)
     #expect(outcome.stops > 1, "must hunt for it, not find it at the start")
+    #expect(outcome.converged)
+    let p = camera.pointing
+    #expect(hypot(p.x, p.y) < 930, "ends on the disk: \(p)")
 }
 
 /// A search with no altitude reference set yet ties the encoder to the sky
@@ -167,4 +171,81 @@ func recentreSlewsTheClickedPointTowardTheCentre() async throws {
     #expect(abs(altDelta + expectedAltDrop) < 0.005, "alt delta \(altDelta) vs -\(expectedAltDrop)")
     #expect(abs(wrap180(after[0] - before[0])) < 0.01, "azimuth should hold")
     #expect(try mount.status().state == "ConnectedReadOnly")
+}
+
+// MARK: Converging onto the disk (track 2, 2c)
+
+/// Places the fake Moon's centre at `centre` (arcseconds on the sky from the
+/// mount's starting pointing: x along azimuth, y along altitude), with the
+/// sky scale the session uses at the 45° reference altitude.
+private func moonAt(
+    _ mount: MountSession, start: [Double], centre: (x: Double, y: Double)
+) -> @Sendable () -> (x: Double, y: Double) {
+    { [weak mount] in
+        guard let p = try? mount?.status().positionsDeg else { return (1e6, 1e6) }
+        let x = wrap180(p[0] - start[0]) * cos(45 * .pi / 180) * 3600
+        let y = wrap180(p[1] - start[1]) * 3600
+        return (x - centre.x, y - centre.y)
+    }
+}
+
+/// A Moon bigger than the frame, its limb just inside the frame's right edge
+/// at the start: the first frame is only a sliver. The scale matches the
+/// session's focal-length guess (0.3″/px), as on the real rig.
+private func sliverSetup(mirrored: Bool) async throws -> (FakeCamera, MountSession, MosaicSession) {
+    let camera = FakeCamera(
+        width: 640, height: 360, scale: 0.3, rotationDeg: 0, moonRadiusArcsec: 300,
+        mirrored: mirrored)
+    let (mount, session) = try await simulatedSession(camera)
+    let start = try #require(try mount.status().positionsDeg)
+    // Frame half-width 96″: the limb 40″ inside the edge, about a fifth lit.
+    camera.provider = moonAt(mount, start: start, centre: (x: 300 + 96 - 40, y: 20))
+    return (camera, mount, session)
+}
+
+private let appFound: @Sendable (Blob.Found?) -> Bool = {
+    ($0?.peak ?? 0) >= 120 && ($0?.brightFraction ?? 0) >= 0.1
+}
+
+/// Without converging, a sliver passes `found` and the search stops off the
+/// disk — the 2026-11-17 failure; with it, the search ends on the disk.
+@Test(.timeLimit(.minutes(3)))
+func aSearchConvergesFromALimbSliverOntoTheDisk() async throws {
+    let (camera, mount, session) = try await sliverSetup(mirrored: false)
+
+    let plain = try await session.searchSpiral(stepDeg: 0.05, reachDeg: 0.1, found: appFound)
+    #expect(plain.found)
+    let sliver = try #require(plain.blob)
+    #expect(sliver.brightFraction < 0.5, "starts on a sliver: \(sliver.brightFraction)")
+    #expect(hypot(camera.pointing.x, camera.pointing.y) > 300, "a plain search stops off the disk")
+
+    let outcome = try await session.searchSpiral(
+        stepDeg: 0.05, reachDeg: 0.1, converge: MosaicSession.Converge(), found: appFound)
+    #expect(outcome.found)
+    #expect(outcome.converged)
+    #expect(outcome.convergeSteps > 0)
+    // The fake Moon's craters are denser and darker than the real Moon's: a
+    // frame dead centre on it reads ~72% lit (2026-11-17 frames on the disk
+    // read 95–100%), so here it ends on the "centred and over half lit" rule.
+    #expect((outcome.blob?.brightFraction ?? 0) >= 0.5, "lit \(outcome.blob?.brightFraction ?? 0)")
+    // The frame's centre is well inside the disk (radius 300″).
+    let p = camera.pointing
+    #expect(hypot(p.x, p.y) < 300 - 50, "ends at \(p), \(hypot(p.x, p.y))″ from the centre")
+    #expect(session.searchOrientation == .asGuessed)
+    #expect(try mount.status().state == "ConnectedReadOnly")
+}
+
+/// Through a star diagonal the image is mirrored, so the guessed direction
+/// walks away from the Moon; converging notices, undoes the step, tries the
+/// mirrored orientation, and keeps it.
+@Test(.timeLimit(.minutes(3)))
+func convergingLearnsAMirroredImage() async throws {
+    let (camera, _, session) = try await sliverSetup(mirrored: true)
+
+    let outcome = try await session.searchSpiral(
+        stepDeg: 0.05, reachDeg: 0.1, converge: MosaicSession.Converge(), found: appFound)
+    #expect(outcome.converged)
+    let p = camera.pointing
+    #expect(hypot(p.x, p.y) < 300 - 50, "ends at \(p)")
+    #expect(session.searchOrientation == .mirroredLeftRight)
 }

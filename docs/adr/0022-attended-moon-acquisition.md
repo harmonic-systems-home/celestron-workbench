@@ -173,3 +173,36 @@ Implementing the GUI drive (step 4) surfaced two concrete decisions.
   the ephemeris (so Here, calibrate and the mosaic rehearse unchanged); the
   test-mode drainpipe is a fixed, non-drifting stand-in. This replaces the
   earlier behaviour where the fake Moon sat centred until Here.
+
+## Amendment 2 — converge onto the disk, and no plan without a centre (2026-11-18)
+
+The 2026-11-17 capture planned 18 tiles on empty sky and left ~15 Moon tiles
+unplanned: the grid sat ~0.7 Moon radii high. The operator saw the cause: the
+search stopped at the first hint of brightness. A frame passes `found` when ≥10%
+of it is above 30% of its peak, and the Moon's glow or a sliver of limb along one
+edge does that. Here was set there, Find centre never succeeded (every plan tile
+was saved `lit: true`), and the plan was centred on Here.
+
+- **Converge after the sighting.** An automatic search (not test mode, not "I see
+  it") treats the sighting as a glimpse and steps onto the disk. Each step is one
+  lean search goto (§3, Amendment 1) that moves the lit region's centroid to the
+  frame's centre. Each step is capped at one frame's short side, with at most 12
+  steps and 1° of sky from the sighting. It stops when the frame is on the disk:
+  ≥80% lit, or ≥50% lit with the centroid within a tenth of the frame of the centre.
+  "Lit" here is above 15% of the peak. At 30%, maria fall below the line: real
+  2026-11-17 frames wholly on the disk read 47–100% at 30%, but 95–100% at 15%,
+  while limb slivers read 10–35%.
+- **The orientation is learned, not assumed.** The search runs before calibration,
+  and the pre-calibration guess (x right → azimuth, y down → lower altitude) is
+  mirrored by the star diagonal: 2026-11-17's calibration has x reversed. A step
+  that loses ground (less lit, the centroid no nearer the centre) is undone and the
+  next orientation tried: as guessed, mirrored left-right, mirrored top-bottom,
+  turned 180°. The one that works is kept for the rest of the session's
+  pre-calibration moves, including click-to-recentre. Four failures in a row end
+  the converge, and the app tells the operator to centre the Moon by hand.
+- **No silent plan without a centre.** `makePlan` throws unless Find centre has
+  succeeded or the caller passes `allowWithoutCentre`. The app warns on the first
+  press and plans around Here only on a second press within 30 s.
+
+All of this stays within the attended minimal motion profile: short,
+self-terminating gotos with the operator at the mount.

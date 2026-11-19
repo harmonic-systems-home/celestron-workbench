@@ -11,6 +11,8 @@ public final class FakeCamera: Camera, @unchecked Sendable {
     /// altitude (degrees).
     public let scale: Double
     public let rotationDeg: Double
+    /// The image flipped left-right, as through a star diagonal's mirror.
+    public let mirrored: Bool
     public let moonRadiusArcsec: Double
     private let lock = NSLock()
     private var _pointing: (x: Double, y: Double) = (0, 0)
@@ -44,13 +46,14 @@ public final class FakeCamera: Camera, @unchecked Sendable {
 
     public init(
         width: Int = 640, height: Int = 360, scale: Double = 0.6, rotationDeg: Double = 30,
-        moonRadiusArcsec: Double = 930, seed: UInt64 = 1
+        moonRadiusArcsec: Double = 930, seed: UInt64 = 1, mirrored: Bool = false
     ) {
         info = CameraInfo(
             name: "Fake Moon", width: width, height: height, pixelSizeUm: 2.9, isColor: false,
             bayerPattern: 0)
         self.scale = scale
         self.rotationDeg = rotationDeg
+        self.mirrored = mirrored
         self.moonRadiusArcsec = moonRadiusArcsec
         var rng = seed
         func next() -> Double {
@@ -88,6 +91,7 @@ public final class FakeCamera: Camera, @unchecked Sendable {
     }
 
     func sky(u: Double, v: Double, pointing p: (x: Double, y: Double)) -> (x: Double, y: Double) {
+        let u = mirrored ? -u : u
         let t = rotationDeg * .pi / 180
         return (
             p.x + scale * (u * cos(t) - v * sin(t)), p.y - scale * (u * sin(t) + v * cos(t))
@@ -115,7 +119,7 @@ public final class FakeCamera: Camera, @unchecked Sendable {
         for y in 0..<h {
             let v = Double(y) - Double(h) / 2
             for x in 0..<w {
-                let u = Double(x) - Double(w) / 2
+                let u = (Double(x) - Double(w) / 2) * (mirrored ? -1 : 1)
                 let q = (x: p.x + scale * (u * ct - v * st), y: p.y - scale * (u * st + v * ct))
                 let d2 = q.x * q.x + q.y * q.y
                 guard d2 < r2 else {

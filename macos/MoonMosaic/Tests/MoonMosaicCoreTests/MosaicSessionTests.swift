@@ -57,7 +57,12 @@ func aMosaicRunsOnTheSimulatedMount() async throws {
     let cal = try #require(session.calibration)
     #expect(abs(cal.arcsecPerPixel - 0.3) < 0.01, "\(cal.arcsecPerPixel)″/px")
 
-    let plan = try session.makePlan()
+    // Without a centre fit, planning needs the operator's say-so: the grid
+    // would be centred on Here, wherever that is (2026-11-17).
+    #expect(throws: MosaicError.self) { try session.makePlan() }
+    #expect(session.plan == nil)
+    // No survey here: plan around Here on purpose.
+    let plan = try session.makePlan(allowWithoutCentre: true)
     let middle = plan.tiles.sorted {
         hypot($0.center.x, $0.center.y) < hypot($1.center.x, $1.center.y)
     }.prefix(3).map(\.id)
