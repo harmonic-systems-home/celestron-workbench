@@ -297,7 +297,9 @@ struct ContentView: View {
                     enabled: !model.selected.isEmpty && model.busy == nil
                 ) { model.redoSelected() }
             }
-            if model.simulator.attached { SimulatorBox(model: model, sim: model.simulator, palette: palette) }
+            if model.simulate || model.simulatedCamera || model.simulator.attached {
+                SimulatorBox(model: model, sim: model.simulator, palette: palette)
+            }
             Spacer(minLength: 12)
             button("Settings", enabled: model.busy == nil) { model.showSettings = true }
         }
@@ -815,7 +817,12 @@ struct SimulatorBox: View {
             .onChange(of: sim.libraryScene) { if sim.sceneChoice != .library { sim.sceneChoice = .library } }
             .disabled(sim.library.isEmpty)
             if sim.loadingScene { ProgressView().controlSize(.small) }
-            Text(sim.sceneNote).font(.system(size: 11)).foregroundStyle(palette.dim).lineLimit(2)
+            Text(
+                sim.attached
+                    ? sim.sceneNote
+                    : (sim.sceneMoment.map { "Connect rehearses at this scene's moment: \($0.time.formatted(date: .abbreviated, time: .shortened))." }
+                        ?? "Pick a scene, then Connect.")
+            ).font(.system(size: 11)).foregroundStyle(palette.dim).lineLimit(3)
             HStack {
                 Text("Speed \(Int(sim.speed))×").font(.system(size: 13))
                 Slider(value: $sim.speed, in: 1...10, step: 1).disabled(!model.simulate)

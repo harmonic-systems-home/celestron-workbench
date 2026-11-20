@@ -98,6 +98,12 @@ final class SimulatorModel: ObservableObject {
     private var clock: @Sendable () -> Date = { Date() }
     private var timer: Timer?
 
+    init() {
+        // The library is there before Connect: a scene chosen then sets the
+        // simulated sky's moment.
+        refreshLibrary()
+    }
+
     /// When the session's clock started (to know a scene's moment is this one).
     private var sessionStart = Date.distantPast
 
