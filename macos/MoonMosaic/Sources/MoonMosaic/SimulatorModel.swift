@@ -411,6 +411,8 @@ final class SimulatorModel: ObservableObject {
                         }
                         self.brightLimbDeg = limb
                         self.phaseAngleNowDeg = phase.phaseAngleDeg
+                        // A daytime photo: the simulated sky as bright as its own.
+                        if scene.skyLevel > 0.01 { self.skyLevel = min(0.5, (scene.skyLevel * 100).rounded() / 100) }
                         let across = scene.radius > 0 ? (camera?.moonRadiusArcsec ?? 930) / scene.radius : 0
                         self.sceneNote = String(
                             format: "%@: %d×%d, %.2f″ per image pixel, %.0f%% lit%@", scene.name, scene.width,
