@@ -186,6 +186,23 @@ final class AppModel: ObservableObject {
     private var session: MosaicSession?
     /// This connection's setup folder: the whole log, calibration and survey frames.
     private var setupFolder: URL?
+    /// This session's record (RunRecord), kept up to date after each step.
+    private var runRecord: RunRecord?
+
+    private func recordStep(_ name: String, started: Date, ok: Bool, estimate: Double?) {
+        guard var r = runRecord else { return }
+        r.add(RunRecord.Step(name: name, started: started, seconds: Date().timeIntervalSince(started), estimateSeconds: estimate, ok: ok))
+        r.touch()
+        runRecord = r
+        saveRunRecord()
+    }
+
+    private func saveRunRecord() {
+        guard var r = runRecord else { return }
+        r.touch()
+        runRecord = r
+        r.write(to: [setupFolder, runFolder].compactMap { $0 })
+    }
     private var runFolder: URL?
     private let paused = Flag()
     /// Per-frame sharpness, shake state and history for the focus assist
@@ -411,6 +428,13 @@ final class AppModel: ObservableObject {
         try? FileManager.default.createDirectory(at: setup, withIntermediateDirectories: true)
         session.diagnostics = setup
         setupFolder = setup
+        let simCam = camera.camera as? SimCamera
+        runRecord = RunRecord(
+            build: RunRecord.buildDate, started: Date(), updated: Date(),
+            simulated: mount.opened.simulated || simCam != nil,
+            mount: mount.opened.simulated ? "simulated" : (mount.opened.model ?? "real"),
+            camera: camera.info.name, scene: simCam?.scene.name)
+        saveRunRecord()
         self.session = session
         if camera.camera is SimCamera {
             // The fake sky keys off the real mount position with an off-centre
@@ -454,6 +478,8 @@ final class AppModel: ObservableObject {
     }
 
     func disconnect() {
+        saveRunRecord()
+        runRecord = nil
         silenceAlarm()
         linkAlarm = nil
         searchStop.value = true
@@ -658,6 +684,7 @@ final class AppModel: ObservableObject {
                     if ok { self.flowDone.insert(step) }
                     self.logStepTime(step, Date().timeIntervalSince(started), ok: ok)
                 }
+                self.recordStep(step?.title ?? name, started: started, ok: ok, estimate: step?.estimateSeconds)
             }
         }
     }
@@ -746,6 +773,7 @@ final class AppModel: ObservableObject {
     func undo() {
         guard following, let session else { return }
         session.followUndo()
+        runRecord?.undos += 1
     }
 
     /// The operator marks a by-hand step (camera settings, focus) done.
@@ -899,6 +927,7 @@ final class AppModel: ObservableObject {
         if flowActive == .find { flowActive = nil }
         if found { flowDone.insert(.find) }
         logStepTime(.find, Date().timeIntervalSince(searchStarted), ok: found)
+        recordStep("Find", started: searchStarted, ok: found, estimate: FlowStep.find.estimateSeconds)
         searchEnded()
         if resumeFollowAfterSearch {
             resumeFollowAfterSearch = false
@@ -1044,6 +1073,7 @@ final class AppModel: ObservableObject {
         if following {
             // Follow: a nudge on top of tracking; it stays, and Undo returns.
             session.followNudge(session.panSky(for: px))
+            runRecord?.nudges += 1
             return
         }
         if hereSet {
@@ -1223,6 +1253,16 @@ final class AppModel: ObservableObject {
             await MainActor.run {
                 guard let self else { return }
                 // Done: show the mosaic.
+                let states = Array(self.tileStates.values)
+                let done = states.filter { if case .done = $0 { true } else { false } }.count
+                let failed = states.filter { if case .failed = $0 { true } else { false } }.count
+                let secs = Date().timeIntervalSince(self.captureStarted)
+                self.runRecord?.captures.append(
+                    RunRecord.Capture(
+                        tiles: self.captureTotal, done: done, failed: failed, seconds: secs,
+                        secondsPerTile: self.captureTotal > 0 ? secs / Double(self.captureTotal) : nil,
+                        folder: runFolder.lastPathComponent))
+                self.saveRunRecord()
                 self.makePreview()
                 self.showPreviewRequest += 1
             }
