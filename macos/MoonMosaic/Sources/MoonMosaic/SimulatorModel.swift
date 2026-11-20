@@ -265,6 +265,34 @@ final class SimulatorModel: ObservableObject {
         applySeed(reachDeg: reachDeg)
     }
 
+    /// Just the camera's turn in the focuser, at random (and, by a coin,
+    /// with or without the star diagonal).
+    func randomizeRotation() {
+        cameraRotationDeg = Double(Int.random(in: 0..<360))
+        preset = Bool.random() ? .sct8Straight : .sct8
+    }
+
+    /// Just where the Moon is in the search area, at random, out of view of
+    /// the start.
+    func randomizePlace(reachDeg: Double) {
+        let field = preset.optics.fieldArcmin
+        let clear = (moonRadiusArcsec + 30 * hypot(field.width, field.height)) / 3600
+        var az = 0.0, alt = 0.0
+        repeat {
+            az = Double.random(in: -reachDeg...reachDeg)
+            alt = Double.random(in: (-0.6 * reachDeg)...(0.6 * reachDeg))
+        } while hypot(az, alt) < clear
+        placeMoon(az: az, alt: alt)
+    }
+
+    /// Puts the Moon at this offset from where the scope started (degrees on
+    /// the axes); the simulated sky follows at once.
+    func placeMoon(az: Double, alt: Double) {
+        moonOffsetDeg = (az, alt)
+        trail = []
+        onSkyChanged?()
+    }
+
     /// Applies the scenario for the current seed.
     func applySeed(reachDeg: Double) {
         var g = SeededGenerator(seed)

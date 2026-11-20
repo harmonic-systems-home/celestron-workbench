@@ -22,9 +22,59 @@ struct SimulatorView: View {
                     "The sky as seen by eye: x along azimuth, y up. The rectangle is the search area, the box the camera's frame (its top edge orange), the line its path. With a star diagonal the camera's image is mirrored left to right against this view, as through the eyepiece."
                 )
                 .font(.caption).foregroundStyle(.secondary)
+                viewerControls
             }
             .padding(10)
         }
+    }
+
+    /// Under the sky view: the camera's turn in the focuser, the diagonal,
+    /// where the Moon sits in the search area, and dice for each.
+    private var viewerControls: some View {
+        let reach = model.searchReachDeg
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Slider(value: $sim.cameraRotationDeg, in: 0...359, step: 1) {
+                    Text("Camera turned \(Int(sim.cameraRotationDeg))°").frame(width: 150, alignment: .leading)
+                }
+                Toggle(
+                    "Diagonal",
+                    isOn: Binding(
+                        get: { sim.preset.optics.diagonal },
+                        set: { sim.preset = $0 ? .sct8 : .sct8Straight }))
+                Button("Random turn") { sim.randomizeRotation() }
+            }
+            HStack {
+                Slider(
+                    value: Binding(get: { moonAz ?? sim.moonOffsetDeg.az }, set: { moonAz = $0 }),
+                    in: -reach...reach, step: 0.05
+                ) {
+                    Text(String(format: "Moon %+.2f° az", moonAz ?? sim.moonOffsetDeg.az)).frame(width: 150, alignment: .leading)
+                } onEditingChanged: { editing in if !editing { placeMoon() } }
+                Slider(
+                    value: Binding(get: { moonAlt ?? sim.moonOffsetDeg.alt }, set: { moonAlt = $0 }),
+                    in: (-0.6 * reach)...(0.6 * reach), step: 0.05
+                ) {
+                    Text(String(format: "%+.2f° alt", moonAlt ?? sim.moonOffsetDeg.alt)).frame(width: 70, alignment: .leading)
+                } onEditingChanged: { editing in if !editing { placeMoon() } }
+                Button("Random place") { sim.randomizePlace(reachDeg: reach) }
+            }
+            HStack {
+                Text("From where the scope started, inside the search area (±\(String(format: "%.2g", reach))°).")
+                    .font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                Button("Randomize all") { sim.randomize(reachDeg: reach) }
+            }
+        }
+    }
+
+    /// The Moon's place while a slider is being dragged (applied on release).
+    @State private var moonAz: Double?
+    @State private var moonAlt: Double?
+    private func placeMoon() {
+        sim.placeMoon(az: moonAz ?? sim.moonOffsetDeg.az, alt: moonAlt ?? sim.moonOffsetDeg.alt)
+        moonAz = nil
+        moonAlt = nil
     }
 
     private var controls: some View {
