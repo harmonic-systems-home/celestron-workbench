@@ -93,6 +93,16 @@ final class SimulatorModel: ObservableObject {
     /// (simulated mount only; the real mount moves at its own speed).
     @Published var speed: Double = 1 { didSet { onSpeedChanged?(speed) } }
     var onSpeedChanged: ((Double) -> Void)?
+    /// Fault injection (rehearsing recovery): mount faults go to the app,
+    /// which owns the mount; camera faults are applied here.
+    var onMountFault: ((MountSession.SimFault) -> Void)?
+    @Published var dropFrames: Double = 0 { didSet { applyConditions() } }
+    private var cameraStalledUntil: Date?
+    /// The camera stops delivering frames for `seconds`.
+    func stallCamera(_ seconds: Double) {
+        cameraStalledUntil = Date().addingTimeInterval(seconds)
+        applyConditions()
+    }
 
     /// Called when the Moon's starting point changes, to re-aim the sky.
     var onSkyChanged: (() -> Void)?
@@ -292,6 +302,8 @@ final class SimulatorModel: ObservableObject {
         c.transmission = transmission
         c.glowLevel = glowLevel
         c.shakeArcsec = shakeArcsec
+        c.dropFrames = dropFrames
+        c.stalledUntil = cameraStalledUntil
         camera?.conditions = c
     }
 

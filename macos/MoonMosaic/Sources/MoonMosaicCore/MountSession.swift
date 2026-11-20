@@ -146,6 +146,28 @@ public final class MountSession: @unchecked Sendable {
         try command(["op": "sim_speed", "factor": factor])
     }
 
+    /// Simulated mount only: inject a fault now (rehearsing recovery).
+    public enum SimFault: Sendable {
+        /// A stuck hand-controller key: extra `degS` on `axis` for `seconds`.
+        case runaway(Axis, degS: Double, seconds: Double)
+        case stall(Bool)
+        case overshoot(Double)
+        case short(Double)
+        case clear
+    }
+
+    public func inject(_ fault: SimFault) throws {
+        func name(_ a: Axis) -> String { a == .azimuth ? "azimuth" : "altitude" }
+        switch fault {
+        case .runaway(let a, let r, let s):
+            try command(["op": "sim_fault", "kind": "runaway", "axis": name(a), "value": r, "seconds": s])
+        case .stall(let on): try command(["op": "sim_fault", "kind": "stall", "value": on ? 1.0 : 0.0])
+        case .overshoot(let d): try command(["op": "sim_fault", "kind": "overshoot", "value": d])
+        case .short(let d): try command(["op": "sim_fault", "kind": "short", "value": d])
+        case .clear: try command(["op": "sim_fault", "kind": "clear"])
+        }
+    }
+
     /// Ties the altitude encoder to the sky: the tube's true altitude now.
     public func setAltitudeReference(_ altitudeDeg: Double) throws {
         try command(["op": "reference", "altitude_deg": altitudeDeg])

@@ -31,6 +31,10 @@ public final class SimCamera: Camera, @unchecked Sendable {
         public var shakeArcsec: Double = 20
         public var shakeHz: Double = 2
         public var shakeSeconds: Double = 0.8
+        /// Faults: the share of frames lost (each frame call returns nil),
+        /// and a camera that stops delivering until a moment (USB trouble).
+        public var dropFrames: Double = 0
+        public var stalledUntil: Date? = nil
         public init() {}
     }
 
@@ -141,6 +145,11 @@ public final class SimCamera: Camera, @unchecked Sendable {
     public func stop() { lock.withLock { running = false } }
 
     public func frame(timeoutMs: Int) throws -> Frame? {
+        let (drop, stalled) = lock.withLock { (_conditions.dropFrames, _conditions.stalledUntil) }
+        if let stalled, stalled > Date() {
+            Thread.sleep(forTimeInterval: min(stalled.timeIntervalSinceNow, Double(max(timeoutMs, 1)) / 1000))
+            return nil
+        }
         // Frames come at the sensor's rate (or the exposure's, if slower).
         let (fps, exposure) = lock.withLock { (_optics.sensor.fps, exposureUs) }
         let interval = max(1 / fps, Double(exposure) / 1e6)
@@ -153,6 +162,7 @@ public final class SimCamera: Camera, @unchecked Sendable {
         }
         let taken = Date()
         lock.withLock { nextFrame = max(due, taken) + interval }
+        if drop > 0, Double.random(in: 0..<1) < drop { return nil }
         return render(at: taken)
     }
 

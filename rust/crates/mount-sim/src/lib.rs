@@ -158,6 +158,11 @@ impl SimMount {
     /// Advances the physics by `dt_ns` ending at `now`.
     /// Sets the goto speeds (deg/s), to run rehearsals faster than the real
     /// mount.
+    /// The faults in force, to inject one while running (rehearsals).
+    pub fn faults_mut(&mut self) -> &mut SimFaults {
+        &mut self.faults
+    }
+
     pub fn set_goto_speeds(&mut self, slow_deg_s: f64, fast_deg_s: f64) {
         self.faults.goto_slow_deg_s = slow_deg_s;
         self.faults.goto_fast_deg_s = fast_deg_s;

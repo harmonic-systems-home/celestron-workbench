@@ -284,6 +284,7 @@ final class AppModel: ObservableObject {
         updatePalette()
         simulator.onSkyChanged = { [weak self] in self?.reinstallSimulatedSky() }
         simulator.onSpeedChanged = { [weak self] k in self?.applySimSpeed(k) }
+        simulator.onMountFault = { [weak self] f in self?.injectMountFault(f) }
         pollTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.poll() }
         }
@@ -654,6 +655,20 @@ final class AppModel: ObservableObject {
     var sessionNow: Date { session?.now ?? Date() }
 
     /// Rehearsal speed (simulated mount only).
+    /// A fault on the simulated mount, logged so the run shows it was injected.
+    func injectMountFault(_ f: MountSession.SimFault) {
+        guard simulate, let mount else {
+            say("Faults need the simulated mount.")
+            return
+        }
+        do {
+            try mount.inject(f)
+            say("SIMULATOR: injected \(f).")
+        } catch {
+            say("Couldn't inject the fault: \(error)")
+        }
+    }
+
     func applySimSpeed(_ k: Double) {
         guard simulate, let mount else { return }
         do {

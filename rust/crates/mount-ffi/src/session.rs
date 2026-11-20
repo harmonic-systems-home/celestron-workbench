@@ -406,6 +406,20 @@ pub enum Request {
     SimSpeed {
         factor: f64,
     },
+    /// Simulated mount only: inject a fault now, for rehearsing recovery.
+    /// `runaway`: the axis turns `value` deg/s extra for `seconds` (a stuck
+    /// hand-controller key); `stall`: the axes stop answering moves
+    /// (`value` 1) or answer again (0); `overshoot`: gotos run `value`° past
+    /// and come back; `short`: gotos stop `value`° short; `clear`: all off.
+    SimFault {
+        kind: String,
+        #[serde(default)]
+        axis: Option<Axis>,
+        #[serde(default)]
+        value: f64,
+        #[serde(default)]
+        seconds: f64,
+    },
     /// A goto relative to the axis's last read position.
     Goto {
         axis: Axis,
@@ -447,6 +461,31 @@ impl Inner {
                     .expect("sim mount")
                     .set_goto_speeds(d.goto_slow_deg_s * k, d.goto_fast_deg_s * k);
                 return Ok(json!({ "ok": true, "factor": k }));
+            }
+            Request::SimFault { kind, axis, value, seconds } => {
+                let Some(sim) = &self.sim else {
+                    return Err("not a simulated mount".into());
+                };
+                let mut sim = sim.lock().expect("sim mount");
+                let f = sim.faults_mut();
+                let now_ms = (now / MS).max(0) as u64;
+                match kind.as_str() {
+                    "runaway" => {
+                        let to = now_ms + (seconds.max(0.0) * 1000.0) as u64;
+                        f.bump = Some((axis.unwrap_or(Axis::Azimuth), value, now_ms, to));
+                    }
+                    "stall" => f.stall = value != 0.0,
+                    "overshoot" => f.goto_overshoot_deg = value,
+                    "short" => f.goto_short_deg = value,
+                    "clear" => {
+                        let (slow, fast) = (f.goto_slow_deg_s, f.goto_fast_deg_s);
+                        *f = SimFaults::default();
+                        f.goto_slow_deg_s = slow;
+                        f.goto_fast_deg_s = fast;
+                    }
+                    other => return Err(format!("unknown fault {other}")),
+                }
+                return Ok(json!({ "ok": true, "kind": kind }));
             }
             Request::Disarm => self.controller.disarm(now),
             Request::Reset => self.controller.reset(now),

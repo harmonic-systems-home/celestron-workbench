@@ -126,6 +126,26 @@ struct SimulatorView: View {
                     Text(String(format: "Shake after moves %.0f″", sim.shakeArcsec))
                 }
             }
+            Section("Faults (rehearse recovery)") {
+                HStack {
+                    Button("Runaway az") { sim.onMountFault?(.runaway(.azimuth, degS: 0.5, seconds: 4)) }
+                    Button("Runaway alt") { sim.onMountFault?(.runaway(.altitude, degS: 0.5, seconds: 4)) }
+                }
+                HStack {
+                    Button("Stall mount") { sim.onMountFault?(.stall(true)) }
+                    Button("Overshoot 0.1°") { sim.onMountFault?(.overshoot(0.1)) }
+                    Button("Short 0.05°") { sim.onMountFault?(.short(0.05)) }
+                }
+                HStack {
+                    Button("Camera stall 5 s") { sim.stallCamera(5) }
+                    Button("Clear mount faults") { sim.onMountFault?(.clear) }
+                }
+                Slider(value: $sim.dropFrames, in: 0...0.5, step: 0.05) {
+                    Text(String(format: "Dropped frames %.0f%%", sim.dropFrames * 100))
+                }
+                Text("Runaway: as if a hand-controller key stuck (0.5°/s for 4 s). Mount faults need the simulated mount.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
         }
         .formStyle(.grouped)
     }
