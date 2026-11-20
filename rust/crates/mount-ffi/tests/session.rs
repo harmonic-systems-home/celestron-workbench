@@ -255,19 +255,33 @@ fn tracking_runs_both_axes_steadily_and_a_move_takes_over() {
         true
     );
     let start = status_json(id)["positions_deg"].clone();
-    let t = command_json(id, r#"{"op": "track", "az_deg_s": 0.004, "alt_deg_s": -0.002}"#);
+    let t = command_json(
+        id,
+        r#"{"op": "track", "az_deg_s": 0.004, "alt_deg_s": -0.002}"#,
+    );
     assert_eq!(t["ok"], true, "{t}");
     let s = status_json(id);
     assert!(s["tracking"].is_array(), "{s}");
     sleep(Duration::from_millis(3_000));
-    let s = wait(id, 1_000, |s| s["positions_age_ms"].as_i64().is_some_and(|a| a < 400));
+    let s = wait(id, 1_000, |s| {
+        s["positions_age_ms"].as_i64().is_some_and(|a| a < 400)
+    });
     let (az0, alt0) = (start[0].as_f64().unwrap(), start[1].as_f64().unwrap());
-    let (az1, alt1) = (s["positions_deg"][0].as_f64().unwrap(), s["positions_deg"][1].as_f64().unwrap());
+    let (az1, alt1) = (
+        s["positions_deg"][0].as_f64().unwrap(),
+        s["positions_deg"][1].as_f64().unwrap(),
+    );
     let wrap = |d: f64| (d + 540.0) % 360.0 - 180.0;
     let (az1, alt1) = (az0 + wrap(az1 - az0), alt0 + wrap(alt1 - alt0));
     // About 3 s at each rate (0.012° and −0.006°), give or take the reads.
-    assert!((az1 - az0) > 0.008 && (az1 - az0) < 0.016, "az {az0} -> {az1}");
-    assert!((alt1 - alt0) < -0.004 && (alt1 - alt0) > -0.008, "alt {alt0} -> {alt1}");
+    assert!(
+        (az1 - az0) > 0.008 && (az1 - az0) < 0.016,
+        "az {az0} -> {az1}"
+    );
+    assert!(
+        (alt1 - alt0) < -0.004 && (alt1 - alt0) > -0.008,
+        "alt {alt0} -> {alt1}"
+    );
     assert!(s["last_fault"].is_null(), "tracking must not fault: {s}");
     assert_eq!(s["state"], "ConnectedReadOnly", "{s}");
 
@@ -276,12 +290,17 @@ fn tracking_runs_both_axes_steadily_and_a_move_takes_over() {
     assert_eq!(armed["ok"], true, "{armed}");
     let s = status_json(id);
     assert!(s["tracking"].is_null(), "{s}");
-    let p0 = wait(id, 1_000, |s| s["positions_age_ms"].as_i64().is_some_and(|a| a < 300))["positions_deg"][0]
+    let p0 = wait(id, 1_000, |s| {
+        s["positions_age_ms"].as_i64().is_some_and(|a| a < 300)
+    })["positions_deg"][0]
         .as_f64()
         .unwrap();
     sleep(Duration::from_millis(1_000));
     let p1 = status_json(id)["positions_deg"][0].as_f64().unwrap();
-    assert!((p1 - p0).abs() < 0.0005, "still after tracking: {p0} -> {p1}");
+    assert!(
+        (p1 - p0).abs() < 0.0005,
+        "still after tracking: {p0} -> {p1}"
+    );
     assert!(status_json(id)["last_fault"].is_null());
     close(id);
 }

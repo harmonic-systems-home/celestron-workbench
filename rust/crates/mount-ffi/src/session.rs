@@ -444,7 +444,10 @@ impl Inner {
                 self.fast_reads_until = now + FAST_READS_FOR_ARMING;
                 self.controller.arm(now)
             }
-            Request::Track { az_deg_s, alt_deg_s } => {
+            Request::Track {
+                az_deg_s,
+                alt_deg_s,
+            } => {
                 return self.track([az_deg_s, alt_deg_s], now);
             }
             Request::StopTracking => {
@@ -462,7 +465,12 @@ impl Inner {
                     .set_goto_speeds(d.goto_slow_deg_s * k, d.goto_fast_deg_s * k);
                 return Ok(json!({ "ok": true, "factor": k }));
             }
-            Request::SimFault { kind, axis, value, seconds } => {
+            Request::SimFault {
+                kind,
+                axis,
+                value,
+                seconds,
+            } => {
                 let Some(sim) = &self.sim else {
                     return Err("not a simulated mount".into());
                 };
@@ -686,7 +694,9 @@ impl Inner {
             _ => {}
         }
         if rates.iter().any(|r| !r.is_finite() || r.abs() > 2.0) {
-            return Err(format!("tracking rates {rates:?} deg/s are out of range (2 max)"));
+            return Err(format!(
+                "tracking rates {rates:?} deg/s are out of range (2 max)"
+            ));
         }
         for axis in Axis::BOTH {
             let r = rates[axis.index()];
