@@ -437,13 +437,32 @@ final class AppModel: ObservableObject {
         let realTime: @Sendable () -> Date = { Date() }
         // Rehearsing: from the chosen scene's moment if it has one (the sky
         // then matches the image), else the next time the Moon is high here.
-        let moment = simulate ? simulator.sceneMoment : nil
+        let moment = simulate && simulator.rehearseAt == .scene ? simulator.sceneMoment : nil
         let simSite = moment?.site ?? site
-        let clock =
-            simulate
-            ? (moment.map { m in Self.clock(from: m.time) } ?? Self.rehearsalClock(site: site)) : realTime
-        if let moment, simulate {
+        let clock: @Sendable () -> Date
+        if !simulate {
+            clock = realTime
+        } else if let moment {
+            clock = Self.clock(from: moment.time)
             say("Rehearsing at the scene's moment: \(moment.time.formatted(date: .abbreviated, time: .shortened))\(moment.site == nil ? " from this site" : "").")
+        } else {
+            switch simulator.rehearseAt {
+            case .now: clock = realTime
+            case .daylight: clock = Self.clock(from: Self.nextDaylightMoon(site: site) ?? Date())
+            default: clock = Self.rehearsalClock(site: site)
+            }
+            say("Rehearsing at \(clock().formatted(date: .abbreviated, time: .shortened)) (\(simulator.rehearseAt.rawValue.lowercased())).")
+        }
+        if simulate {
+            // A daytime or twilight rehearsal gets a bright sky to match (the
+            // Sky slider in the simulator window changes it).
+            let t = clock()
+            let sunAlt = Ephemeris.horizontal(Ephemeris.sun(at: t), at: t, from: site).altDeg
+            let level = sunAlt > 10 ? 0.25 : sunAlt > 0 ? 0.12 : sunAlt > -6 ? 0.03 : 0
+            if level != simulator.skyLevel {
+                simulator.skyLevel = level
+                say(String(format: "Simulated sky set to %.2f for the Sun at %.0f°.", level, sunAlt))
+            }
         }
         _ = simSite
         let session = MosaicSession(
@@ -493,6 +512,18 @@ final class AppModel: ObservableObject {
     static func clock(from start: Date) -> @Sendable () -> Date {
         let started = Date()
         return { start.addingTimeInterval(Date().timeIntervalSince(started)) }
+    }
+
+    /// The next moment from now with the Sun up (above 5°) and the Moon at
+    /// least 15° up, within a month.
+    static func nextDaylightMoon(site: Site) -> Date? {
+        var t = Date()
+        for _ in 0..<(24 * 4 * 30) {
+            let sun = Ephemeris.horizontal(Ephemeris.sun(at: t), at: t, from: site).altDeg
+            if sun > 5, Ephemeris.moon(at: t, from: site).horizontal.altDeg > 15 { return t }
+            t.addTimeInterval(900)
+        }
+        return nil
     }
 
     static func rehearsalClock(site: Site) -> @Sendable () -> Date {

@@ -65,6 +65,16 @@ final class SimulatorModel: ObservableObject {
     @Published private(set) var loadingScene = false
     /// The chosen library scene's time and place, which set the simulated
     /// sky at the next Connect: the ephemeris then matches the image.
+    /// When a rehearsal runs (the simulated mount's sky).
+    enum RehearseAt: String, CaseIterable, Identifiable {
+        case scene = "The scene's moment, else the Moon high"
+        case moonHigh = "Next time the Moon is high"
+        case daylight = "Next daylight with the Moon up"
+        case now = "Now"
+        var id: String { rawValue }
+    }
+    @Published var rehearseAt: RehearseAt = .scene
+
     var sceneMoment: (time: Date, site: Site?)? {
         guard let url = libraryScene, let info = MoonScene.Info.sidecar(for: url), let t = info.taken else { return nil }
         let site = info.latitude.flatMap { lat in info.longitude.map { Site(latitudeDeg: lat, longitudeDeg: $0) } }

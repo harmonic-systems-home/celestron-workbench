@@ -98,6 +98,14 @@ struct SimulatorView: View {
                         sim.moonOffsetDeg.alt)
                 ).font(.caption)
             }
+            Section("When") {
+                Picker("Rehearse at", selection: $sim.rehearseAt) {
+                    ForEach(SimulatorModel.RehearseAt.allCases) { Text($0.rawValue).tag($0) }
+                }
+                .disabled(model.connected)
+                Text("Sets the simulated sky's moment at Connect. Daylight and Now bring the Sun into play: Sun avoidance, the Day search trigger and a bright sky.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Section("Speed") {
                 Slider(value: $sim.speed, in: 1...10, step: 1) {
                     Text("Moves \(Int(sim.speed))× faster")
