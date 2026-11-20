@@ -68,15 +68,17 @@ extension MosaicSession {
             // rehearsing faster: the ringing is the tube's, not the mount's
             // (2026-11-20, the test runner: ringing left in the drift's first
             // frames gave a 4% scale error).
-            try await Task.sleep(for: .milliseconds(max(1500, Int(settings.settleSeconds * 2000))))
+            try await Task.sleep(for: .milliseconds(max(1000, Int(settings.settleSeconds * 2000))))
         }
 
         var why = ""
         for attempt in 1...3 {
-            // Held on the Moon, wherever it is now, and still (the last move
-            // may have just ended).
+            // Held on the Moon, wherever it is now, and still: at least 3 s
+            // after the last move, for the tube's ringing (the test runner:
+            // ringing left from the search's last move biased the scale 2%).
             try trackMoon()
-            try await Task.sleep(for: .milliseconds(1500))
+            let still = max(1.0, 3 - Date().timeIntervalSince(lastMoveEnd))
+            try await Task.sleep(for: .seconds(still))
             let start = try await reading()
             let home = offset(of: start.1, at: start.0)
 
@@ -104,41 +106,25 @@ extension MosaicSession {
             var dPx = PixelOffset(x: 0, y: 0)
             var used = 0
             var records: [[String: Any]] = []
-            // Each frame's place along the drift (sky and image, summed from
-            // the start), for a straight-line fit: every frame's seeing
-            // jitter then counts a little, rather than the two ends' a lot
-            // (2026-11-20, the test runner: 5% scale and 2° turn errors).
-            var track: [(sky: SkyOffset, px: PixelOffset)] = [(SkyOffset(x: 0, y: 0), PixelOffset(x: 0, y: 0))]
-            var chained = true
-            for (a, b) in zip(drift, drift.dropFirst()) {
+            // Pairs a few frames apart, so each shift is well clear of the
+            // sensor's fixed pattern at zero (adjacent frames 0.2 s apart move
+            // only ~10 px: 2026-11-20, the test runner, one drift in a dozen
+            // locked onto noise), summed over every such pair so each frame's
+            // seeing jitter counts a little.
+            let perStep = hypot(skyChange(from: drift[0].1, to: drift[1].1).x, skyChange(from: drift[0].1, to: drift[1].1).y) / guess
+            let lag = min(max(1, Int((40 / max(perStep, 1)).rounded(.up))), max(1, drift.count / 3))
+            for i in 0..<max(0, drift.count - lag) {
+                let (a, b) = (drift[i], drift[i + lag])
                 let sky = skyChange(from: a.1, to: b.1)
                 let expected = hypot(sky.x, sky.y) / guess
-                let r = Registration.shift(from: a.0, to: b.0, minShift: max(6, 0.25 * expected))
+                let r = Registration.shift(from: a.0, to: b.0, minShift: max(6, 0.4 * expected))
                 let ok = r.peak > 0.05
-                records.append(["sky": [sky.x, sky.y], "shift": [r.dx, r.dy, r.peak], "used": ok])
+                records.append(["sky": [sky.x, sky.y], "shift": [r.dx, r.dy, r.peak], "used": ok, "lag": lag])
                 if ok {
                     dSky = SkyOffset(x: dSky.x + sky.x, y: dSky.y + sky.y)
                     dPx = PixelOffset(x: dPx.x + r.dx, y: dPx.y + r.dy)
                     used += 1
-                    if chained { track.append((dSky, dPx)) }
-                } else {
-                    chained = false
                 }
-            }
-            if chained, track.count >= 4 {
-                // Pixels per unit of sky along the drift, fitted.
-                let n = hypot(dSky.x, dSky.y)
-                let u = track.map { ($0.sky.x * dSky.x + $0.sky.y * dSky.y) / max(n, 1e-9) }
-                let mu = u.reduce(0, +) / Double(u.count)
-                let mx = track.map(\.px.x).reduce(0, +) / Double(track.count)
-                let my = track.map(\.px.y).reduce(0, +) / Double(track.count)
-                var (suu, sux, suy) = (0.0, 0.0, 0.0)
-                for (k, t) in track.enumerated() {
-                    suu += (u[k] - mu) * (u[k] - mu)
-                    sux += (u[k] - mu) * (t.px.x - mx)
-                    suy += (u[k] - mu) * (t.px.y - my)
-                }
-                if suu > 0 { dPx = PixelOffset(x: sux / suu * n, y: suy / suu * n) }
             }
             // 2. Back, tracking.
             onEvent(.detail("Back to where it was, tracking again"))

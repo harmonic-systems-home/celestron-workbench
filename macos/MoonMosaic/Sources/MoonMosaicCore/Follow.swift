@@ -260,6 +260,7 @@ extension MosaicSession {
         try mount.track(azDegS: r.az + dAz / seconds, altDegS: r.alt + dAlt / seconds)
         try await Task.sleep(for: .seconds(seconds))
         try mount.track(azDegS: r.az, altDegS: r.alt)
+        lastMoveEnd = Date()
     }
 
     /// A goto back to `back` against the Moon, aimed a moment ahead.

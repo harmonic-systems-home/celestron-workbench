@@ -117,6 +117,9 @@ public final class MosaicSession: @unchecked Sendable {
     public let saving = SavingInfo()
     /// Sun avoidance: where the scope was last on the Moon, and the override.
     public let sun = SunGuard()
+    /// When the last app move ended (wall clock), for waits on the tube's
+    /// ringing.
+    var lastMoveEnd = Date.distantPast
     /// Searches move their pattern with the Moon (off for a fixed test
     /// target such as the drainpipe).
     public var searchFollowsMoon = false
@@ -1464,6 +1467,7 @@ public final class MosaicSession: @unchecked Sendable {
                 if (try? mount.status().state) != "Armed" { try await armForStep() }
                 try await retrying { try self.mount.goto(axis, by: delta, approach: way) }
                 try await waitForMotionToEnd()
+                lastMoveEnd = Date()
                 return
             } catch {
                 let s = try? mount.status()
