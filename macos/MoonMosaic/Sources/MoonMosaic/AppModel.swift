@@ -39,6 +39,12 @@ final class AppModel: ObservableObject {
         }
     }
     @Published var simulate: Bool { didSet { save() } }
+    /// The simulated camera with the real mount (ADR 0022 amendment 7): the
+    /// encoders point the simulated camera, so tracking, nudges and moves are
+    /// tested for real, in daylight or cloud.
+    @Published var simulatedCamera: Bool { didSet { save() } }
+    /// The simulator's controls (its own window).
+    let simulator = SimulatorModel()
     /// Send this Mac's time and the site to the hand controller on connect.
     @Published var setHandController: Bool { didSet { save() } }
     /// "auto" (red from civil dusk to dawn at the site), "day" or "night".
@@ -169,6 +175,7 @@ final class AppModel: ObservableObject {
         surveyExposureMs = d["surveyExposureMs"] as? Double ?? 100
         surveyGain = d["surveyGain"] as? Int ?? 300
         simulate = d["simulate"] as? Bool ?? false
+        simulatedCamera = d["simulatedCamera"] as? Bool ?? false
         setHandController = d["setHandController"] as? Bool ?? true
         paletteMode = d["paletteMode"] as? String ?? "auto"
         folder =
@@ -181,6 +188,7 @@ final class AppModel: ObservableObject {
         testAltitudeDeg = d["testAltitudeDeg"] as? Double ?? 10
         save()
         updatePalette()
+        simulator.onSkyChanged = { [weak self] in self?.reinstallSimulatedSky() }
         pollTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.poll() }
         }
@@ -191,7 +199,7 @@ final class AppModel: ObservableObject {
             "latitude": latitude, "longitude": longitude, "focalLengthMm": focalLengthMm,
             "overlap": overlap, "videoSeconds": videoSeconds, "exposureMs": exposureMs,
             "gain": gain, "surveyExposureMs": surveyExposureMs, "surveyGain": surveyGain,
-            "simulate": simulate, "setHandController": setHandController, "paletteMode": paletteMode, "folder": folder.path,
+            "simulate": simulate, "simulatedCamera": simulatedCamera, "setHandController": setHandController, "paletteMode": paletteMode, "folder": folder.path,
             "searchPattern": searchPattern.rawValue, "searchStepDeg": searchStepDeg,
             "searchReachDeg": searchReachDeg, "testMode": testMode, "testAltitudeDeg": testAltitudeDeg,
         ]
@@ -275,6 +283,7 @@ final class AppModel: ObservableObject {
             return
         }
         let simulate = self.simulate
+        let simCamera = simulate || simulatedCamera
         let setup = setHandController ? (latitudeDeg: latitude, longitudeDeg: longitude) : nil
         let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(
             of: ":", with: "-")
@@ -298,7 +307,7 @@ final class AppModel: ObservableObject {
                 let mount = try MountSession(
                     port: port, safety: attendedSafety, trace: trace, setup: setup)
                 let camera = SharedCamera(
-                    simulate
+                    simCamera
                         ? SimCamera(optics: .sct8, scene: MoonScene.synthetic(size: 1024))
                         : try ZWOCamera(library: ZWOLibrary()))
                 await MainActor.run {
@@ -342,7 +351,7 @@ final class AppModel: ObservableObject {
         session.diagnostics = setup
         setupFolder = setup
         self.session = session
-        if simulate {
+        if camera.camera is SimCamera {
             // The fake sky keys off the real mount position with an off-centre
             // target, so the whole search dry-runs with no scope (ADR 0022).
             simStart = mount.opened.positionsDeg
@@ -388,6 +397,7 @@ final class AppModel: ObservableObject {
         simStart = nil
         simConnect = nil
         simClock = nil
+        simulator.detach()
         session = nil
         camera = nil
         mount = nil
@@ -464,17 +474,14 @@ final class AppModel: ObservableObject {
         let site = Site(latitudeDeg: latitude, longitudeDeg: longitude)
         let test = testMode
         let fixedAlt = testAltitudeDeg
-        // Off-centre at connect, within the search reach and out of frame.
-        let anchorAz = start[0] + 0.4
-        let anchorAlt = start[1] + 0.25
+        // Off-centre at connect, within the search reach and out of frame
+        // (the simulator window can move it, or pick it at random).
+        let offset = simulator.moonOffsetDeg
+        let anchorAz = start[0] + offset.az
+        let anchorAlt = start[1] + offset.alt
         if let sim {
-            // Tonight's Moon: its size, and a synthetic scene at its phase
-            // with the bright limb where the ephemeris puts it.
-            let now = clock()
-            let phase = Ephemeris.phase(at: now, from: site)
-            sim.moonRadiusArcsec = Ephemeris.moon(at: now, from: site).diameterDeg * 1800
-            sim.scene = MoonScene.synthetic(size: 1024, phaseAngleDeg: phase.phaseAngleDeg, brightLimbDeg: 0)
-            sim.alignBrightLimb(toDeg: phase.brightLimbFromZenithDeg)
+            // Tonight's Moon size (the simulator window sets the scene).
+            sim.moonRadiusArcsec = Ephemeris.moon(at: clock(), from: site).diameterDeg * 1800
         }
         let provider: @Sendable () -> (x: Double, y: Double) = { [weak mount] in
             guard let p = try? mount?.status().positionsDeg else { return (1e6, 1e6) }
@@ -497,6 +504,12 @@ final class AppModel: ObservableObject {
         }
         fake?.provider = provider
         sim?.provider = provider
+        if let sim { simulator.attach(sim, site: site, clock: clock, reachDeg: searchReachDeg) }
+    }
+
+    /// Re-aims the simulated Moon (after the simulator window changes it).
+    func reinstallSimulatedSky() {
+        if connected, camera?.camera is SimCamera { installSimProvider() }
     }
 
     // MARK: - Steps

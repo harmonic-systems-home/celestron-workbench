@@ -553,6 +553,7 @@ struct BigButton: ButtonStyle {
 
 struct SettingsView: View {
     @ObservedObject var model: AppModel
+    @Environment(\.openWindow) private var openWindow
     let palette: Palette
     @Environment(\.dismiss) private var dismiss
 
@@ -604,6 +605,9 @@ struct SettingsView: View {
             Section("Session") {
                 Toggle("Rehearse with the simulated mount and camera", isOn: $model.simulate)
                     .disabled(model.connected)
+                Toggle("Simulated camera with the real mount", isOn: $model.simulatedCamera)
+                    .disabled(model.connected || model.simulate)
+                Button("Open the simulator window") { openWindow(id: "simulator") }
                 Picker("Palette", selection: $model.paletteMode) {
                     Text("Auto (red after dusk)").tag("auto")
                     Text("Day").tag("day")

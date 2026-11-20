@@ -17,5 +17,10 @@ struct MoonMosaicApp: App {
                 .onAppear { NSApplication.shared.activate() }
         }
         .defaultSize(width: 1300, height: 820)
+        Window("Simulator", id: "simulator") {
+            SimulatorView(model: model, sim: model.simulator)
+                .frame(minWidth: 820, minHeight: 560)
+        }
+        .defaultSize(width: 980, height: 680)
     }
 }

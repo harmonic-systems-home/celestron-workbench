@@ -30,6 +30,25 @@ Before a real session can be promoted to `fixtures/`:
 - Strip all image metadata. Re-encode images rather than copying them.
 - Record that sanitization happened, and with which version, in the fixture's manifest.
 
+### Simulator scenes from the owner's own images (2026-11-20)
+
+The owner's own Moon images (DWARF stacks and others) may be committed as
+simulator scenes under `fixtures/scenes/`, released under **CC0**. The owner wants
+their stacking metadata kept, so for these images, and only these, the rule
+"strip all image metadata" is replaced by:
+
+- **Location rounded** to whole degrees of latitude and longitude (about 100 km),
+  in every field that holds it: EXIF GPS, XMP, FITS-style keywords, and any
+  vendor or stacking fields. Altitude above sea level is removed.
+- **Everything else kept** (capture time, exposure, gain, stacking details),
+  except device and camera **serial numbers** and other unique identifiers,
+  which are removed.
+- The metadata is rewritten without re-encoding the pixels where the format
+  allows. A tool lists every metadata field before and after, and the owner
+  reviews the list before the image is committed.
+- The rounded location, the time and the licence go in the scene's sidecar as
+  well, for the simulator.
+
 ## Automated checks
 
 - `scripts/privacy-check.sh` scans files for coordinate-like values, MAC addresses, private IPs, Apple Team IDs, UDIDs and FITS site keywords.

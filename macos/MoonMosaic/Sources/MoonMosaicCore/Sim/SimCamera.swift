@@ -39,7 +39,12 @@ public final class SimCamera: Camera, @unchecked Sendable {
     private var fixedPattern: [Float] = []
     private var hot: [Int] = []
     private let seed: UInt64
-    public let focuser: SimFocuser
+    private var _focuser: SimFocuser
+    /// The focus knob (replaced for a new scenario, with a new best focus).
+    public var focuser: SimFocuser {
+        get { lock.withLock { _focuser } }
+        set { lock.withLock { _focuser = newValue } }
+    }
 
     /// Where the mount points relative to the Moon's centre, arcseconds
     /// (x along azimuth on the sky, y along altitude), for each frame.
@@ -59,7 +64,7 @@ public final class SimCamera: Camera, @unchecked Sendable {
     ) {
         _optics = optics
         _scene = scene
-        self.focuser = focuser
+        _focuser = focuser
         self.seed = seed
         makeFixedPattern()
     }
@@ -190,7 +195,7 @@ public final class SimCamera: Camera, @unchecked Sendable {
         let qxu = scale * m * ct, qxv = -scale * st
         let qyu = -scale * m * st, qyv = -scale * ct
         // scene s0 = R(rot)·q; X = cx + s0x/k, Y = cy − s0y/k (in level pixels: ÷ lf)
-        func toScene(_ qx: Double, _ qy: Double) -> (Double, Double) {
+        let toScene: @Sendable (Double, Double) -> (Double, Double) = { qx, qy in
             let sx = cr * qx - sr * qy
             let sy = sr * qx + cr * qy
             return ((scene.centre.x + sx / k) / lf, (scene.centre.y - sy / k) / lf)
@@ -202,13 +207,14 @@ public final class SimCamera: Camera, @unchecked Sendable {
         let glow = Float(c.glowLevel)
         let glowScale = c.glowArcsec
         let sky = Float(c.skyLevel)
+        let vel = velocity
         let lvl = scene.levels[level]
         let (lw, lh) = (lvl.width, lvl.height)
         let weight = 1 / Float(taps)
         light.withUnsafeMutableBufferPointer { out in
             lvl.pixels.withUnsafeBufferPointer { src in
-                let base = out.baseAddress!
-                let sp = src.baseAddress!
+                nonisolated(unsafe) let base = out.baseAddress!
+                nonisolated(unsafe) let sp = src.baseAddress!
                 DispatchQueue.concurrentPerform(iterations: (h + 15) / 16) { chunk in
                     for y in (chunk * 16)..<min(h, chunk * 16 + 16) {
                         let v = Double(y) - Double(h) / 2
@@ -217,8 +223,8 @@ public final class SimCamera: Camera, @unchecked Sendable {
                             // Taps spread the pointing along the motion.
                             let f = taps == 1 ? 0 : (Double(tap) / Double(taps - 1) - 0.5) * exposureS
                             let u0 = -Double(w) / 2
-                            var qx = p.x + velocity.x * f + qxu * u0 + qxv * v
-                            var qy = p.y + velocity.y * f + qyu * u0 + qyv * v
+                            var qx = p.x + vel.x * f + qxu * u0 + qxv * v
+                            var qy = p.y + vel.y * f + qyu * u0 + qyv * v
                             var (sx, sy) = toScene(qx, qy)
                             for x in 0..<w {
                                 // Bilinear sample of the scene (0 off its edge).
@@ -268,9 +274,9 @@ public final class SimCamera: Camera, @unchecked Sendable {
         pixels.withUnsafeMutableBufferPointer { outp in
             light.withUnsafeBufferPointer { inp in
                 pattern.withUnsafeBufferPointer { fp in
-                    let ob = outp.baseAddress!
-                    let ib = inp.baseAddress!
-                    let pb = fp.baseAddress!
+                    nonisolated(unsafe) let ob = outp.baseAddress!
+                    nonisolated(unsafe) let ib = inp.baseAddress!
+                    nonisolated(unsafe) let pb = fp.baseAddress!
                     let rowSeed = rng.next()
                     DispatchQueue.concurrentPerform(iterations: (h + 15) / 16) { chunk in
                         var nr = Rng(rowSeed &+ UInt64(chunk) &* 0xD1B5_4A32_D192_ED03)
@@ -309,7 +315,8 @@ public final class SimCamera: Camera, @unchecked Sendable {
     static func boxRows(_ src: [Float], _ dst: inout [Float], _ w: Int, _ h: Int, _ r: Int) {
         src.withUnsafeBufferPointer { s in
             dst.withUnsafeMutableBufferPointer { d in
-                let sb = s.baseAddress!, db = d.baseAddress!
+                nonisolated(unsafe) let sb = s.baseAddress!
+                nonisolated(unsafe) let db = d.baseAddress!
                 let norm = 1 / Float(2 * r + 1)
                 DispatchQueue.concurrentPerform(iterations: h) { y in
                     let row = sb + y * w, out = db + y * w
@@ -327,7 +334,8 @@ public final class SimCamera: Camera, @unchecked Sendable {
     static func boxColumns(_ src: [Float], _ dst: inout [Float], _ w: Int, _ h: Int, _ r: Int) {
         src.withUnsafeBufferPointer { s in
             dst.withUnsafeMutableBufferPointer { d in
-                let sb = s.baseAddress!, db = d.baseAddress!
+                nonisolated(unsafe) let sb = s.baseAddress!
+                nonisolated(unsafe) let db = d.baseAddress!
                 let norm = 1 / Float(2 * r + 1)
                 let strip = 64
                 DispatchQueue.concurrentPerform(iterations: (w + strip - 1) / strip) { k in
