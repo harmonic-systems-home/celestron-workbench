@@ -161,7 +161,9 @@ final class AppModel: ObservableObject {
     private var holdTask: Task<Void, Never>?
     /// Follow mode (ADR 0022 amendment 7): tracking from Track on, nudges
     /// stay, Undo goes back.
-    @Published private(set) var following = false
+    @Published private(set) var following = false {
+        didSet { if following != oldValue { runRecord?.tracking(following) } }
+    }
     @Published private(set) var undoDepth = 0
     private var followTask: Task<Void, Never>?
     private var followStop: Flag?
@@ -478,6 +480,7 @@ final class AppModel: ObservableObject {
     }
 
     func disconnect() {
+        runRecord?.tracking(false)
         saveRunRecord()
         runRecord = nil
         silenceAlarm()
@@ -1261,6 +1264,8 @@ final class AppModel: ObservableObject {
                     RunRecord.Capture(
                         tiles: self.captureTotal, done: done, failed: failed, seconds: secs,
                         secondsPerTile: self.captureTotal > 0 ? secs / Double(self.captureTotal) : nil,
+                        recordingSeconds: Double(done) * self.videoSeconds,
+                        otherSeconds: max(0, secs - Double(done) * self.videoSeconds),
                         folder: runFolder.lastPathComponent))
                 self.saveRunRecord()
                 self.makePreview()

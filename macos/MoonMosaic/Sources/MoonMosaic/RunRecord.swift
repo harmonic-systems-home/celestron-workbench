@@ -20,6 +20,10 @@ struct RunRecord: Codable {
         var failed: Int
         var seconds: Double
         var secondsPerTile: Double?
+        /// Recording video (tiles done × the video's length), and the rest:
+        /// moving between tiles, settling, centring.
+        var recordingSeconds: Double?
+        var otherSeconds: Double?
         var folder: String
     }
 
@@ -37,6 +41,11 @@ struct RunRecord: Codable {
     var busySeconds = 0.0
     var idleSeconds = 0.0
     var totalSeconds = 0.0
+    /// Time with Track on (the follow loop running), and with it off.
+    var trackingSeconds = 0.0
+    var notTrackingSeconds = 0.0
+    /// When Track was last turned on, while it is on.
+    var trackingSince: Date?
     var nudges = 0
     var undos = 0
     var captures: [Capture] = []
@@ -62,6 +71,22 @@ struct RunRecord: Codable {
         updated = now
         totalSeconds = now.timeIntervalSince(started)
         idleSeconds = max(0, totalSeconds - busySeconds)
+        notTrackingSeconds = max(0, totalSeconds - trackedSoFar(now))
+    }
+
+    func trackedSoFar(_ now: Date) -> Double {
+        trackingSeconds + (trackingSince.map { now.timeIntervalSince($0) } ?? 0)
+    }
+
+    /// Track turned on or off.
+    mutating func tracking(_ on: Bool, _ now: Date = Date()) {
+        if on {
+            if trackingSince == nil { trackingSince = now }
+        } else if let since = trackingSince {
+            trackingSeconds += now.timeIntervalSince(since)
+            trackingSince = nil
+        }
+        touch(now)
     }
 
     func write(to folders: [URL]) {
