@@ -1249,6 +1249,12 @@ final class AppModel: ObservableObject {
         case .message(let m): say(m)
         case .tile(let id, let state):
             tileStates[id] = state
+            // What the capture is doing right now, under "Capturing…".
+            switch state {
+            case .moving: stepDetail = "Tile \(id): moving to it"
+            case .capturing: stepDetail = String(format: "Tile %d: recording %.0f s of video", id, videoSeconds)
+            default: break
+            }
             switch state {
             case .done, .failed:
                 guard finishAt != nil else { break }

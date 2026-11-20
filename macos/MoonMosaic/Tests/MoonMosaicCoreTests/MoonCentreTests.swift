@@ -99,7 +99,10 @@ func theSurveyRecentresHereOnACrescent() async throws {
     let clock: @Sendable () -> Date = {
         epoch.addingTimeInterval(Date().timeIntervalSince(started))
     }
-    let mount = try MountSession(port: "simulate", safety: ["max_goto_deg": 1.0])
+    // The app's attended envelope (ADR 0022 amendment 4).
+    let mount = try MountSession(
+        port: "simulate",
+        safety: ["max_goto_deg": 1.0, "min_altitude_deg": -90.0, "max_altitude_deg": 90.0])
     // A big field (640″ × 360″) keeps the survey short in the test.
     let radius = Ephemeris.moon(at: epoch, from: site).diameterDeg * 1800
     let camera = FakeCamera(

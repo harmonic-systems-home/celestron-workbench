@@ -877,8 +877,14 @@ public final class MosaicSession: @unchecked Sendable {
                 * calibration.arcsecPerPixel
         }
         onEvent(.message("Survey: \(stops.count) frames, to \(Int(reach / 60))′ from Here."))
-        try await armForStep()
-        defer { endStep() }
+        // Hops between frames are rate moves on top of tracking (both axes
+        // together, 1.5°/s), not the firmware's slow gotos one axis at a
+        // time with a settle each: 2026-11-20, the survey took minutes.
+        if (try? mount.status().state) == "Armed" { endStep() }
+        defer {
+            let r = moonRate(at: clock())
+            try? mount.track(azDegS: r.az, altDegS: r.alt)
+        }
         try camera.configure(exposureUs: settings.surveyExposureUs, gain: settings.surveyGain)
         try camera.start()
         defer {
@@ -890,9 +896,20 @@ public final class MosaicSession: @unchecked Sendable {
         let surveyStamp = Self.fileStamp(clock())
         for (i, stop) in stops.enumerated() {
             // One goto, no touch-ups: where it really pointed is read below.
-            let aim = try target(stop, at: clock().addingTimeInterval(settings.settleSeconds + 1))
-            try await goTo(az: aim.az, alt: aim.alt)
-            let (frame, t, p) = try await still()
+            onEvent(.detail("Survey frame \(i + 1) of \(stops.count)"))
+            try await rateMove(to: try target(stop, at: clock()), speedDegS: 1.5)
+            // Let the tube stop ringing, then a frame and where it was.
+            try await Task.sleep(for: .milliseconds(Int(max(300, settings.settleSeconds * 700))))
+            let frame = try await grabFrame()
+            var t = clock()
+            var p = try await freshPosition()
+            if let st = try? mount.status(), let q = st.positionsDeg, let age = st.positionsAgeMs {
+                // The read carried to the frame's moment at the tracking rates.
+                let r = st.tracking ?? [0, 0]
+                let ahead = frame.time.timeIntervalSinceNow + Double(age) / 1000
+                p = [q[0] + r[0] * ahead, q[1] + r[1] * ahead]
+                t = clock().addingTimeInterval(frame.time.timeIntervalSinceNow)
+            }
             // Where the camera really pointed, from the mount's own position.
             let pointing = relativeMove(from: origin, to: (t, p))
             keep([("\(surveyStamp)-\(String(format: "%02d", i))", frame)], in: "survey")
@@ -938,6 +955,7 @@ public final class MosaicSession: @unchecked Sendable {
             "survey", "\(surveyStamp)-cells.csv",
             "skyX,skyY,mean\n" + samples.map { String(format: "%.1f,%.1f,%.2f", $0.sky.x, $0.sky.y, $0.mean) }
                 .joined(separator: "\n") + "\n")
+        onEvent(.detail(nil))
         guard let fit = fitted, fit.agreement > 0.85
         else {
             try await goToSky(SkyOffset(x: 0, y: 0))
@@ -963,7 +981,7 @@ public final class MosaicSession: @unchecked Sendable {
         let pos = try await freshPosition()
         let centreNow = try target(SkyOffset(x: 0, y: 0), at: now)
         let moonNow = Ephemeris.moon(at: now, from: settings.site).horizontal
-        try mount.setAltitudeReference(moonNow.altDeg + (pos[1] - centreNow.alt))
+        try mount.setAltitudeReference(moonNow.altDeg + wrap180(pos[1] - centreNow.alt))
         try await goToSky(SkyOffset(x: 0, y: 0))
         onEvent(
             .message(

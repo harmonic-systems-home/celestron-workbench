@@ -232,7 +232,7 @@ extension MosaicSession {
         }
         let alt = Self.moonAxes(at: clock(), settings.site).alt
         let dAz = wrap180(target.az - p[0])
-        let dAlt = target.alt - p[1]
+        let dAlt = wrap180(target.alt - p[1])
         let sky = hypot(dAz * cos(alt * .pi / 180), dAlt)
         let r = moonRate(at: clock())
         guard sky > 1.0 / 3600 else { return }
