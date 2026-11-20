@@ -38,6 +38,12 @@ public final class MoonScene: @unchecked Sendable {
         public var longitude: Double?
         /// Where it was taken, in words ("home", "Germany", "La Silla, Chile").
         public var place: String?
+        /// The disk, measured by hand (image pixels from the top-left), for a
+        /// photo the automatic fit gets wrong (trees, a caption, a faint
+        /// crescent on a bright sky).
+        public var centreX: Double?
+        public var centreY: Double?
+        public var radiusPx: Double?
         public init(source: String? = nil, licence: String? = nil, taken: Date? = nil, northDeg: Double? = nil) {
             self.source = source
             self.licence = licence
@@ -60,6 +66,11 @@ public final class MoonScene: @unchecked Sendable {
         let pixels: [Float]
     }
 
+    /// A daytime or twilight photo's sky, against the brightest lit Moon,
+    /// as it was before being taken out of the scene (0 for a night sky).
+    /// The simulator can set its own sky to match.
+    public internal(set) var skyLevel = 0.0
+
     public var width: Int { levels[0].width }
     public var height: Int { levels[0].height }
 
@@ -67,7 +78,8 @@ public final class MoonScene: @unchecked Sendable {
     /// unless `centre` and `radius` are given.
     public init(
         name: String, width: Int, height: Int, pixels: [Float],
-        centre: (x: Double, y: Double)? = nil, radius: Double? = nil, info: Info = Info()
+        centre: (x: Double, y: Double)? = nil, radius: Double? = nil, info: Info = Info(),
+        threshold: Float = 0.05
     ) {
         precondition(pixels.count == width * height, "pixel count doesn't match the size")
         self.name = name
@@ -78,10 +90,10 @@ public final class MoonScene: @unchecked Sendable {
         }
         self.levels = levels
         let fit = (centre != nil && radius != nil)
-            ? (centre!, radius!) : Self.fitDisk(levels[0])
+            ? (centre!, radius!) : Self.fitDisk(levels[0], threshold: threshold)
         self.centre = fit.0
         self.radius = fit.1
-        let (limb, lit) = Self.measureLimb(levels[0], centre: fit.0, radius: fit.1)
+        let (limb, lit) = Self.measureLimb(levels[0], centre: fit.0, radius: fit.1, threshold: threshold)
         brightLimbDeg = limb
         litFraction = lit
     }
@@ -109,12 +121,83 @@ public final class MoonScene: @unchecked Sendable {
         // Display values to linear light (an sRGB-like gamma), the brightest
         // part of the disk near 1.
         var pixels = grey.map { pow(Float($0) / 65535, 2.2) }
+        // A daytime sky taken out: a plane fitted to the image's border
+        // (the Moon's own limb, where it touches the edge, left out), so
+        // the disk and its dark side stand on black; the simulator adds its
+        // own sky. A blue sky otherwise counted as Moon (2026-11-20: every
+        // daytime photo fitted a disk bigger than the frame).
+        let sky = Self.borderPlane(pixels, w, h)
+        let top0 = Self.percentile(pixels, 0.999)
+        let skyMid = Double(sky.a + sky.b * Float(w) / 2 + sky.c * Float(h) / 2)
+        if top0 > 0, skyMid > 0.01 * Double(top0) {
+            for y in 0..<h {
+                let rowBase = sky.a + sky.c * Float(y)
+                for x in 0..<w {
+                    let i = y * w + x
+                    pixels[i] = max(0, pixels[i] - (rowBase + sky.b * Float(x)))
+                }
+            }
+        }
         let top = Self.percentile(pixels, 0.999)
         if top > 0 { pixels = pixels.map { min($0 / top, 1.5) } }
         let info = Info.sidecar(for: url) ?? Info()
+        let daytime = top > 0 && skyMid > 0.01 * Double(top0)
+        let given: (centre: (x: Double, y: Double), radius: Double)? = {
+            guard let x = info.centreX, let y = info.centreY, let r = info.radiusPx else { return nil }
+            return ((x, y), r)
+        }()
+        // By day, nothing off the disk belongs to the Moon (trees, a
+        // caption): black beyond 3% outside it, when the disk is known.
+        if daytime, let g = given {
+            let r2 = (1.03 * g.radius) * (1.03 * g.radius)
+            for y in 0..<h {
+                let dy = Double(y) + 0.5 - g.centre.y
+                for x in 0..<w {
+                    let dx = Double(x) + 0.5 - g.centre.x
+                    if dx * dx + dy * dy > r2 { pixels[y * w + x] = 0 }
+                }
+            }
+        }
+        // By day what's left of the sky (vignetting, haze, JPEG noise) can
+        // pass 5% of the Moon: a higher bar for the disk.
         self.init(
             name: url.deletingPathExtension().lastPathComponent, width: w, height: h,
-            pixels: pixels, info: info)
+            pixels: pixels, centre: given?.centre, radius: given?.radius, info: info,
+            threshold: daytime ? 0.2 : MoonScene.litThreshold)
+        if daytime { skyLevel = skyMid / Double(top) }
+    }
+
+    /// A plane a + b·x + c·y through the border's pixels (a strip 2% of the
+    /// shorter side), least squares, the brightest fifth left out (Moon at
+    /// the edge, a caption).
+    static func borderPlane(_ p: [Float], _ w: Int, _ h: Int) -> (a: Float, b: Float, c: Float) {
+        let strip = max(2, min(w, h) / 50)
+        let step = max(1, min(w, h) / 400)
+        var pts: [(x: Double, y: Double, v: Double)] = []
+        for y in stride(from: 0, to: h, by: step) {
+            for x in stride(from: 0, to: w, by: step) where x < strip || x >= w - strip || y < strip || y >= h - strip {
+                pts.append((Double(x), Double(y), Double(p[y * w + x])))
+            }
+        }
+        guard pts.count > 10 else { return (0, 0, 0) }
+        let cut = pts.map(\.v).sorted()[Int(Double(pts.count) * 0.8)]
+        pts = pts.filter { $0.v <= cut }
+        // Normal equations for v = a + b x + c y.
+        var (n, sx, sy, sxx, sxy, syy, sv, sxv, syv) = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        for q in pts {
+            n += 1; sx += q.x; sy += q.y; sxx += q.x * q.x; sxy += q.x * q.y; syy += q.y * q.y
+            sv += q.v; sxv += q.x * q.v; syv += q.y * q.v
+        }
+        let m = [[n, sx, sy], [sx, sxx, sxy], [sy, sxy, syy]]
+        let r = [sv, sxv, syv]
+        func det(_ a: [[Double]]) -> Double {
+            a[0][0] * (a[1][1] * a[2][2] - a[1][2] * a[2][1]) - a[0][1] * (a[1][0] * a[2][2] - a[1][2] * a[2][0])
+                + a[0][2] * (a[1][0] * a[2][1] - a[1][1] * a[2][0])
+        }
+        let d = det(m)
+        guard abs(d) > 1e-12 else { return (Float(sv / n), 0, 0) }
+        func col(_ k: Int) -> [[Double]] { m.enumerated().map { i, row in row.enumerated().map { j, v in j == k ? r[i] : v } } }
+        return (Float(det(col(0)) / d), Float(det(col(1)) / d), Float(det(col(2)) / d))
     }
 
     /// A synthetic Moon drawn by the fake camera: craters, maria and a
@@ -213,7 +296,7 @@ public final class MoonScene: @unchecked Sendable {
     /// The disk from its outer (lit, round) limb: the farthest lit pixel
     /// along rays from the lit centroid, the outer half of them, and a
     /// least-squares circle through those (as in the 2026-11-19 analysis).
-    static func fitDisk(_ l: Level) -> ((x: Double, y: Double), Double) {
+    static func fitDisk(_ l: Level, threshold: Float = litThreshold) -> ((x: Double, y: Double), Double) {
         // Fit on a small level for speed, then scale up.
         var small = l
         var factor = 1.0
@@ -221,7 +304,7 @@ public final class MoonScene: @unchecked Sendable {
             small = halve(small)
             factor *= 2
         }
-        let thr = litThreshold * percentile(small.pixels, 0.999)
+        let thr = threshold * percentile(small.pixels, 0.999)
         var sx = 0.0, sy = 0.0, n = 0.0
         for y in 0..<small.height {
             for x in 0..<small.width where small.pixels[y * small.width + x] > thr {
@@ -297,7 +380,7 @@ public final class MoonScene: @unchecked Sendable {
     /// The bright limb's direction (the lit area's centroid from the disk's
     /// centre) and the lit fraction.
     static func measureLimb(
-        _ l: Level, centre: (x: Double, y: Double), radius: Double
+        _ l: Level, centre: (x: Double, y: Double), radius: Double, threshold: Float = litThreshold
     ) -> (Double?, Double) {
         var small = l
         var factor = 1.0
@@ -306,7 +389,7 @@ public final class MoonScene: @unchecked Sendable {
             factor *= 2
         }
         let (cx, cy, r) = (centre.x / factor, centre.y / factor, radius / factor)
-        let thr = litThreshold * percentile(small.pixels, 0.999)
+        let thr = threshold * percentile(small.pixels, 0.999)
         var sx = 0.0, sy = 0.0, lit = 0.0, all = 0.0
         for y in 0..<small.height {
             for x in 0..<small.width {
