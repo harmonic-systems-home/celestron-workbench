@@ -39,7 +39,9 @@ struct ContentView: View {
                 // Scrolls on its own so the long button column stays reachable
                 // on a short laptop screen.
                 VStack(alignment: .leading, spacing: 6) {
-                    statusPanel.frame(width: 300)
+                    // A fixed height, so the buttons below don't jump as
+                    // lines (a move's progress, a step's detail) come and go.
+                    statusPanel.frame(width: 300, height: 215, alignment: .top).clipped()
                     ScrollView(.vertical) {
                         controls.frame(width: 300)
                     }
@@ -194,7 +196,7 @@ struct ContentView: View {
                     model.busy == nil ? palette.dim : palette.bright)
                 if let d = model.stepDetail {
                     Text(d).font(.system(size: 14, weight: .semibold, design: .rounded))
-                        .foregroundStyle(palette.bright)
+                        .foregroundStyle(palette.bright).lineLimit(2)
                 }
                 if let finish = model.finishAt {
                     Text(progress(finish: finish)).foregroundStyle(palette.text)
