@@ -918,7 +918,16 @@ public final class MosaicSession: @unchecked Sendable {
             let r = moonRate(at: clock())
             try? mount.track(azDegS: r.az, altDegS: r.alt)
         }
-        try camera.configure(exposureUs: settings.surveyExposureUs, gain: settings.surveyGain)
+        // By day the survey's long exposure (meant to show earthshine on a
+        // dark sky) is all sky, saturated, with no edge to find (2026-11-20,
+        // simulator): the video's exposure instead, the Moon above the sky.
+        let daytime = sunHorizontal(at: clock()).altDeg > SunGuard.upAltitudeDeg
+        let (surveyExposure, surveyGain) =
+            daytime ? (settings.exposureUs, settings.gain) : (settings.surveyExposureUs, settings.surveyGain)
+        if daytime {
+            onEvent(.message(String(format: "Survey: daytime, at the video's %.1f ms and gain %d.", Double(settings.exposureUs) / 1000, settings.gain)))
+        }
+        try camera.configure(exposureUs: surveyExposure, gain: surveyGain)
         try camera.start()
         defer {
             camera.stop()
@@ -952,7 +961,7 @@ public final class MosaicSession: @unchecked Sendable {
                     "pointing": [pointing.x, pointing.y], "position": p,
                     // Simulating: where the camera really pointed (from the Moon's centre).
                     "simTruth": (camera as? SimCamera)?.history.last.map { [$0.x, $0.y] } ?? NSNull(),
-                    "exposureUs": settings.surveyExposureUs, "gain": settings.surveyGain,
+                    "exposureUs": surveyExposure, "gain": surveyGain,
                 ])
             samples += MoonCentre.samples(
                 frame, pointing: pointing, calibration: calibration,
@@ -1126,7 +1135,10 @@ public final class MosaicSession: @unchecked Sendable {
             let r = here.moon.diameterDeg / 2 * 3600
             plan = MosaicPlanner.markLit(
                 plan, calibration: calibration, phase: phase, radiusArcsec: r)
-            if !fit.earthshine {
+            // Earthshine never shows in daylight (the dark side is the
+            // sky's own brightness, which can pass for it).
+            let daylight = sunHorizontal(at: clock()).altDeg > SunGuard.upAltitudeDeg
+            if !fit.earthshine || daylight {
                 let before = plan.tiles.count
                 plan = MosaicPlanner.withoutDark(plan)
                 dropped = before - plan.tiles.count

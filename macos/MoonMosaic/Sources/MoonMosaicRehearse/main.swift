@@ -48,8 +48,9 @@ if option("--set") == "phases" {
         for phase in Rehearsal.Phase.allCases where only == nil || phase == only {
             for diagonal in [false, true] {
                 for rotation in rotations {
-                    scenarios.append(
-                        Rehearsal.Scenario(seed: seed, phase: phase, camera: camera, rotationDeg: rotation, diagonal: diagonal))
+                    var s = Rehearsal.Scenario(seed: seed, phase: phase, camera: camera, rotationDeg: rotation, diagonal: diagonal)
+                    s.daytime = args.contains("--day")
+                    scenarios.append(s)
                     seed += 1
                 }
             }

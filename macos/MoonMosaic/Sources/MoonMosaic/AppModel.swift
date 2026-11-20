@@ -603,7 +603,10 @@ final class AppModel: ObservableObject {
                 // check, a tile's video); otherwise one of our own.
                 let recent = camera.latest.map { Date().timeIntervalSince($0.time) < 0.5 }
                 if let frame = recent == true ? camera.latest : try? camera.frame(timeoutMs: 500) {
-                    let image = Imaging.image(fromFrame: frame)
+                    let image =
+                        color
+                        ? Imaging.colourImage(fromFrame: frame, bayerPattern: camera.info.bayerPattern)
+                        : Imaging.image(fromFrame: frame)
                     let focus = Imaging.image(crop: Focus.crop(frame), binned: color)
                     let sky = await MainActor.run { self?.effectiveSky ?? .clearNight }
                     let stats = FrameStats(frame, sky: sky)
@@ -680,7 +683,7 @@ final class AppModel: ObservableObject {
             }
             truth.set(mount: p, moon: [targetAz, targetAlt])
             let dAz = wrap180app(p[0] - targetAz) * cos(altForCos * .pi / 180) * 3600
-            let dAlt = (p[1] - targetAlt) * 3600
+            let dAlt = wrap180app(p[1] - targetAlt) * 3600
             return (dAz, dAlt)
         }
         fake?.provider = provider
@@ -1647,6 +1650,46 @@ enum Imaging {
             }
         }
         return gray(width: w, height: h, bytes: out)
+    }
+
+    /// A colour camera's raw frame in colour, 4× binned: each 4×4 block's red,
+    /// green and blue cells averaged, then balanced so grey looks grey (the
+    /// sensor is less sensitive in red and blue: about 0.75 and 0.6 of green).
+    static func colourImage(fromFrame f: Frame, bayerPattern: Int) -> CGImage? {
+        let (w, h) = (f.width / 4, f.height / 4)
+        guard w > 0, h > 0 else { return nil }
+        // Which cell of each 2×2 is red and which blue (RG/GB, BG/GR, GR/BG, GB/RG).
+        let redCell = [0, 3, 1, 2][min(max(bayerPattern, 0), 3)]
+        let blueCell = 3 - redCell
+        let gains: [Double] = [1 / 0.75, 1, 1 / 0.6]
+        var out = [UInt8](repeating: 0, count: w * h * 4)
+        f.pixels.withUnsafeBufferPointer { p in
+            for y in 0..<h {
+                for x in 0..<w {
+                    var sum = [0, 0, 0]
+                    var n = [0, 0, 0]
+                    for dy in 0..<4 {
+                        let row = (4 * y + dy) * f.width + 4 * x
+                        for dx in 0..<4 {
+                            let cell = (dy & 1) * 2 + (dx & 1)
+                            let c = cell == redCell ? 0 : cell == blueCell ? 2 : 1
+                            sum[c] += Int(p[row + dx])
+                            n[c] += 1
+                        }
+                    }
+                    let i = (y * w + x) * 4
+                    for c in 0..<3 {
+                        out[i + c] = UInt8(min(255, Double(sum[c]) / Double(max(n[c], 1)) * gains[c]))
+                    }
+                    out[i + 3] = 255
+                }
+            }
+        }
+        guard let provider = CGDataProvider(data: Data(out) as CFData) else { return nil }
+        return CGImage(
+            width: w, height: h, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: w * 4,
+            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipLast.rawValue),
+            provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent)
     }
 
     /// A crop at full resolution, or 2× binned for a colour camera (so its

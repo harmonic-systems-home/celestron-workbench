@@ -33,6 +33,9 @@ public final class SimCamera: Camera, @unchecked Sendable {
         public var shakeSeconds: Double = 0.8
         /// Faults: the share of frames lost (each frame call returns nil),
         /// and a camera that stops delivering until a moment (USB trouble).
+        /// The sky's colour (linear red, green, blue, green 1): neutral at
+        /// night, blue by day (a daytime scene gives its own photo's).
+        public var skyColour: [Double] = [1, 1, 1]
         public var dropFrames: Double = 0
         /// The atmosphere beyond blur: the whole image's tip-tilt wanders
         /// (RMS 0.3 × seeing) with this time constant, and parts of the
@@ -374,7 +377,7 @@ public final class SimCamera: Camera, @unchecked Sendable {
                                     let d = (qx * qx + qy * qy).squareRoot() - radius
                                     if d > 0 { b += glow * Float(exp(-d / glowScale)) }
                                 }
-                                row[x] += (b + sky) * weight
+                                row[x] += b * weight
                                 sx += dxu
                                 sy += dyu
                                 qx += qxu
@@ -402,6 +405,10 @@ public final class SimCamera: Camera, @unchecked Sendable {
         // Which cell of each 2×2 is red and which blue (RG/GB, BG/GR, GR/BG, GB/RG).
         let redCell = [0, 3, 1, 2][min(max(o.sensor.bayerPattern, 0), 3)]
         let blueCell = 3 - redCell
+        // The sky, added here so a colour sensor sees its colour (uniform:
+        // the blur above doesn't change it).
+        let skyCol = c.skyColour.count == 3 ? c.skyColour.map(Float.init) : [1, 1, 1]
+        let skyMono = sky * (skyCol[0] * 0.3 + skyCol[1] * 0.59 + skyCol[2] * 0.11)
         var pixels = [UInt8](repeating: 0, count: w * h)
         pixels.withUnsafeMutableBufferPointer { outp in
             light.withUnsafeBufferPointer { inp in
@@ -416,11 +423,13 @@ public final class SimCamera: Camera, @unchecked Sendable {
                             for x in 0..<w {
                                 let i = y * w + x
                                 var resp: Float = 1
+                                var skyHere = skyMono
                                 if colour {
                                     let cell = (y & 1) * 2 + (x & 1)
                                     resp = cell == redCell ? 0.75 : cell == blueCell ? 0.6 : 1
+                                    skyHere = sky * (cell == redCell ? skyCol[0] : cell == blueCell ? skyCol[2] : skyCol[1])
                                 }
-                                let dn = ib[i] * signalScale * resp
+                                let dn = (ib[i] + skyHere) * signalScale * resp
                                 let sd = (shot * max(dn, 0) + read * read).squareRoot()
                                 let v = 4 + dn + sd * Float(nr.gaussian()) + pb[i] * Float(gf)
                                 ob[i] = UInt8(max(0, min(255, v.rounded())))

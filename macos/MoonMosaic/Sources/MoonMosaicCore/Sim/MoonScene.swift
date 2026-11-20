@@ -70,6 +70,9 @@ public final class MoonScene: @unchecked Sendable {
     /// as it was before being taken out of the scene (0 for a night sky).
     /// The simulator can set its own sky to match.
     public internal(set) var skyLevel = 0.0
+    /// That sky's colour, linear red, green, blue with green 1 (from the
+    /// photo's border; nil for a grey image or a night sky).
+    public internal(set) var skyColour: [Double]?
 
     public var width: Int { levels[0].width }
     public var height: Int { levels[0].height }
@@ -164,7 +167,40 @@ public final class MoonScene: @unchecked Sendable {
             name: url.deletingPathExtension().lastPathComponent, width: w, height: h,
             pixels: pixels, centre: given?.centre, radius: given?.radius, info: info,
             threshold: daytime ? 0.2 : MoonScene.litThreshold)
-        if daytime { skyLevel = skyMid / Double(top) }
+        if daytime {
+            skyLevel = skyMid / Double(top)
+            skyColour = Self.borderColour(image)
+        }
+    }
+
+    /// The mean colour of an image's border (linear, green 1), from a small
+    /// copy; nil if it has no colour.
+    static func borderColour(_ image: CGImage) -> [Double]? {
+        let w = 128
+        let h = max(8, Int(Double(image.height) / Double(image.width) * 128))
+        var rgba = [UInt8](repeating: 0, count: w * h * 4)
+        let ok = rgba.withUnsafeMutableBytes { buf -> Bool in
+            guard let ctx = CGContext(
+                data: buf.baseAddress, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+                space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)
+            else { return false }
+            ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+            return true
+        }
+        guard ok else { return nil }
+        var sum = [0.0, 0.0, 0.0]
+        var n = 0.0
+        let strip = 4
+        for y in 0..<h {
+            for x in 0..<w where x < strip || x >= w - strip || y < strip || y >= h - strip {
+                let i = (y * w + x) * 4
+                for c in 0..<3 { sum[c] += pow(Double(rgba[i + c]) / 255, 2.2) }
+                n += 1
+            }
+        }
+        guard n > 0, sum[1] > 0 else { return nil }
+        let col = sum.map { $0 / sum[1] }
+        return abs(col[0] - 1) < 0.02 && abs(col[2] - 1) < 0.02 ? nil : col
     }
 
     /// A plane a + b·x + c·y through the border's pixels (a strip 2% of the

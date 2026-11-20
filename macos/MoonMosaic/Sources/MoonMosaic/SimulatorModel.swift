@@ -86,6 +86,10 @@ final class SimulatorModel: ObservableObject {
     }
     @Published var seeingArcsec: Double = 2.5 { didSet { applyConditions() } }
     @Published var skyLevel: Double = 0 { didSet { applyConditions() } }
+    /// The bright sky's colour (linear, green 1).
+    var skyColour: [Double] = SimulatorModel.daySkyColour { didSet { applyConditions() } }
+    /// A clear daytime sky, roughly (linear sRGB, green 1).
+    static let daySkyColour: [Double] = [0.55, 1, 1.6]
     @Published var transmission: Double = 1 { didSet { applyConditions() } }
     @Published var glowLevel: Double = 0.0001 { didSet { applyConditions() } }
     @Published var shakeArcsec: Double = 20 { didSet { applyConditions() } }
@@ -377,6 +381,8 @@ final class SimulatorModel: ObservableObject {
         c.glowLevel = glowLevel
         c.shakeArcsec = shakeArcsec
         c.dropFrames = dropFrames
+        // A bright sky is blue unless a scene gave its own colour.
+        c.skyColour = skyLevel > 0.01 ? skyColour : [1, 1, 1]
         c.shimmerArcsec = shimmerArcsec
         c.stalledUntil = cameraStalledUntil
         camera?.conditions = c
@@ -423,7 +429,10 @@ final class SimulatorModel: ObservableObject {
                         self.brightLimbDeg = limb
                         self.phaseAngleNowDeg = phase.phaseAngleDeg
                         // A daytime photo: the simulated sky as bright as its own.
-                        if scene.skyLevel > 0.01 { self.skyLevel = min(0.5, (scene.skyLevel * 100).rounded() / 100) }
+                        if scene.skyLevel > 0.01 {
+                            self.skyLevel = min(0.5, (scene.skyLevel * 100).rounded() / 100)
+                            self.skyColour = scene.skyColour ?? Self.daySkyColour
+                        }
                         let across = scene.radius > 0 ? (camera?.moonRadiusArcsec ?? 930) / scene.radius : 0
                         self.sceneNote = String(
                             format: "%@: %d×%d, %.2f″ per image pixel, %.0f%% lit%@", scene.name, scene.width,
@@ -448,7 +457,20 @@ final class SimulatorModel: ObservableObject {
             mountAxesDeg = t.mount
             moonAxesDeg = t.moon
         }
-        let p = camera.pointing
+        // Where the camera points: the latest frame's truth (the camera's
+        // own thread sets it), not a fresh mount read on the main thread,
+        // which can come back empty while a step is busy with the mount and
+        // left this view frozen (2026-11-20: still during Orient Moon while
+        // the camera view moved).
+        var p = camera.pointing
+        if let t = truth.latest, t.mount.count == 2, t.moon.count == 2 {
+            let alt = t.moon[1] * .pi / 180
+            var dAz = (t.mount[0] - t.moon[0]).truncatingRemainder(dividingBy: 360)
+            if dAz > 180 { dAz -= 360 } else if dAz < -180 { dAz += 360 }
+            var dAlt = (t.mount[1] - t.moon[1]).truncatingRemainder(dividingBy: 360)
+            if dAlt > 180 { dAlt -= 360 } else if dAlt < -180 { dAlt += 360 }
+            p = (dAz * cos(alt) * 3600, dAlt * 3600)
+        }
         guard abs(p.x) < 1e5, abs(p.y) < 1e5 else { return }
         let point = CGPoint(x: p.x, y: p.y)
         pointing = point

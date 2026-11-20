@@ -56,9 +56,9 @@ public enum Rehearsal {
 
     /// The first moment from 2026-11-01 when the Moon is at `phase` (within
     /// 8°, full within 10°) and at least 30° up, at night if it can be.
-    public static func moment(for phase: Phase, site: Site) -> Date? {
+    public static func moment(for phase: Phase, site: Site, daytime: Bool = false) -> Date? {
         let start = Date(timeIntervalSince1970: 1_793_491_200)
-        for night in [true, false] {
+        for night in daytime ? [false] : [true, false] {
             var t = start
             for _ in 0..<(24 * 4 * 70) {
                 defer { t.addTimeInterval(900) }
@@ -71,7 +71,9 @@ public enum Rehearsal {
                     guard (later.illuminatedFraction > p.illuminatedFraction) == waxing else { continue }
                 }
                 guard Ephemeris.moon(at: t, from: site).horizontal.altDeg > 30 else { continue }
-                if night, Ephemeris.horizontal(Ephemeris.sun(at: t), at: t, from: site).altDeg > -6 { continue }
+                let sunAlt = Ephemeris.horizontal(Ephemeris.sun(at: t), at: t, from: site).altDeg
+                if night, sunAlt > -6 { continue }
+                if daytime, sunAlt < 10 { continue }
                 return t
             }
         }
@@ -95,6 +97,8 @@ public enum Rehearsal {
         /// moment comes from it), the camera, its turn and the diagonal.
         public var phase: Phase?
         public var camera: CameraModel = .asi662mc
+        /// By day: the Sun well up, a bright blue sky.
+        public var daytime = false
 
         /// A test set's scenario: the seed sets the rest (where the Moon is,
         /// the seeing).
@@ -150,7 +154,7 @@ public enum Rehearsal {
             // then the scenario's hours on.
             let epoch: Date
             if let phase = scenario.phase {
-                guard let m = moment(for: phase, site: site) else {
+                guard let m = moment(for: phase, site: site, daytime: scenario.daytime) else {
                     throw MosaicError(description: "no moment found for the \(phase.rawValue) Moon")
                 }
                 epoch = m
@@ -177,6 +181,10 @@ public enum Rehearsal {
             camera.alignBrightLimb(toDeg: phase.brightLimbFromZenithDeg)
             var c = SimCamera.Conditions()
             c.seeingArcsec = scenario.seeingArcsec
+            if scenario.daytime {
+                c.skyLevel = 0.25
+                c.skyColour = [0.55, 1, 1.6]
+            }
             camera.conditions = c
             camera.moonRadiusArcsec = Ephemeris.moon(at: clock(), from: site).diameterDeg * 1800
             var settings = MosaicSettings(site: site)
@@ -229,9 +237,10 @@ public enum Rehearsal {
             }
             guard
                 await step("Find", {
+                    let sky: Blob.Sky = scenario.daytime ? .day : .clearNight
                     let o = try await session.searchSweep(
                         halfWidthDeg: 2, halfHeightDeg: 1.2, converge: MosaicSession.Converge(),
-                        found: { Blob.looksLikeMoon($0) })
+                        found: { Blob.looksLikeMoon($0, sky: sky) })
                     guard o.found, o.converged else { throw MosaicError(description: "not found (\(o.stops) rows)") }
                     let p = camera.pointing
                     return String(format: "%d rows; ended %.0f″ from the centre", o.stops, hypot(p.x, p.y))
