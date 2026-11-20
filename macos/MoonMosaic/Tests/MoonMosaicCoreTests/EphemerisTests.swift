@@ -85,3 +85,24 @@ private func near(_ a: Double, _ b: Double, _ tolerance: Double) -> Bool {
     #expect(near(Ephemeris.separationDeg(a, b), 90, 1e-9))
     #expect(near(Ephemeris.separationDeg(a, a), 0, 1e-6))
 }
+
+/// The drawn outline of the sunlit part agrees with `isLit`: across the
+/// terminator's middle, toward the bright limb is lit and away is dark; the
+/// bright limb's middle is lit.
+@Test func theLitOutlineMatchesIsLit() {
+    let site = Site(latitudeDeg: 40, longitudeDeg: -100)
+    for days in stride(from: 0.0, to: 29, by: 3.7) {
+        let t = Date(timeIntervalSince1970: 1_793_491_200 + days * 86_400)
+        let p = Ephemeris.phase(at: t, from: site)
+        guard p.phaseAngleDeg > 10, p.phaseAngleDeg < 150 else { continue }
+        let outline = Ephemeris.litOutline(
+            brightLimbFromZenithDeg: p.brightLimbFromZenithDeg, phaseAngleDeg: p.phaseAngleDeg, points: 48)
+        let (lx, ly) = p.brightLimb
+        let limbMid = outline[24]
+        #expect(abs(limbMid.x - lx) < 1e-6 && abs(limbMid.y - ly) < 1e-6, "day \(days): limb \(limbMid)")
+        #expect(p.isLit(limbMid.x * 0.95, limbMid.y * 0.95))
+        let term = outline[49 + 24]
+        #expect(p.isLit(term.x + 0.03 * lx, term.y + 0.03 * ly), "day \(days)")
+        #expect(!p.isLit(term.x - 0.03 * lx, term.y - 0.03 * ly), "day \(days)")
+    }
+}

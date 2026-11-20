@@ -198,6 +198,28 @@ public enum Ephemeris {
         }
     }
 
+    /// The sunlit part's outline, in the sky frame in units of the Moon's
+    /// radius (+x toward increasing azimuth, +y up): the bright limb's half
+    /// circle, then back along the terminator's half ellipse.
+    public static func litOutline(
+        brightLimbFromZenithDeg limbDeg: Double, phaseAngleDeg: Double, points n: Int = 48
+    ) -> [(x: Double, y: Double)] {
+        let t = deg2rad(limbDeg)
+        let (lx, ly) = (sin(t), cos(t))
+        let c = cos(deg2rad(phaseAngleDeg))
+        func sky(_ a: Double, _ b: Double) -> (x: Double, y: Double) { (a * lx - b * ly, a * ly + b * lx) }
+        var out: [(x: Double, y: Double)] = []
+        for k in 0...n {
+            let th = -Double.pi / 2 + Double.pi * Double(k) / Double(n)
+            out.append(sky(cos(th), sin(th)))
+        }
+        for k in 0...n {
+            let th = Double.pi / 2 - Double.pi * Double(k) / Double(n)
+            out.append(sky(-c * cos(th), sin(th)))
+        }
+        return out
+    }
+
     public static func phase(at date: Date, from site: Site) -> Phase {
         let d = day(julianDay(date))
         let (moonEq, moonKm) = moon(at: date)

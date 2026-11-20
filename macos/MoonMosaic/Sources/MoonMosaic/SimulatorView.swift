@@ -159,7 +159,15 @@ struct SkyMap: View {
             // The Moon, with its bright limb marked.
             let r = sim.moonRadiusArcsec
             let disk = CGRect(x: ox - k * r, y: oy - k * r, width: 2 * k * r, height: 2 * k * r)
-            ctx.fill(Path(ellipseIn: disk), with: .color(Color(white: 0.35)))
+            ctx.fill(Path(ellipseIn: disk), with: .color(Color(white: 0.18)))
+            if let limb = sim.brightLimbDeg, let i = sim.phaseAngleNowDeg {
+                // The sunlit part; the rest is the dark side.
+                let outline = Ephemeris.litOutline(brightLimbFromZenithDeg: limb, phaseAngleDeg: i)
+                var lit = Path()
+                lit.addLines(outline.map { pt(CGPoint(x: $0.x * r, y: $0.y * r)) })
+                lit.closeSubpath()
+                ctx.fill(lit, with: .color(Color(white: 0.55)))
+            }
             if let limb = sim.brightLimbDeg {
                 let a = limb * .pi / 180
                 var lit = Path()

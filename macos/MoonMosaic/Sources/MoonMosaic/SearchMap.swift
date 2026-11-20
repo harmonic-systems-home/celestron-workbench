@@ -73,7 +73,16 @@ struct SearchMap: View {
                 let c = pt(fromStart(moonAxes))
                 ctx.fill(
                     Path(ellipseIn: CGRect(x: c.x - r, y: c.y - r, width: 2 * r, height: 2 * r)),
-                    with: .color(Color(white: 0.3)))
+                    with: .color(Color(white: 0.18)))
+                if let limb = sim.brightLimbDeg, let i = sim.phaseAngleNowDeg {
+                    var lit = Path()
+                    lit.addLines(
+                        Ephemeris.litOutline(brightLimbFromZenithDeg: limb, phaseAngleDeg: i).map {
+                            CGPoint(x: c.x + $0.x * r, y: c.y - $0.y * r)
+                        })
+                    lit.closeSubpath()
+                    ctx.fill(lit, with: .color(Color(white: 0.4)))
+                }
                 ctx.draw(
                     Text("true Moon").font(.system(size: 10)).foregroundColor(.gray), at: CGPoint(x: c.x, y: c.y))
             }

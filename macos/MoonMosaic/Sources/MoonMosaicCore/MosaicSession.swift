@@ -181,6 +181,22 @@ public final class MosaicSession: @unchecked Sendable {
     }
     private var baseSettle: Double?
 
+    /// The sunlit part's outline in the plan's pixels (the camera frame,
+    /// from the Moon's centre), for drawing over the tiles; nil before the
+    /// camera is oriented and the Moon placed.
+    public func litOutlineInPlan() -> [PixelOffset]? {
+        guard let calibration, let here else { return nil }
+        let phase = Ephemeris.phase(at: clock(), from: settings.site)
+        let r = here.moon.diameterDeg / 2 * 3600
+        return Ephemeris.litOutline(
+            brightLimbFromZenithDeg: phase.brightLimbFromZenithDeg, phaseAngleDeg: phase.phaseAngleDeg
+        ).map {
+            // A part of the Moon at sky offset s shows at −M·s.
+            let p = calibration.image(for: SkyOffset(x: $0.x * r, y: $0.y * r))
+            return PixelOffset(x: -p.x, y: -p.y)
+        }
+    }
+
     /// Sun avoidance's minimum separation (degrees).
     public func setSunLimit(_ deg: Double) { settings.minSunSeparationDeg = deg }
 

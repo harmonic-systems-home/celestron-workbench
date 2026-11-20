@@ -619,6 +619,24 @@ struct TileGrid: View {
                 RoundedRectangle(cornerRadius: 10).fill(palette.panel)
                 if let plan = model.plan {
                     let layout = Layout(plan: plan, size: geo.size)
+                    // The Moon under the tiles: the dark side, and the sunlit
+                    // part from the ephemeris (bounded by the terminator).
+                    Canvas { ctx, size in
+                        let c = CGPoint(x: size.width / 2, y: size.height / 2)
+                        let d = layout.moonDiameter
+                        ctx.fill(
+                            Path(ellipseIn: CGRect(x: c.x - d / 2, y: c.y - d / 2, width: d, height: d)),
+                            with: .color(palette.dim.opacity(0.25)))
+                        if model.planOutline.count > 2 {
+                            var lit = Path()
+                            lit.addLines(model.planOutline.map {
+                                CGPoint(x: c.x + $0.x * layout.scale, y: c.y + $0.y * layout.scale)
+                            })
+                            lit.closeSubpath()
+                            ctx.fill(lit, with: .color(palette.text.opacity(0.3)))
+                        }
+                    }
+                    .allowsHitTesting(false)
                     ForEach(plan.tiles) { tile in
                         let r = layout.rect(tile)
                         Rectangle()
@@ -626,7 +644,10 @@ struct TileGrid: View {
                             .overlay(
                                 Rectangle().stroke(
                                     model.selected.contains(tile.id) ? palette.bright : palette.dim,
-                                    lineWidth: model.selected.contains(tile.id) ? 3 : 1)
+                                    style: StrokeStyle(
+                                        lineWidth: model.selected.contains(tile.id) ? 3 : 1,
+                                        // Dark-side tiles (for the Earthshine pass) dashed.
+                                        dash: tile.lit ? [] : [4, 3]))
                             )
                             .frame(width: r.width, height: r.height)
                             .position(x: r.midX, y: r.midY)

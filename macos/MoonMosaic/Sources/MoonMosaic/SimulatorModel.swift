@@ -79,6 +79,8 @@ final class SimulatorModel: ObservableObject {
     @Published private(set) var reachArcsec: Double = 7200
     @Published private(set) var moonRadiusArcsec: Double = 930
     @Published private(set) var brightLimbDeg: Double?
+    /// The scene's phase angle now, for drawing its terminator.
+    @Published private(set) var phaseAngleNowDeg: Double?
 
     /// The mount's axes and the true Moon's, in the same moment (degrees),
     /// written by the sky provider each frame: the search map draws both
@@ -331,6 +333,7 @@ final class SimulatorModel: ObservableObject {
                             camera?.alignBrightLimb(toDeg: limb)
                         }
                         self.brightLimbDeg = limb
+                        self.phaseAngleNowDeg = phase.phaseAngleDeg
                         let across = scene.radius > 0 ? (camera?.moonRadiusArcsec ?? 930) / scene.radius : 0
                         self.sceneNote = String(
                             format: "%@: %d×%d, %.2f″ per image pixel, %.0f%% lit%@", scene.name, scene.width,
@@ -346,6 +349,7 @@ final class SimulatorModel: ObservableObject {
         // The scene's bright limb where the ephemeris puts it now.
         camera.alignBrightLimb(toDeg: phase.brightLimbFromZenithDeg)
         brightLimbDeg = phase.brightLimbFromZenithDeg
+        phaseAngleNowDeg = sceneChoice == .phase ? phaseAngleDeg : phase.phaseAngleDeg
     }
 
     private func tick() {

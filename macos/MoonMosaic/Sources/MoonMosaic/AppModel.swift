@@ -128,6 +128,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var busy: String?
     @Published private(set) var log: [String] = []
     @Published private(set) var plan: MosaicPlan?
+    /// The sunlit part's outline over the plan (plan pixels).
+    @Published private(set) var planOutline: [PixelOffset] = []
     @Published private(set) var tileStates: [Int: TileState] = [:]
     @Published private(set) var preview: MosaicPreview?
     @Published private(set) var previewImage: CGImage?
@@ -1366,6 +1368,8 @@ final class AppModel: ObservableObject {
     private func sync() {
         guard let session else { return }
         plan = session.plan
+        let outline = session.plan == nil ? [] : (session.litOutlineInPlan() ?? [])
+        if outline != planOutline { planOutline = outline }
         tileStates = session.states
         hereSet = session.here != nil
         calibrated = session.calibration != nil
