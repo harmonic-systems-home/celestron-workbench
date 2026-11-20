@@ -12,7 +12,12 @@ import Foundation
 public enum Registration {
     /// How far `b`'s content has moved from `a`'s, in full-resolution pixels
     /// (x right, y down), and the peak's strength (0–1; low means unreliable).
-    public static func shift(from a: Frame, to b: Frame) -> (dx: Double, dy: Double, peak: Double) {
+    /// With `minShift` (full-resolution pixels), peaks nearer zero than that
+    /// are ignored in the first pass: for a scene known to have moved (the
+    /// Moon drifting), the sensor's fixed pattern can't win (2026-11-19).
+    public static func shift(
+        from a: Frame, to b: Frame, minShift: Double = 0
+    ) -> (dx: Double, dy: Double, peak: Double) {
         precondition(a.width == b.width && a.height == b.height, "frames differ in size")
         let (w, h) = (a.width / 2, a.height / 2)
         var n = 1
@@ -27,12 +32,16 @@ public enum Registration {
         let fa = spectrum(a, n: n, window: window, setup: setup, log2n: log2n, offset: (0, 0))
         let first = correlate(
             fa, spectrum(b, n: n, window: window, setup: setup, log2n: log2n, offset: (0, 0)),
-            n: n, setup: setup, log2n: log2n)
+            n: n, setup: setup, log2n: log2n, exclude: minShift / 2)
         // b's content moved by (dx, dy) binned pixels: crop b there too (as
         // far as the frame allows; the crop reports where it actually was).
         let offset = (Int(first.dx.rounded()), Int(first.dy.rounded()))
         let fb = spectrum(b, n: n, window: window, setup: setup, log2n: log2n, offset: offset)
-        let second = correlate(fa, fb, n: n, setup: setup, log2n: log2n)
+        // Once aligned, the true peak is near zero; the fixed pattern would
+        // sit at minus the offset, so only a small window is searched.
+        let second = correlate(
+            fa, fb, n: n, setup: setup, log2n: log2n,
+            within: minShift > 0 ? max(4, minShift / 4) : nil)
         return (
             2 * (Double(fb.used.0) + second.dx), 2 * (Double(fb.used.1) + second.dy), second.peak
         )
@@ -42,7 +51,7 @@ public enum Registration {
     private static func correlate(
         _ fa: (re: [Float], im: [Float], used: (Int, Int)),
         _ fb: (re: [Float], im: [Float], used: (Int, Int)), n: Int,
-        setup: FFTSetup, log2n: vDSP_Length
+        setup: FFTSetup, log2n: vDSP_Length, exclude: Double = 0, within: Double? = nil
     ) -> (dx: Double, dy: Double, peak: Double) {
         // Normalized cross-power with the band-pass applied.
         var real = [Float](repeating: 0, count: n * n)
@@ -69,8 +78,16 @@ public enum Registration {
                     setup, &split, 1, 0, log2n, log2n, FFTDirection(kFFTDirection_Inverse))
             }
         }
-        var best = 0
-        for i in 1..<(n * n) where real[i] > real[best] { best = i }
+        func allowed(_ i: Int) -> Bool {
+            let (y, x) = (i / n, i % n)
+            let dy = Double(y < n / 2 ? y : y - n)
+            let dx = Double(x < n / 2 ? x : x - n)
+            let r = (dx * dx + dy * dy).squareRoot()
+            return r >= exclude && (within.map { r <= $0 } ?? true)
+        }
+        var best = -1
+        for i in 0..<(n * n) where allowed(i) && (best < 0 || real[i] > real[best]) { best = i }
+        if best < 0 { best = 0 }
         let (py, px) = (best / n, best % n)
         let at = { (y: Int, x: Int) in Double(real[((y + n) % n) * n + (x + n) % n]) }
         func refine(_ m: Double, _ z: Double, _ p: Double) -> Double {

@@ -125,3 +125,52 @@ private func loggedTiles(in folder: URL) throws -> [Int: (x: Double, y: Double)]
 extension SkyOffset {
     fileprivate var tuple: (x: Double, y: Double) { (x, y) }
 }
+
+/// Hold tracks (ADR 0022 amendment 5): after one goto it runs the axes at
+/// the Moon's rate, so the aim stays on the Moon with no more jumps, and a
+/// move afterwards takes over cleanly.
+@Test(.timeLimit(.minutes(2)))
+func holdTracksTheMoonWithoutJumping() async throws {
+    let site = Site(latitudeDeg: 40, longitudeDeg: -100)
+    let epoch = try moonUp(over: site)
+    let started = Date()
+    let clock: @Sendable () -> Date = {
+        epoch.addingTimeInterval(Date().timeIntervalSince(started))
+    }
+    let mount = try MountSession(port: "simulate", safety: ["max_goto_deg": 1.0])
+    let camera = FakeCamera(width: 640, height: 360, scale: 0.3, rotationDeg: 20)
+    var settings = MosaicSettings(site: site)
+    settings.settleSeconds = 0.3
+    let session = MosaicSession(
+        mount: mount, camera: camera, settings: settings, clock: clock, onEvent: { _ in })
+    for _ in 0..<50 where try mount.status().positionsDeg == nil {
+        try await Task.sleep(for: .milliseconds(50))
+    }
+    try await Task.sleep(for: .milliseconds(600))
+    try await session.markHere()
+    let here = try #require(session.here)
+    func offMoon() throws -> Double {
+        let p = try #require(try mount.status().positionsDeg)
+        let r = session.relativeMove(
+            from: (here.time, [here.azimuthDeg, here.altitudeDeg]), to: (clock(), p))
+        return hypot(r.x, r.y)
+    }
+    try await session.hold()
+    #expect(try mount.status().tracking != nil)
+    var worst = 0.0
+    for _ in 0..<8 {
+        try await Task.sleep(for: .milliseconds(1_000))
+        try await session.hold()
+        worst = max(worst, try offMoon())
+    }
+    // Untracked, 8 s would drift ~120″. Tracked, it stays within the first
+    // goto's lead (it aims a few seconds ahead) while the correction closes it.
+    #expect(worst < 40, "worst \(worst)″ off the Moon while holding")
+    #expect(try mount.status().lastFault == nil)
+    // A move takes over: tracking stops and the goto runs.
+    try await session.armForStep()
+    #expect(try mount.status().tracking == nil)
+    try await session.goToSky(SkyOffset(x: 60, y: 0))
+    session.endStep()
+    #expect(try mount.status().lastFault == nil)
+}

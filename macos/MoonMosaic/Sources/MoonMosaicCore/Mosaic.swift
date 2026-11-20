@@ -57,6 +57,11 @@ public struct CameraCalibration: Sendable, Equatable {
 
     public var arcsecPerPixel: Double { 1 / abs(a * d - b * c).squareRoot() }
 
+    /// Whether the image is mirrored against a camera that sees the sky
+    /// directly. With +y up on the sky and rows counting down, a direct view
+    /// has det M < 0 (checked against the fake camera, both ways).
+    public var mirrored: Bool { a * d - b * c > 0 }
+
     /// How far the camera is turned (degrees), for display: 0 when its
     /// rows run along azimuth with altitude up. The image moves against the
     /// pointing, and image rows count downwards, hence the signs.
@@ -140,6 +145,36 @@ public enum MosaicPlanner {
     /// Marks each tile lit if a sunlit survey cell falls in its frame (a
     /// cell's width of margin either way). A part of the Moon at sky offset
     /// s from the centre shows at −M·s in the camera's frame.
+    /// Marks each tile lit when any part of it falls on the sunlit part of
+    /// the disk as the ephemeris predicts it (`phase`), sampling the tile on
+    /// a grid.
+    public static func markLit(
+        _ plan: MosaicPlan, calibration: CameraCalibration, phase: Ephemeris.Phase,
+        radiusArcsec r: Double
+    ) -> MosaicPlan {
+        let tiles = plan.tiles.map { t -> Tile in
+            var t = t
+            var lit = false
+            for gx in -6...6 where !lit {
+                for gy in -4...4 {
+                    let px = PixelOffset(
+                        x: -(t.center.x + Double(gx) * Double(plan.frameWidth) / 12),
+                        y: -(t.center.y + Double(gy) * Double(plan.frameHeight) / 8))
+                    let sky = calibration.sky(for: px)
+                    if phase.isLit(sky.x / r, sky.y / r) {
+                        lit = true
+                        break
+                    }
+                }
+            }
+            t.lit = lit
+            return t
+        }
+        return MosaicPlan(
+            tiles: tiles, overlap: plan.overlap, moonRadiusPixels: plan.moonRadiusPixels,
+            frameWidth: plan.frameWidth, frameHeight: plan.frameHeight)
+    }
+
     public static func markLit(
         _ plan: MosaicPlan, litSky: [SkyOffset], calibration: CameraCalibration,
         marginPixels: Double = 80

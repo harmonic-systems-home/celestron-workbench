@@ -58,6 +58,16 @@ struct ContentView: View {
         .font(.system(size: 17, design: .rounded))
         .preferredColorScheme(model.isNight ? .dark : .light)
         .sheet(isPresented: $model.showSettings) { SettingsView(model: model, palette: palette) }
+        .alert(
+            "Not enough disk space",
+            isPresented: Binding(
+                get: { model.diskWarning != nil }, set: { if !$0 { model.diskWarning = nil } })
+        ) {
+            Button("Capture anyway", role: .destructive) { model.startDespiteDisk() }
+            Button("Cancel", role: .cancel) { model.diskWarning = nil }
+        } message: {
+            Text(model.diskWarning ?? "")
+        }
     }
 
     /// Loud in either palette: the one thing that mustn't be missed.
@@ -129,6 +139,7 @@ struct ContentView: View {
                     model.holding ? "Holding (tap to release)" : "Hold on Moon",
                     enabled: model.hereSet && model.busy == nil
                 ) { model.toggleHold() }
+                panControls
                 button("2  Calibrate", enabled: model.hereSet && model.busy == nil) {
                     model.calibrate()
                 }
@@ -208,6 +219,29 @@ struct ContentView: View {
         let at = finish.formatted(date: .omitted, time: .shortened)
         return
             "\(model.captureDone) of \(model.captureTotal) tiles\nAbout \(minutes) min left, done ≈ \(at)"
+    }
+
+    /// Pan the view without the hand controller: a quarter frame per press,
+    /// or a twelfth with Fine; Centre returns to the Moon's centre.
+    @State private var fineP = false
+    private var panControls: some View {
+        let step = fineP ? 1.0 / 12 : 0.25
+        let on = model.connected && (model.busy == nil || model.holding)
+        return HStack(spacing: 6) {
+            ForEach(
+                [("◀", -step, 0.0), ("▲", 0.0, -step), ("▼", 0.0, step), ("▶", step, 0.0)], id: \.0
+            ) { item in
+                Button(item.0) { model.pan(item.1, item.2) }
+                    .buttonStyle(BigButton(palette: palette))
+                    .frame(minWidth: 44, minHeight: 40)
+                    .disabled(!on).opacity(on ? 1 : 0.35)
+            }
+            Button("Centre") { model.centreAim() }
+                .buttonStyle(BigButton(palette: palette))
+                .frame(minHeight: 40)
+                .disabled(!(on && model.hereSet)).opacity(on && model.hereSet ? 1 : 0.35)
+            Toggle("Fine", isOn: $fineP).toggleStyle(.checkbox)
+        }
     }
 
     private func button(_ title: String, enabled: Bool, action: @escaping () -> Void) -> some View {

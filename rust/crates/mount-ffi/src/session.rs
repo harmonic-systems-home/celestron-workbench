@@ -162,6 +162,8 @@ pub struct Status {
     pub messages: Vec<String>,
     /// The mount's battery, read about every 30 s while idle.
     pub battery: Option<BatteryStatus>,
+    /// The tracking rates (deg/s, azimuth and altitude axes), while tracking.
+    pub tracking: Option<[f64; 2]>,
 }
 
 /// See [`cwb_mount_celestron::Battery`]: `level` and `state` are the reply's
@@ -198,6 +200,11 @@ struct Inner {
     fast_reads: bool,
     /// The battery reading last traced.
     traced_battery: Option<Nanos>,
+    /// Tracking (ADR 0022 amendment 5): the axis rates being run, deg/s in
+    /// each axis's own sense, and since when. The controller is disarmed
+    /// and not fed positions meanwhile, so the steady motion isn't a fault.
+    tracking: Option<([f64; 2], Nanos)>,
+    next_track_id: u64,
 }
 
 pub struct Session {
@@ -283,6 +290,8 @@ impl Session {
             fast_reads_until: 0,
             fast_reads: true,
             traced_battery: None,
+            tracking: None,
+            next_track_id: 0,
         };
         let actions = inner.controller.connect(now).map_err(|r| r.0)?;
         inner.carry_out(actions, now);
@@ -350,6 +359,7 @@ impl Session {
                 state: b.state,
                 age_ms: (now - b.t_ns) / MS,
             }),
+            tracking: s.tracking.map(|t| t.0),
         }
     }
 }
@@ -383,6 +393,14 @@ pub enum Request {
     Reference {
         altitude_deg: f64,
     },
+    /// Run both axes steadily at these rates (deg/s, each axis's own sense;
+    /// the Moon's apparent motion) until stopped. Replaces any earlier rates.
+    Track {
+        az_deg_s: f64,
+        alt_deg_s: f64,
+    },
+    /// End tracking: tracking off (`T 00`) and fixed rate 0 on both axes.
+    StopTracking,
     /// A goto relative to the axis's last read position.
     Goto {
         axis: Axis,
@@ -399,15 +417,31 @@ impl Inner {
         let now = (self.clock)();
         let result = match request {
             Request::Arm => {
+                // A move takes over from tracking: stop it first; the arm is
+                // retried until the mount reads still.
+                self.end_tracking(now);
                 // Arming needs fresh reads: four a second for a while, so a
                 // refused arm can be retried at once.
                 self.fast_reads_until = now + FAST_READS_FOR_ARMING;
                 self.controller.arm(now)
             }
+            Request::Track { az_deg_s, alt_deg_s } => {
+                return self.track([az_deg_s, alt_deg_s], now);
+            }
+            Request::StopTracking => {
+                self.end_tracking(now);
+                return Ok(json!({ "ok": true }));
+            }
             Request::Disarm => self.controller.disarm(now),
             Request::Reset => self.controller.reset(now),
-            Request::Stop => Ok(self.controller.stop(now)),
-            Request::EmergencyStop => Ok(self.controller.emergency_stop(now)),
+            Request::Stop => {
+                self.end_tracking(now);
+                Ok(self.controller.stop(now))
+            }
+            Request::EmergencyStop => {
+                self.end_tracking(now);
+                Ok(self.controller.emergency_stop(now))
+            }
             Request::Reference { altitude_deg } => {
                 let Some((_, deg, _)) = self.last_position else {
                     return Err("no position read yet".into());
@@ -466,6 +500,9 @@ impl Inner {
             let actions = match report {
                 MountReport::Sent { id, sent_ns } => self.controller.sent(id, sent_ns, now),
                 MountReport::Acknowledged(id) => self.controller.acknowledged(id, now),
+                // While tracking the controller is disarmed and doesn't see
+                // the steady motion.
+                MountReport::Position { .. } if self.tracking.is_some() => Vec::new(),
                 MountReport::Position { axis, t_ns, units } => {
                     let mut a = self.controller.position(axis, t_ns, units, now);
                     if let Some(obs) =
@@ -492,6 +529,9 @@ impl Inner {
             self.last_position = Some((p.t_ns, deg, units));
             if let Some(t) = &self.trace {
                 t.write_at(p.t_ns, "position", json!({ "deg": deg }));
+            }
+            if self.tracking.is_some() {
+                continue;
             }
             let mut actions = Vec::new();
             if let Some(obs) = self.observer.readings(p.t_ns, deg) {
@@ -539,7 +579,8 @@ impl Inner {
             state,
             MountState::Disconnected | MountState::ConnectedReadOnly
         );
-        let fast = !unarmed || now < self.fast_reads_until;
+        // Tracking wants fresh positions for its corrections.
+        let fast = !unarmed || now < self.fast_reads_until || self.tracking.is_some();
         if fast != self.fast_reads {
             self.fast_reads = fast;
             self.adapter.set_position_every(Some(if fast {
@@ -572,6 +613,66 @@ impl Inner {
                     .mount_moved(now, &format!("{axis:?} position changed with no command"))
             }
             None => Vec::new(),
+        }
+    }
+
+    /// Starts or updates tracking. Not while a command runs or a fault is
+    /// latched; an armed controller is disarmed (the next step re-arms).
+    fn track(&mut self, rates: [f64; 2], now: Nanos) -> Result<Value, String> {
+        match self.controller.state() {
+            MountState::Moving | MountState::Stopping => {
+                return Err("a move is running: track after it".into());
+            }
+            MountState::FaultLatched => return Err("latched on a fault: reset first".into()),
+            MountState::Disconnected => return Err("not connected".into()),
+            MountState::Armed => {
+                let _ = self.controller.disarm(now);
+            }
+            _ => {}
+        }
+        if rates.iter().any(|r| !r.is_finite() || r.abs() > 0.05) {
+            return Err(format!("tracking rates {rates:?} deg/s are out of range (0.05 max)"));
+        }
+        for axis in Axis::BOTH {
+            let r = rates[axis.index()];
+            self.next_track_id += 1;
+            let command = MountCommand::Move {
+                id: u64::MAX / 2 + self.next_track_id,
+                axis,
+                direction: if r >= 0.0 {
+                    cwb_mount_core::Direction::Positive
+                } else {
+                    cwb_mount_core::Direction::Negative
+                },
+                // Never rate 0 (it creeps at the slowest rate anyway).
+                rate_deg_s: r.abs(),
+                fixed_rate: None,
+            };
+            if self.adapter.send(&command, now).is_err() {
+                return Err("the hand controller link is lost".into());
+            }
+        }
+        if let Some(t) = &self.trace {
+            t.write("tracking", json!({ "rates_deg_s": rates }));
+        }
+        self.adapter.set_read_while_moving(true);
+        let since = self.tracking.map_or(now, |t| t.1);
+        self.tracking = Some((rates, since));
+        self.steady = None;
+        Ok(json!({ "ok": true }))
+    }
+
+    /// Stops tracking, if it runs: tracking off then fixed rate 0, both axes.
+    fn end_tracking(&mut self, now: Nanos) {
+        if self.tracking.take().is_some() {
+            let _ = self.adapter.send(&MountCommand::StopAll, now);
+            self.adapter.set_read_while_moving(false);
+            if let Some(t) = &self.trace {
+                t.write("tracking", json!({ "rates_deg_s": null }));
+            }
+            // The next goto starts from a read made after this.
+            self.last_busy = now;
+            self.steady = None;
         }
     }
 

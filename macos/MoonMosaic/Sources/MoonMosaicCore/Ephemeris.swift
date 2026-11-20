@@ -165,6 +165,69 @@ public enum Ephemeris {
         )
     }
 
+    // MARK: Phase
+
+    /// How the Moon is lit as seen from the site (Meeus, *Astronomical
+    /// Algorithms*, ch. 48 and 14): the lit fraction, the phase angle, and
+    /// the direction of the bright limb in the alt-az sky frame used for
+    /// sky offsets (+x toward increasing azimuth, +y toward the zenith).
+    /// The terminator is the half-ellipse across the disk at
+    /// `a = −cos(phaseAngle)·√(1 − b²)` (radius units, `a` along the bright
+    /// limb, `b` across it): the lit side is `a` above that.
+    public struct Phase: Sendable, Equatable {
+        public let illuminatedFraction: Double
+        public let phaseAngleDeg: Double
+        /// Toward the bright limb: a unit vector in the sky frame.
+        public let brightLimb: (x: Double, y: Double)
+        /// The same direction as an angle from the zenith, positive toward
+        /// increasing azimuth (clockwise as seen), degrees.
+        public let brightLimbFromZenithDeg: Double
+
+        public static func == (a: Phase, b: Phase) -> Bool {
+            a.illuminatedFraction == b.illuminatedFraction && a.phaseAngleDeg == b.phaseAngleDeg
+                && a.brightLimb.x == b.brightLimb.x && a.brightLimb.y == b.brightLimb.y
+        }
+
+        /// Whether a point on the disk, as a sky offset from the Moon's
+        /// centre in units of its radius, is sunlit.
+        public func isLit(_ x: Double, _ y: Double) -> Bool {
+            let a = x * brightLimb.x + y * brightLimb.y
+            let b = -x * brightLimb.y + y * brightLimb.x
+            guard a * a + b * b <= 1 else { return false }
+            return a >= -cos(deg2rad(phaseAngleDeg)) * max(0, 1 - b * b).squareRoot()
+        }
+    }
+
+    public static func phase(at date: Date, from site: Site) -> Phase {
+        let d = day(julianDay(date))
+        let (moonEq, moonKm) = moon(at: date)
+        let sunEq = sun(at: date)
+        let sunKm = sunEcliptic(d).distanceAU * 149_597_870.7
+        // Elongation, then the phase angle (Meeus 48.2–48.3).
+        let psi = deg2rad(separationDeg(moonEq, sunEq))
+        let i = atan2(sunKm * sin(psi), moonKm - sunKm * cos(psi))
+        let k = (1 + cos(i)) / 2
+        // Position angle of the bright limb, from celestial north through
+        // east (48.5).
+        let (a0, d0) = (deg2rad(sunEq.raDeg), deg2rad(sunEq.decDeg))
+        let (a, dd) = (deg2rad(moonEq.raDeg), deg2rad(moonEq.decDeg))
+        let chi = atan2(
+            cos(d0) * sin(a0 - a), sin(d0) * cos(dd) - cos(d0) * sin(dd) * cos(a0 - a))
+        // Parallactic angle: celestial north from the zenith direction (14.1).
+        let lst = gmstDeg(julianDay(date)) + site.longitudeDeg
+        let h = deg2rad(lst - moonEq.raDeg)
+        let phi = deg2rad(site.latitudeDeg)
+        let q = atan2(sin(h), tan(phi) * cos(dd) - sin(dd) * cos(h))
+        // From the zenith direction, through east. East lies toward
+        // decreasing azimuth (to the left facing the Moon), so in the sky
+        // frame the bright limb is (−sin θ, cos θ).
+        let theta = chi - q
+        let limb = (x: -sin(theta), y: cos(theta))
+        return Phase(
+            illuminatedFraction: k, phaseAngleDeg: rad2deg(i), brightLimb: limb,
+            brightLimbFromZenithDeg: normalize(rad2deg(atan2(limb.x, limb.y))))
+    }
+
     // MARK: Conversions
 
     static func equatorial(lonDeg: Double, latDeg: Double, obliquityDeg: Double) -> Equatorial {

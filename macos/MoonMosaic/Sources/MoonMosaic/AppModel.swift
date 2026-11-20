@@ -130,6 +130,8 @@ final class AppModel: ObservableObject {
     private var mount: MountSession?
     private var camera: SharedCamera?
     private var session: MosaicSession?
+    /// This connection's setup folder: the whole log, calibration and survey frames.
+    private var setupFolder: URL?
     private var runFolder: URL?
     private let paused = Flag()
     /// Per-frame sharpness, shake state and history for the focus assist
@@ -227,13 +229,26 @@ final class AppModel: ObservableObject {
         if night != isNight { isNight = night }
     }
 
+    /// When the app opened, naming its log file (local time, sortable).
+    private static let launchStamp: String = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyy-MM-dd_HHmmss"
+        return f.string(from: Date())
+    }()
+
     func say(_ text: String) {
         let stamp = Self.clock.string(from: Date())
         log.append("\(stamp)  \(text)")
         if log.count > 300 { log.removeFirst(log.count - 300) }
-        if let runFolder {
-            let line = Data("\(stamp)  \(text)\n".utf8)
-            let url = runFolder.appendingPathComponent("log.txt")
+        let line = Data("\(stamp)  \(text)\n".utf8)
+        // Every on-screen message also goes to this launch's log, from the
+        // moment the app opens, connected or not.
+        let launchLog = folder.appendingPathComponent("logs")
+            .appendingPathComponent("\(Self.launchStamp).txt")
+        try? FileManager.default.createDirectory(
+            at: launchLog.deletingLastPathComponent(), withIntermediateDirectories: true)
+        for url in [runFolder, setupFolder].compactMap({ $0?.appendingPathComponent("log.txt") }) + [launchLog] {
             if let h = try? FileHandle(forWritingTo: url) {
                 h.seekToEndOfFile()
                 h.write(line)
@@ -319,6 +334,13 @@ final class AppModel: ObservableObject {
             onEvent: { [weak self] event in
                 Task { @MainActor in self?.handle(event) }
             })
+        // Everything from connect on: the log and the calibration and survey
+        // frames, so a failed setup can be studied later.
+        let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
+        let setup = folder.appendingPathComponent("setup-\(stamp)")
+        try? FileManager.default.createDirectory(at: setup, withIntermediateDirectories: true)
+        session.diagnostics = setup
+        setupFolder = setup
         self.session = session
         if simulate {
             // The fake sky keys off the real mount position with an off-centre
@@ -469,8 +491,9 @@ final class AppModel: ObservableObject {
     /// Runs an operation off the main thread; the live view carries on.
     /// With `resumeHold`, a Hold that was on before the step comes back on
     /// after it succeeds, so the Moon isn't left to drift out of the frame.
+    /// With `holdAfter`, Hold starts after it succeeds either way.
     private func perform(
-        _ name: String, resumeHold: Bool = false,
+        _ name: String, resumeHold: Bool = false, holdAfter: Bool = false,
         _ body: @escaping @Sendable (MosaicSession) async throws -> Void
     ) {
         guard let session, busy == nil else { return }
@@ -493,7 +516,9 @@ final class AppModel: ObservableObject {
                 self.busy = nil
                 self.finishAt = nil
                 self.sync()
-                if ok && resumeHold && wasHolding { self.toggleHold() }
+                if ok && ((resumeHold && wasHolding) || holdAfter) && !self.holding {
+                    self.toggleHold()
+                }
             }
         }
     }
@@ -555,7 +580,10 @@ final class AppModel: ObservableObject {
         step: Double, reach: Double, refAlt: Double
     ) {
         let (stop, saw) = (searchStop, sawTarget)
-        let cancelled: @Sendable () -> Bool = { stop.value || saw.value }
+        // "I see it" isn't a stop: the search goes back to where the target
+        // was seen (MosaicSession.backtrack).
+        let cancelled: @Sendable () -> Bool = { stop.value }
+        let sighted: @Sendable () -> Bool = { saw.value }
         // Automatic acquisition: a clearly bright region against dark sky.
         // Off in test mode, where the operator flags the target by eye.
         let found: @Sendable (Blob.Found?) -> Bool
@@ -577,12 +605,12 @@ final class AppModel: ObservableObject {
                 case .spiral:
                     outcome = try await session.searchSpiral(
                         stepDeg: step, reachDeg: reach, referenceAltitudeDeg: refAlt,
-                        converge: converge, found: found, cancelled: cancelled)
+                        converge: converge, found: found, cancelled: cancelled, sighted: sighted)
                 case .raster:
                     outcome = try await session.searchRaster(
                         halfWidthDeg: reach, halfHeightDeg: reach * 0.6, rowSpacingDeg: step,
                         captureStepDeg: step, referenceAltitudeDeg: refAlt,
-                        converge: converge, found: found, cancelled: cancelled)
+                        converge: converge, found: found, cancelled: cancelled, sighted: sighted)
                 }
                 await MainActor.run { self?.searchFinished(outcome, byOperator: saw.value) }
             } catch {
@@ -600,7 +628,7 @@ final class AppModel: ObservableObject {
             searchEnded()
             return
         }
-        if byOperator {
+        if byOperator && !outcome.found {
             say("Marked in view after \(outcome.stops) stops; search stopped.")
         } else if outcome.found, let b = outcome.blob {
             if outcome.convergeSteps == 0 && outcome.converged {
@@ -744,9 +772,12 @@ final class AppModel: ObservableObject {
         // A hold still finishing its last move can't be restarted yet.
         guard let session, hereSet, busy == nil, holdTask == nil else { return }
         holding = true
-        say("Holding on the Moon's centre.")
+        say(
+            session.aimOffset.x == 0 && session.aimOffset.y == 0
+                ? "Holding on the Moon's centre." : "Holding at the panned aim.")
         let stop = Flag()
         holdStop = stop
+        let wake = holdWake
         holdTask = Task.detached { [weak self] in
             // Ends between moves, never in one: a move cut short leaves the
             // mount going with nobody waiting for it.
@@ -757,9 +788,10 @@ final class AppModel: ObservableObject {
                     await MainActor.run { self?.say("Hold stopped: \(error)") }
                     break
                 }
-                for _ in 0..<100 where !stop.value {
+                for _ in 0..<100 where !stop.value && !wake.value {
                     try? await Task.sleep(for: .milliseconds(100))
                 }
+                wake.value = false
             }
             await MainActor.run {
                 guard let self else { return }
@@ -770,10 +802,55 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Re-aims Hold at once (after a pan) instead of at its next 10 s tick.
+    private let holdWake = Flag()
+
+    /// GUI pan (2026-11-19): moves the view by a fraction of the frame,
+    /// `fx` right and `fy` down, so the point there comes to the centre.
+    /// With Here set it shifts Hold's aim and holds there (Calibrate starts
+    /// from it too); before Here it is one bounded slew. Never the hand
+    /// controller's arrow keys, which can run away.
+    func pan(_ fx: Double, _ fy: Double) {
+        guard let session, connected else { return }
+        let px = PixelOffset(
+            x: fx * Double(session.camera.info.width), y: fy * Double(session.camera.info.height))
+        if hereSet {
+            let d = session.panSky(for: px)
+            session.aimOffset = SkyOffset(x: session.aimOffset.x + d.x, y: session.aimOffset.y + d.y)
+            say(
+                String(
+                    format: "Pan: aiming %.0f″ right, %.0f″ up of the Moon's centre.",
+                    session.aimOffset.x, session.aimOffset.y))
+            if holding {
+                holdWake.value = true
+            } else if busy == nil {
+                toggleHold()
+            }
+        } else if busy == nil {
+            perform("Panning") { try await $0.recentre(pixelOffset: px) }
+        }
+    }
+
+    /// Back to aiming at the Moon's centre.
+    func centreAim() {
+        guard let session else { return }
+        session.aimOffset = SkyOffset(x: 0, y: 0)
+        say("Pan: back to the Moon's centre.")
+        if holding { holdWake.value = true } else if busy == nil, hereSet { toggleHold() }
+    }
+
     /// Asks Hold to end after any move in progress; `holdTask` finishes then.
     private func stopHold() {
         holding = false
         holdStop?.value = true
+        // Hold tracks; releasing it stops the mount (a step's arm would too).
+        if let mount, holdTask != nil {
+            let hold = holdTask
+            Task.detached {
+                await hold?.value
+                try? mount.stopTracking()
+            }
+        }
     }
 
     /// Clears a latched fault once the mount is still; the next step arms it.
@@ -837,26 +914,76 @@ final class AppModel: ObservableObject {
                 at: runFolder!, withIntermediateDirectories: true)
             sync()
             say("Saving to \(runFolder!.path)")
+            let need = Int64(session.plan?.tiles.count ?? 0) * bytesPerTile()
+            if let free = freeBytes(at: runFolder!) {
+                say(
+                    String(
+                        format: "Disk: this run needs about %.1f GB; %.1f GB free%@",
+                        Double(need) / 1e9, Double(free) / 1e9,
+                        need > free ? ". NOT ENOUGH SPACE: free some up before Start." : "."))
+            }
         } catch {
             say("Plan failed: \(error)")
         }
     }
 
-    func start(tiles: [Int]? = nil) {
+    /// The low-disk warning on screen, with the tiles Start was asked for;
+    /// the operator can capture anyway (the estimate may be wrong).
+    @Published var diskWarning: String?
+    private var diskWarningTiles: [Int]?
+
+    /// Free space where `url` lives, in bytes.
+    private func freeBytes(at url: URL) -> Int64? {
+        let v = try? url.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
+        return v?.volumeAvailableCapacityForImportantUsage
+    }
+
+    /// One tile's video: raw 8-bit frames at up to about 80 a second
+    /// (2026-11-19: 231 frames, 479 MB, for 3 s of 1920×1080).
+    private func bytesPerTile() -> Int64 {
+        let info = session?.camera.info
+        let frame = Int64((info?.width ?? 1920) * (info?.height ?? 1080))
+        return frame * Int64((80 * videoSeconds).rounded(.up)) + 1_000_000
+    }
+
+    /// "Capture anyway" on the low-disk warning.
+    func startDespiteDisk() {
+        let tiles = diskWarningTiles
+        diskWarning = nil
+        diskWarningTiles = nil
+        start(tiles: tiles, checkDisk: false)
+    }
+
+    func start(tiles: [Int]? = nil, checkDisk: Bool = true) {
         guard let runFolder else { return }
-        paused.value = false
-        captureTotal =
+        let toShoot =
             tiles?.count
             ?? tileStates.values.filter {
                 if case .done = $0 { return false } else { return true }
             }.count
+        // 2026-11-19: the disk filled mid-run and the last tiles were lost.
+        let need = Int64(toShoot) * bytesPerTile()
+        if checkDisk, let free = freeBytes(at: runFolder), need > free {
+            let text = String(
+                format:
+                    "%d tiles need about %.1f GB, and only %.1f GB is free: about %d tiles would fit. Free some space (or pick another folder in Settings), or capture anyway.",
+                toShoot, Double(need) / 1e9, Double(free) / 1e9, Int(free / bytesPerTile()))
+            say("Not enough disk space: " + text)
+            diskWarningTiles = tiles
+            diskWarning = text
+            return
+        }
+        paused.value = false
+        captureTotal = toShoot
         captureDone = 0
         captureStarted = Date()
         // Until a tile finishes: the video plus a guess at the move and settle.
         finishAt = Date().addingTimeInterval(Double(captureTotal) * (videoSeconds + 8))
         let paused = self.paused
         let shouldContinue: @Sendable () -> Bool = { !paused.value }
-        perform(tiles == nil ? "Capturing" : "Redoing") {
+        // Afterwards Hold re-centres on the Moon and keeps it there, ready
+        // for another run without finding it again.
+        perform(tiles == nil ? "Capturing" : "Redoing", holdAfter: true) {
             try await $0.run(tiles: tiles, into: runFolder, shouldContinue: shouldContinue)
         }
     }
@@ -1031,8 +1158,18 @@ enum SearchPattern: String, CaseIterable {
 /// off (they faulted legitimate motion), and the per-goto distance cap is a
 /// full turn — effectively no limit — so a search sweeps as wide as asked in
 /// one self-terminating move. Every goto still ends itself at its target.
+/// Attended operation (ADR 0022 amendment 4): the operator watches the
+/// mount, so missed feedback and the altitude envelope never stop a run.
+/// Feedback may lag up to 10 s (hand-controller stalls), the altitude
+/// envelope is the whole sky, and what faults remain clear themselves
+/// (`MosaicSession.recoverFromFault`).
 private var attendedSafety: [String: Any] {
     [
+        "min_altitude_deg": -90.0,
+        "max_altitude_deg": 90.0,
+        "imu_max_age_ms": 10_000,
+        "send_deadline_ms": 10_000,
+        "ack_deadline_ms": 10_000,
         "max_goto_deg": 360.0,
         "motion_deg_s": 0.3,
         "overspeed_fraction": 2.0,

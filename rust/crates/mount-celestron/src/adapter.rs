@@ -16,7 +16,7 @@
 use std::{
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::{self, RecvTimeoutError},
     },
     thread::{self, JoinHandle},
@@ -101,6 +101,8 @@ pub struct CelestronAdapter {
     worker: Option<JoinHandle<()>>,
     /// Idle read interval in ms; 0 for none.
     position_every: Arc<AtomicU64>,
+    /// Keep reading positions during variable-rate moves (tracking).
+    read_while_moving: Arc<AtomicBool>,
 }
 
 impl CelestronAdapter {
@@ -118,6 +120,8 @@ impl CelestronAdapter {
             position_every.map_or(0, |d| d.as_millis().max(1) as u64),
         ));
         let worker_every = every.clone();
+        let read_moving = Arc::new(AtomicBool::new(false));
+        let worker_read_moving = read_moving.clone();
         let worker = thread::Builder::new()
             .name("cwb-celestron".into())
             .spawn(move || {
@@ -134,7 +138,7 @@ impl CelestronAdapter {
                     battery_read: None,
                     no_battery: false,
                 }
-                .run(rx, &worker_every)
+                .run(rx, &worker_every, &worker_read_moving)
             })
             .expect("spawn the Celestron worker thread");
         Self {
@@ -147,6 +151,7 @@ impl CelestronAdapter {
             battery: None,
             worker: Some(worker),
             position_every: every,
+            read_while_moving: read_moving,
         }
     }
 
@@ -157,6 +162,13 @@ impl CelestronAdapter {
             every.map_or(0, |d| d.as_millis().max(1) as u64),
             Ordering::Relaxed,
         );
+    }
+
+    /// Reads positions at the idle interval even while a variable-rate move
+    /// runs: for tracking, whose slow steady motion needs watching. Gotos
+    /// keep their own watch; a stop still goes first.
+    pub fn set_read_while_moving(&self, on: bool) {
+        self.read_while_moving.store(on, Ordering::Relaxed);
     }
 
     /// Axis positions read since the last call.
@@ -275,7 +287,12 @@ struct Watch {
 }
 
 impl<L: Link> Worker<L> {
-    fn run(mut self, jobs: mpsc::Receiver<MountCommand>, every: &AtomicU64) {
+    fn run(
+        mut self,
+        jobs: mpsc::Receiver<MountCommand>,
+        every: &AtomicU64,
+        read_while_moving: &AtomicBool,
+    ) {
         // Stops re-sent every 250 ms while a fault is latched mustn't starve
         // the position reads: they are the best evidence the mount is still.
         // None until the first read, which is due at once.
@@ -302,6 +319,8 @@ impl<L: Link> Worker<L> {
                 None => jobs.recv().map_err(|_| RecvTimeoutError::Disconnected),
             };
             let read_due = position_every.is_some_and(|every| since_read(last_read) >= every);
+            // Evaluated after any command below runs: a move just sent counts.
+            let idle = |w: &Self| !w.moving || read_while_moving.load(Ordering::Relaxed);
             match first {
                 Ok(command) => {
                     let mut batch = vec![command];
@@ -309,14 +328,14 @@ impl<L: Link> Worker<L> {
                     for command in overtake(batch) {
                         self.execute(&command);
                     }
-                    if read_due && !self.moving && self.watch.is_none() {
+                    if read_due && idle(&self) && self.watch.is_none() {
                         last_read = Some(Instant::now());
                         self.read_position();
                         self.read_battery_if_due();
                     }
                 }
                 Err(RecvTimeoutError::Timeout)
-                    if read_due && self.watch.is_none() && !self.moving =>
+                    if read_due && self.watch.is_none() && idle(&self) =>
                 {
                     last_read = Some(Instant::now());
                     self.read_position();

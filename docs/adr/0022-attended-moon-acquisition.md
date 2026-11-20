@@ -227,3 +227,81 @@ where the spotting scope left the mount. Its first move was also its longest.
   start is found in 10 stops instead of 33.
 
 The spiral already started at the current position, so it is unchanged.
+
+## Amendment 4: in attended operation, faults don't end the run (2026-11-19)
+
+On the night of 2026-11-19 the hand controller stalled again and again (low battery,
+about 9.65 V). Each stall latched a fault (a command not sent within 1 s, or
+position reads gone stale), and each latch ended the step. A single fault partway
+through a mosaic ended the run. The operator watches the mount and judges there is
+no danger, so missed feedback must not stop the operation.
+
+- **No software limits in attended mode.** Moon Mosaic opens its session with the
+  altitude envelope at −90° to 90°, and the send, acknowledgement and position-age
+  deadlines at 10 s. What protects the mount is physical: the operator within reach,
+  the power switch, and the mount's own firmware limits. This replaces the
+  build spec's "keep the altitude and deadline guards" for attended operation.
+- **Faults clear themselves, and the move is retried.** When a fault latches, Moon
+  Mosaic waits up to 90 s for the hand controller to answer and the mount to read
+  still. It then resets, re-arms, and retries the interrupted move from a fresh
+  position, up to 5 times. The operator's emergency stop is never undone.
+- The shared controller is unchanged, so unattended and automated motion stays
+  gated as before.
+
+## Amendment 5: tracking (2026-11-19)
+
+Without tracking, the Moon drifts about 15″ a second. Hold re-aimed with a goto every
+10 s, so the live image jumped constantly, and every tile's video smeared by about
+180 px. Tracking now runs the Moon's own motion on both axes.
+
+- **How:** the session's `track` request sends a variable-rate move to each motor
+  controller (`P 03 dev 06|07`, 0.25″/s steps). Both axes run at once, at rates
+  Moon Mosaic computes from the ephemeris (`target` over ±15 s). Tracking ends with
+  `T 00` and fixed rate 0 on both axes, which is the existing stop. Any arm (a move
+  about to start) and any stop end it first.
+- **The controller stays out of it:** while tracking, the session disarms the
+  controller and doesn't feed it positions, so the steady motion isn't taken for
+  unexpected motion. The adapter keeps reading positions during tracking
+  (`set_read_while_moving`).
+- **Where it's used:** Hold makes one goto, then tracks, with a small correction (at
+  most 7″/s, over about 20 s) toward the aim. It makes a new goto only if more than
+  about 2′ off, or after a pan. Each tile's video is tracked at the plain rate. The
+  next tile's goto takes over.
+- **What's left open:** a goto made while tracking was running relies on the arm
+  having stopped it first. The rate quantisation (0.25″/s) and ephemeris error are
+  absorbed by Hold's correction. Closed-loop tracking on the image centroid (step
+  5 above) is still to come.
+- **The pan replaces the hand controller:** Hold's aim can be moved with pan buttons
+  in the app, a quarter or a twelfth of a frame at a time. On 2026-11-19 the hand
+  controller's arrow keys fought Hold and twice ran away.
+
+## Amendment 6: calibration by drift and tracked moves (2026-11-19)
+
+The two-goto calibration was unreliable. Tonight it gave 0.33–0.38″/px against a
+true 0.281″/px (measured from the stitched mosaics), and camera angles from −8.7° to
++3.4°. The cause was frame matches that under-measured the shift, partly locking onto
+the sensor's fixed pattern at zero. That bad scale made the plans too small, threw
+off Find centre's map of the survey, and misplaced the tiles.
+
+- **Drift gives the scale and the angle.** From the Moon held at the aim, tracking
+  pauses for 6 s, and frames on a 1 s schedule follow its drift (about 50 px per
+  step at 15″/s and 0.28″/px). The ephemeris gives the Moon's motion exactly, so
+  the image's motion fixes the scale and the camera's turn. No focal length is
+  needed, so Barlows, reducers, no diagonal and other cameras all work. Matches
+  ignore peaks near zero shift, where the fixed pattern sits (`Registration.shift`,
+  `minShift`).
+- **Two tracked moves give the second direction.** After a re-centring goto to
+  where the ephemeris puts the aim, the mount tracks a little faster on one axis
+  for 4 s. The Moon stays put apart from the commanded offset, with no goto, no
+  settle and no drift between the two frames. This is done once in azimuth and
+  once in altitude. Together with the drift, that settles mirroring (a star
+  diagonal).
+- **Fit and check:** the map is the least-squares fit to all three measurements.
+  Each must agree with it within 15%, or the attempt repeats (up to 3 times). The
+  scale is logged against the focal-length estimate, with a "Barlow?" note if they
+  differ by more than 25%. It is never rejected on that alone. Every frame,
+  shift, Moon motion and residual is saved in `setup-<time>/calibration/`.
+- **In the simulator:** with a fake camera at twice the focal-length scale (like a
+  2× Barlow), the drift alone recovers 0.600″/px against a true 0.6. The angle
+  comes out at 20.1° against 20°, the residuals at 0–2%, and mirroring is
+  detected both ways.

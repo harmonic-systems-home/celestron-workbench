@@ -46,6 +46,8 @@ public final class MountSession: @unchecked Sendable {
         public let messages: [String]
         /// The mount's battery, read about every 30 s while idle.
         public let battery: Battery?
+        /// The tracking rates (deg/s, azimuth and altitude axes), while tracking.
+        public let tracking: [Double]?
     }
 
     /// The battery's reply: its voltage, and its first two bytes as sent.
@@ -130,6 +132,14 @@ public final class MountSession: @unchecked Sendable {
     public func reset() throws { try command(["op": "reset"]) }
     public func stop() throws { try command(["op": "stop"]) }
     public func emergencyStop() throws { try command(["op": "emergency_stop"]) }
+
+    /// Runs both axes steadily at these rates (deg/s, each axis's own sense)
+    /// until stopped, or until a move arms the mount (ADR 0022 amendment 5).
+    public func track(azDegS: Double, altDegS: Double) throws {
+        try command(["op": "track", "az_deg_s": azDegS, "alt_deg_s": altDegS])
+    }
+
+    public func stopTracking() throws { try command(["op": "stop_tracking"]) }
 
     /// Ties the altitude encoder to the sky: the tube's true altitude now.
     public func setAltitudeReference(_ altitudeDeg: Double) throws {

@@ -5,6 +5,10 @@ public struct MosaicSettings: Sendable {
     /// The telescope's focal length, for the first guess at the image scale.
     public var focalLengthMm: Double = 2000
     public var overlap: Double = 0.25
+    /// Extra coverage beyond the computed limb, as a fraction of the radius.
+    /// On 2026-11-19 the found centre was ~1000 px off and the limb fell
+    /// outside a 3% margin; 20% (about one more ring of tiles) absorbs that.
+    public var planMargin: Double = 0.2
     /// Each tile's video. No tracking runs, and the Moon drifts about 15″ a
     /// second, so keep it short; stacking aligns the frames.
     public var videoSeconds: Double = 3
@@ -12,6 +16,12 @@ public struct MosaicSettings: Sendable {
     public var gain: Int = 100
     /// Calibration moves, as a fraction of the frame's shorter side.
     public var calibrationFraction: Double = 0.2
+    /// Calibration's drift: how long the Moon drifts untracked, and how many
+    /// frame-to-frame steps it's measured in.
+    public var driftSeconds: Double = 6
+    public var driftFrames: Int = 6
+    /// How long each calibration move's extra tracking rate runs.
+    public var calibrationMoveSeconds: Double = 4
     /// The Moon must be at least this far from the Sun.
     public var minSunSeparationDeg: Double = 40
     /// How long to wait after a goto before using the image.
@@ -66,6 +76,18 @@ public struct MosaicError: Error, CustomStringConvertible {
 public final class MosaicSession: @unchecked Sendable {
     public let mount: MountSession
     public let camera: Camera
+    /// Where calibration and survey frames are kept for later review
+    /// (2026-11-19: calibration kept failing and nothing was saved to study).
+    /// Nil keeps nothing.
+    public var diagnostics: URL?
+    /// Where Hold and Calibrate aim, relative to the Moon's centre: the
+    /// operator pans it from the app (2026-11-19: the hand controller's
+    /// arrow keys fought Hold and twice ran away).
+    public var aimOffset = SkyOffset(x: 0, y: 0)
+
+    /// The sky offset that brings the point at `pixel` (from the frame's
+    /// centre) to the centre: calibrated, or the focal-length guess.
+    public func panSky(for pixel: PixelOffset) -> SkyOffset { sky(for: pixel, searchOrientation) }
     public private(set) var settings: MosaicSettings
     public private(set) var here: Here?
     public private(set) var calibration: CameraCalibration?
@@ -130,6 +152,7 @@ public final class MosaicSession: @unchecked Sendable {
     /// controller's keys stay free between steps, and moving with them
     /// leaves Here good (the encoders see the move).
     public func markHere() async throws {
+        aimOffset = SkyOffset(x: 0, y: 0)
         let now = clock()
         let sun = Ephemeris.sun(at: now)
         let (moonEq, _) = Ephemeris.moon(at: now)
@@ -177,6 +200,14 @@ public final class MosaicSession: @unchecked Sendable {
                         "Here: Moon at azimuth %.2f°, altitude %.2f°, %.1f′ across; %.0f° from the Sun.",
                     moon.horizontal.azDeg, moon.horizontal.altDeg, moon.diameterDeg * 60,
                     separation)))
+        let phase = Ephemeris.phase(at: clock(), from: settings.site)
+        onEvent(
+            .message(
+                String(
+                    format:
+                        "Phase: %.0f%% lit (phase angle %.0f°); bright limb %.0f° from straight up, clockwise as seen; the terminator crosses %.2f radii from the centre on the dark side.",
+                    phase.illuminatedFraction * 100, phase.phaseAngleDeg,
+                    phase.brightLimbFromZenithDeg, cos(phase.phaseAngleDeg * .pi / 180))))
     }
 
     /// The mount's axis angles that put `sky` (relative to the Moon's
@@ -198,54 +229,172 @@ public final class MosaicSession: @unchecked Sendable {
 
     // MARK: Calibration
 
-    /// Two small gotos, one per axis; frames before and after each, registered,
-    /// with the Moon's own motion meanwhile taken out.
+    /// Learns how the camera sees the sky (ADR 0022 amendment 6): the scale,
+    /// the camera's turn and any mirroring, as the 2×2 map from sky offsets
+    /// to image pixels. Three measurements, each starting from the Moon held
+    /// at the aim, so nothing wanders out of view:
+    /// 1. **Drift:** tracking pauses for `driftSeconds` and the Moon drifts
+    ///    across the frame. Its motion is known exactly from the ephemeris,
+    ///    so the image's motion gives the scale and the turn with no focal
+    ///    length needed (Barlows, no diagonal, any camera). Frames a second
+    ///    apart move ~50 px each, far from the zero shift where the sensor's
+    ///    fixed pattern sits, which is excluded.
+    /// 2. **An azimuth move** and 3. **an altitude move**, each from the
+    ///    re-centred Moon: the second direction, which settles mirroring.
+    /// The map is fitted to all three; each must agree with it within 15%
+    /// or the attempt repeats (up to 3). The scale is logged against the
+    /// focal-length estimate, which is only a check.
     public func calibrate() async throws {
         guard here != nil else { throw MosaicError(description: "Press Here first.") }
-        try await armForStep()
-        defer { endStep() }
         try camera.configure(exposureUs: settings.exposureUs, gain: settings.gain)
         try camera.start()
         defer { camera.stop() }
-        let move =
-            settings.calibrationFraction * Double(min(camera.info.width, camera.info.height))
-            * scaleGuess
-
-        try await goToSky(SkyOffset(x: 0, y: 0))
-        let (f0, t0, p0) = try await still()
-        try await goBy(SkyOffset(x: move, y: 0))
-        let (f1, t1, p1) = try await still()
-        try await goBy(SkyOffset(x: 0, y: move))
-        let (f2, t2, p2) = try await still()
-
-        let s1 = relativeMove(from: (t0, p0), to: (t1, p1))
-        let s2 = relativeMove(from: (t1, p1), to: (t2, p2))
-        let r1 = Registration.shift(from: f0, to: f1)
-        let r2 = Registration.shift(from: f1, to: f2)
-        guard r1.peak > 0.05, r2.peak > 0.05,
-            let cal = CameraCalibration(
-                (s1, PixelOffset(x: r1.dx, y: r1.dy)), (s2, PixelOffset(x: r2.dx, y: r2.dy)))
-        else {
-            throw MosaicError(
-                description: String(
-                    format:
-                        "Calibration failed: the frames didn't match (is the Moon in view and in focus?). Moves (%.0f″, %.0f″) → (%.0f, %.0f) px, match %.2f; (%.0f″, %.0f″) → (%.0f, %.0f) px, match %.2f.",
-                    s1.x, s1.y, r1.dx, r1.dy, r1.peak, s2.x, s2.y, r2.dx, r2.dy, r2.peak))
+        let guess = 206.265 * camera.info.pixelSizeUm / settings.focalLengthMm
+        let short = Double(min(camera.info.width, camera.info.height))
+        let move = settings.calibrationFraction * short * guess
+        // Re-centre: a goto to where the ephemeris puts the aim, then track.
+        func centre() async throws {
+            try await armForStep()
+            try await goToSky(aimOffset)
+            endStep()
+            try await track(aimOffset, correct: false)
         }
-        calibration = cal
-        // Back to the Moon's centre, where it started.
-        try await goToSky(SkyOffset(x: 0, y: 0))
-        onEvent(
-            .message(
-                String(
-                    format:
-                        "Calibration moves: (%.1f″, %.1f″) → (%.1f, %.1f) px; (%.1f″, %.1f″) → (%.1f, %.1f) px.",
-                    s1.x, s1.y, r1.dx, r1.dy, s2.x, s2.y, r2.dx, r2.dy)))
-        onEvent(
-            .message(
-                String(
-                    format: "Calibrated: %.3f″ per pixel, camera turned %.1f°.", cal.arcsecPerPixel,
-                    cal.rotationDeg)))
+        var why = ""
+        for attempt in 1...3 {
+            let stamp = Self.fileStamp(clock())
+            // 1. Drift.
+            try await centre()
+            try mount.stopTracking()
+            try await Task.sleep(for: .milliseconds(500))
+            let still0 = try await freshPosition()
+            var drift: [(Frame, Date)] = []
+            let driftStart = Date()
+            let step = settings.driftSeconds / Double(settings.driftFrames)
+            for n in 0...settings.driftFrames {
+                // On a schedule, so the steps stay even however long a frame takes.
+                let wait = driftStart.addingTimeInterval(Double(n) * step).timeIntervalSinceNow
+                if wait > 0 { try await Task.sleep(for: .seconds(wait)) }
+                let f = try await grabFrame()
+                drift.append((f, clock().addingTimeInterval(f.time.timeIntervalSinceNow)))
+            }
+            keep(drift.enumerated().map { ("\(stamp)-a\(attempt)-drift\(String(format: "%02d", $0.offset))", $0.element.0) }, in: "calibration")
+            var driftSky = SkyOffset(x: 0, y: 0)
+            var driftPx = PixelOffset(x: 0, y: 0)
+            var driftPairs = 0
+            var driftRecords: [[String: Any]] = []
+            for (a, b) in zip(drift, drift.dropFirst()) {
+                let sky = relativeMove(from: (a.1, still0), to: (b.1, still0))
+                let expected = hypot(sky.x, sky.y) / guess
+                let r = Registration.shift(from: a.0, to: b.0, minShift: max(6, 0.25 * expected))
+                let ok = r.peak > 0.05
+                driftRecords.append([
+                    "sky": [sky.x, sky.y], "shift": [r.dx, r.dy, r.peak], "used": ok,
+                    "dt": b.1.timeIntervalSince(a.1),
+                ])
+                if ok {
+                    driftSky = SkyOffset(x: driftSky.x + sky.x, y: driftSky.y + sky.y)
+                    driftPx = PixelOffset(x: driftPx.x + r.dx, y: driftPx.y + r.dy)
+                    driftPairs += 1
+                }
+            }
+            // 2 and 3. A move along each axis, each from the held centre, made
+            // by tracking a little faster on that axis for a few seconds: the
+            // Moon stays put apart from the commanded offset, with no goto, no
+            // settle and no drift between the two frames.
+            func measure(_ by: SkyOffset, _ name: String) async throws -> (SkyOffset, (dx: Double, dy: Double, peak: Double)) {
+                try await centre()
+                let (f0, t0, p0) = try await trackedFrame()
+                let seconds = settings.calibrationMoveSeconds
+                let now = clock()
+                let a = try target(aimOffset, at: now.addingTimeInterval(-15))
+                let b = try target(aimOffset, at: now.addingTimeInterval(15))
+                let alt = here?.moon.horizontal.altDeg ?? 45
+                let extra = MosaicPlanner.axes(for: SkyOffset(x: by.x / seconds, y: by.y / seconds), altitudeDeg: alt)
+                try mount.track(
+                    azDegS: wrap180(b.az - a.az) / 30 + extra.azDeg,
+                    altDegS: (b.alt - a.alt) / 30 + extra.altDeg)
+                try await Task.sleep(for: .seconds(seconds))
+                try await track(aimOffset, correct: false)
+                let (f1, t1, p1) = try await trackedFrame()
+                keep([("\(stamp)-a\(attempt)-\(name)-0", f0), ("\(stamp)-a\(attempt)-\(name)-1", f1)], in: "calibration")
+                let sky = relativeMove(from: (t0, p0), to: (t1, p1))
+                let expected = hypot(sky.x, sky.y) / guess
+                return (sky, Registration.shift(from: f0, to: f1, minShift: max(6, 0.25 * expected)))
+            }
+            let (azSky, azShift) = try await measure(SkyOffset(x: move, y: 0), "az")
+            let (altSky, altShift) = try await measure(SkyOffset(x: 0, y: move), "alt")
+            // Fit image = M · sky to the three, least squares.
+            var pairs: [(SkyOffset, PixelOffset)] = []
+            if driftPairs >= 2 { pairs.append((driftSky, driftPx)) }
+            if azShift.peak > 0.05 { pairs.append((azSky, PixelOffset(x: azShift.dx, y: azShift.dy))) }
+            if altShift.peak > 0.05 { pairs.append((altSky, PixelOffset(x: altShift.dx, y: altShift.dy))) }
+            let fit = Self.fitMap(pairs)
+            let residuals = fit.map { m in
+                pairs.map { (s, p) -> Double in
+                    let q = m.image(for: s)
+                    return hypot(q.x - p.x, q.y - p.y) / max(1, hypot(p.x, p.y))
+                }
+            } ?? []
+            let driftScale = hypot(driftPx.x, driftPx.y) > 0
+                ? hypot(driftSky.x, driftSky.y) / hypot(driftPx.x, driftPx.y) : 0
+            why = String(
+                format: "drift %d pairs, %.0f″ → %.0f px (%.3f″/px); az (%.0f″, %.0f″) → (%.0f, %.0f) px, match %.2f; alt (%.0f″, %.0f″) → (%.0f, %.0f) px, match %.2f; residuals %@",
+                driftPairs, hypot(driftSky.x, driftSky.y), hypot(driftPx.x, driftPx.y), driftScale,
+                azSky.x, azSky.y, azShift.dx, azShift.dy, azShift.peak,
+                altSky.x, altSky.y, altShift.dx, altShift.dy, altShift.peak,
+                residuals.map { String(format: "%.0f%%", $0 * 100) }.joined(separator: "/"))
+            note(
+                "calibration",
+                [
+                    "time": stamp, "attempt": attempt, "method": "drift+moves",
+                    "guessArcsecPerPixel": guess, "moveArcsec": move,
+                    "drift": driftRecords, "driftScale": driftScale,
+                    "az": ["sky": [azSky.x, azSky.y], "shift": [azShift.dx, azShift.dy, azShift.peak]],
+                    "alt": ["sky": [altSky.x, altSky.y], "shift": [altShift.dx, altShift.dy, altShift.peak]],
+                    "fit": fit.map { ["a": $0.a, "b": $0.b, "c": $0.c, "d": $0.d,
+                                      "arcsecPerPixel": $0.arcsecPerPixel, "rotationDeg": $0.rotationDeg] } ?? [:],
+                    "residuals": residuals,
+                    "exposureUs": settings.exposureUs, "gain": settings.gain,
+                ])
+            if let m = fit, pairs.count == 3, residuals.allSatisfy({ $0 <= 0.15 }) {
+                calibration = m
+                try await centre()
+                onEvent(.message("Calibration: \(why)."))
+                let vsGuess = m.arcsecPerPixel / guess - 1
+                onEvent(
+                    .message(
+                        String(
+                            format: "Calibrated: %.3f″ per pixel (%+.0f%% against %.3f from the %.0f mm focal length), camera turned %.1f°, image %@.",
+                            m.arcsecPerPixel, vsGuess * 100, guess, settings.focalLengthMm, m.rotationDeg,
+                            m.mirrored ? "mirrored" : "not mirrored")))
+                if abs(vsGuess) > 0.25 {
+                    onEvent(.message("The scale differs from the focal length's by more than 25%: a Barlow or reducer? If not, check the focal length in Settings."))
+                }
+                return
+            }
+            onEvent(.message("Calibration attempt \(attempt) of 3 didn't agree (\(why)); trying again."))
+        }
+        try? await centre()
+        throw MosaicError(
+            description: "Calibration failed 3 times (\(why)). Put the limb or the terminator in view and try again.")
+    }
+
+    /// The least-squares map image = M · sky through the origin.
+    static func fitMap(_ pairs: [(SkyOffset, PixelOffset)]) -> CameraCalibration? {
+        guard pairs.count >= 2 else { return nil }
+        // M = (Σ p sᵀ)(Σ s sᵀ)⁻¹
+        var (sxx, sxy, syy) = (0.0, 0.0, 0.0)
+        var (pxsx, pxsy, pysx, pysy) = (0.0, 0.0, 0.0, 0.0)
+        for (s, p) in pairs {
+            sxx += s.x * s.x; sxy += s.x * s.y; syy += s.y * s.y
+            pxsx += p.x * s.x; pxsy += p.x * s.y; pysx += p.y * s.x; pysy += p.y * s.y
+        }
+        let det = sxx * syy - sxy * sxy
+        guard abs(det) > 1e-6 else { return nil }
+        let (i11, i12, i22) = (syy / det, -sxy / det, sxx / det)
+        return CameraCalibration(
+            a: pxsx * i11 + pxsy * i12, b: pxsx * i12 + pxsy * i22,
+            c: pysx * i11 + pysy * i12, d: pysx * i12 + pysy * i22)
     }
 
     /// The change in pointing relative to the Moon between two moments, from
@@ -320,12 +469,13 @@ public final class MosaicSession: @unchecked Sendable {
         stepDeg: Double, reachDeg: Double, referenceAltitudeDeg: Double? = nil,
         converge: Converge? = nil,
         found: @escaping @Sendable (Blob.Found?) -> Bool,
-        cancelled: @escaping @Sendable () -> Bool = { false }
+        cancelled: @escaping @Sendable () -> Bool = { false },
+        sighted: @escaping @Sendable () -> Bool = { false }
     ) async throws -> SearchOutcome {
         let spiral = SpiralSearch(stepDeg: stepDeg, reachDeg: reachDeg)
         return try await walk(
             spiral.steps.map { ($0.azDeg, $0.altDeg) }, referenceAltitudeDeg, converge, found,
-            cancelled)
+            cancelled, sighted)
     }
 
     /// Walks a serpentine raster out from the current position (ADR 0022):
@@ -339,7 +489,8 @@ public final class MosaicSession: @unchecked Sendable {
         referenceAltitudeDeg: Double? = nil,
         converge: Converge? = nil,
         found: @escaping @Sendable (Blob.Found?) -> Bool,
-        cancelled: @escaping @Sendable () -> Bool = { false }
+        cancelled: @escaping @Sendable () -> Bool = { false },
+        sighted: @escaping @Sendable () -> Bool = { false }
     ) async throws -> SearchOutcome {
         precondition(captureStepDeg > 0, "captureStepDeg must be positive")
         let raster = RasterSearch(
@@ -358,7 +509,7 @@ public final class MosaicSession: @unchecked Sendable {
                 if !seen(o) { offsets.append(o) }
             }
         }
-        return try await walk(offsets, referenceAltitudeDeg, converge, found, cancelled)
+        return try await walk(offsets, referenceAltitudeDeg, converge, found, cancelled, sighted)
     }
 
     /// Shared drive: arm, open the camera, goto each offset (from the start)
@@ -369,7 +520,8 @@ public final class MosaicSession: @unchecked Sendable {
         _ referenceAltitudeDeg: Double?,
         _ converge: Converge?,
         _ found: @escaping @Sendable (Blob.Found?) -> Bool,
-        _ cancelled: @escaping @Sendable () -> Bool
+        _ cancelled: @escaping @Sendable () -> Bool,
+        _ sighted: @escaping @Sendable () -> Bool = { false }
     ) async throws -> SearchOutcome {
         // The controller won't arm without a true altitude. A search runs
         // before Here, so tie the encoder to the sky from the rough aim (the
@@ -390,8 +542,13 @@ public final class MosaicSession: @unchecked Sendable {
         defer { camera.stop() }
         let start = try await freshPosition()
         var stops = 0
+        var history: [SearchStop] = []
+        let searchStamp = Self.fileStamp(clock())
         for (dAz, dAlt) in offsets {
             if cancelled() { break }
+            if sighted() {
+                return try await backtrack(history, stops: stops, converge, cancelled)
+            }
             // A search move is lean: a straight goto (no anti-backlash
             // overshoot — the search doesn't need backlash precision) and no
             // settle wait. A few-ms exposure freezes any residual motion, so
@@ -406,6 +563,16 @@ public final class MosaicSession: @unchecked Sendable {
             // brightest parts: brightFraction then reads as "how much of the
             // frame is lit".
             let blob = Blob.find(frame, thresholdFraction: 0.3)
+            history.append(SearchStop(position: pos, blob: blob))
+            keep([("\(searchStamp)-stop\(String(format: "%03d", stops))", frame)], in: "search")
+            note(
+                "search",
+                [
+                    "time": searchStamp, "stop": stops, "offset": [dAz, dAlt], "position": pos,
+                    "peak": blob?.peak ?? 0, "brightFraction": blob?.brightFraction ?? 0,
+                    "centroidOffset": blob.map { [$0.offsetFromCentre.x, $0.offsetFromCentre.y] } ?? [],
+                    "found": found(blob),
+                ])
             if found(blob), let blob {
                 onEvent(.message("Search: target in view after \(stops) stops."))
                 guard let converge else {
@@ -419,8 +586,69 @@ public final class MosaicSession: @unchecked Sendable {
                 return outcome
             }
         }
+        if sighted() { return try await backtrack(history, stops: stops, converge, cancelled) }
         return SearchOutcome(
             found: false, atAzAltDeg: try? await freshPosition(), blob: nil, stops: stops)
+    }
+
+    /// One search stop: where the mount was and what the frame showed.
+    struct SearchStop {
+        let position: [Double]
+        let blob: Blob.Found?
+        /// How much bright target the frame held: peak × lit fraction.
+        var score: Double { blob.map { Double($0.peak) * $0.brightFraction } ?? 0 }
+    }
+
+    /// The operator pressed "I see it" (2026-11-19). By the time the search
+    /// notices, the mount has gone on to the next stop and the target can be
+    /// out of view, so go back: to the best of the last few stops, then, if
+    /// that frame holds less than the best seen, a fine scan back along the
+    /// path between them. Then step onto the disk as an automatic find would.
+    private func backtrack(
+        _ history: [SearchStop], stops: Int, _ converge: Converge?,
+        _ cancelled: @escaping @Sendable () -> Bool
+    ) async throws -> SearchOutcome {
+        let recent = Array(history.suffix(4))
+        guard let best = recent.max(by: { $0.score < $1.score }), best.score > 0 else {
+            onEvent(.message("I see it: no bright target in the last frames; staying here."))
+            return SearchOutcome(
+                found: false, atAzAltDeg: try? await freshPosition(), blob: nil, stops: stops)
+        }
+        onEvent(.message("I see it: going back to where the target was."))
+        try await searchGoTo(az: best.position[0], alt: best.position[1])
+        var here = SearchStop(position: try await freshPosition(), blob: Blob.find(try await grabFrame(), thresholdFraction: 0.3))
+        if here.score < 0.7 * best.score, recent.count >= 2 {
+            // Fine scan: three points between each pair of the recent stops,
+            // newest first (back the way the mount came).
+            var candidates: [SearchStop] = [here]
+            for (a, b) in zip(recent.dropFirst().reversed(), recent.dropLast().reversed()) {
+                for k in 1...3 {
+                    if cancelled() { break }
+                    let f = Double(k) / 4
+                    let az = a.position[0] + wrap180(b.position[0] - a.position[0]) * f
+                    let alt = a.position[1] + (b.position[1] - a.position[1]) * f
+                    try await searchGoTo(az: az, alt: alt)
+                    candidates.append(
+                        SearchStop(
+                            position: try await freshPosition(),
+                            blob: Blob.find(try await grabFrame(), thresholdFraction: 0.3)))
+                }
+            }
+            if let top = candidates.max(by: { $0.score < $1.score }) {
+                try await searchGoTo(az: top.position[0], alt: top.position[1])
+                here = SearchStop(position: try await freshPosition(), blob: Blob.find(try await grabFrame(), thresholdFraction: 0.3))
+            }
+        }
+        guard let blob = here.blob else {
+            return SearchOutcome(found: false, atAzAltDeg: here.position, blob: nil, stops: stops)
+        }
+        guard let converge else {
+            return SearchOutcome(found: true, atAzAltDeg: here.position, blob: blob, stops: stops)
+        }
+        let outcome = try await convergeOnDisk(from: blob, converge, cancelled)
+        return SearchOutcome(
+            found: true, atAzAltDeg: outcome.atAzAltDeg ?? here.position, blob: outcome.blob,
+            stops: stops, converged: outcome.converged, convergeSteps: outcome.convergeSteps)
     }
 
     /// Steps from a sighting onto the lit disk (`Converge`). Each step is one
@@ -474,7 +702,16 @@ public final class MosaicSession: @unchecked Sendable {
             }
             try await searchGoTo(az: target.az, alt: target.alt)
             steps += 1
-            let next = lit(try await grabFrame())
+            let stepFrame = try await grabFrame()
+            let next = lit(stepFrame)
+            keep([("\(Self.fileStamp(clock()))-converge\(String(format: "%02d", steps))", stepFrame)], in: "search")
+            note(
+                "search",
+                [
+                    "kind": "converge", "step": steps, "target": [target.az, target.alt],
+                    "brightFraction": next?.brightFraction ?? 0,
+                    "centroidOffset": next.map { [$0.offsetFromCentre.x, $0.offsetFromCentre.y] } ?? [],
+                ])
             let gained =
                 next.map {
                     $0.brightFraction > blob.brightFraction + 0.02
@@ -574,6 +811,7 @@ public final class MosaicSession: @unchecked Sendable {
         }
         var samples: [MoonCentre.Sample] = []
         let origin = (here.time, [here.azimuthDeg, here.altitudeDeg])
+        let surveyStamp = Self.fileStamp(clock())
         for (i, stop) in stops.enumerated() {
             // One goto, no touch-ups: where it really pointed is read below.
             let aim = try target(stop, at: clock().addingTimeInterval(settings.settleSeconds + 1))
@@ -581,14 +819,50 @@ public final class MosaicSession: @unchecked Sendable {
             let (frame, t, p) = try await still()
             // Where the camera really pointed, from the mount's own position.
             let pointing = relativeMove(from: origin, to: (t, p))
+            keep([("\(surveyStamp)-\(String(format: "%02d", i))", frame)], in: "survey")
+            note(
+                "survey",
+                [
+                    "time": surveyStamp, "stop": i, "planned": [stop.x, stop.y],
+                    "pointing": [pointing.x, pointing.y], "position": p,
+                    "exposureUs": settings.surveyExposureUs, "gain": settings.surveyGain,
+                ])
             samples += MoonCentre.samples(
                 frame, pointing: pointing, calibration: calibration,
                 cellPixels: Int((25 / calibration.arcsecPerPixel).rounded()))
             if (i + 1) % 10 == 0 { onEvent(.message("Survey: \(i + 1) of \(stops.count).")) }
         }
-        guard
-            let fit = MoonCentre.fit(samples, radiusArcsec: radius, searchArcsec: 1.1 * radius),
-            fit.agreement > 0.85
+        let fitted = MoonCentre.fit(samples, radiusArcsec: radius, searchArcsec: 1.1 * radius)
+        // The analysis, for later review: every cell and the fit's answer.
+        let phaseNow = Ephemeris.phase(at: clock(), from: settings.site)
+        var summary: [String: Any] = [
+            "time": surveyStamp, "kind": "fit", "radiusArcsec": radius, "cells": samples.count,
+            "calibration": [
+                "arcsecPerPixel": calibration.arcsecPerPixel, "rotationDeg": calibration.rotationDeg,
+            ],
+            "phase": [
+                "illuminatedFraction": phaseNow.illuminatedFraction,
+                "phaseAngleDeg": phaseNow.phaseAngleDeg,
+                "brightLimbFromZenithDeg": phaseNow.brightLimbFromZenithDeg,
+            ],
+        ]
+        if let f = fitted {
+            summary["centre"] = [f.centre.x, f.centre.y]
+            summary["agreement"] = f.agreement
+            summary["moonCells"] = f.moonCells
+            summary["litCells"] = f.litCells
+            summary["skyCells"] = f.skyCells
+            summary["earthshine"] = f.earthshine
+            summary["levels"] = ["sky": f.levels.sky, "moon": f.levels.moon, "lit": f.levels.lit]
+        } else {
+            summary["centre"] = NSNull()
+        }
+        note("survey", summary)
+        keepText(
+            "survey", "\(surveyStamp)-cells.csv",
+            "skyX,skyY,mean\n" + samples.map { String(format: "%.1f,%.1f,%.2f", $0.sky.x, $0.sky.y, $0.mean) }
+                .joined(separator: "\n") + "\n")
+        guard let fit = fitted, fit.agreement > 0.85
         else {
             try await goToSky(SkyOffset(x: 0, y: 0))
             throw MosaicError(
@@ -605,6 +879,8 @@ public final class MosaicSession: @unchecked Sendable {
         }
         centreFit = fit
         plan = nil
+        // The aim was relative to the old Here; start again from the centre.
+        aimOffset = SkyOffset(x: 0, y: 0)
         // The altitude reference was set off-centre at Here: set it again,
         // from where the mount points now against where the centre is.
         let now = clock()
@@ -641,9 +917,14 @@ public final class MosaicSession: @unchecked Sendable {
         var plan = MosaicPlanner.plan(
             moonDiameterDeg: here.moon.diameterDeg, calibration: calibration,
             frameWidth: camera.info.width, frameHeight: camera.info.height,
-            overlap: settings.overlap)
+            overlap: settings.overlap, margin: settings.planMargin)
         if centreFit != nil {
-            plan = MosaicPlanner.markLit(plan, litSky: litSky, calibration: calibration)
+            // Lit or dark from the ephemeris (where the Sun lights the disk),
+            // not the survey's sparse cells; Start shoots every tile either way.
+            let phase = Ephemeris.phase(at: clock(), from: settings.site)
+            let r = here.moon.diameterDeg / 2 * 3600
+            plan = MosaicPlanner.markLit(
+                plan, calibration: calibration, phase: phase, radiusArcsec: r)
         }
         self.plan = plan
         states = Dictionary(uniqueKeysWithValues: plan.tiles.map { ($0.id, .pending) })
@@ -690,6 +971,13 @@ public final class MosaicSession: @unchecked Sendable {
             do {
                 set(id, .moving)
                 try await goToSky(tile.pointing)
+                // Track during the video so the Moon holds still on the
+                // sensor; the next tile's goto stops it.
+                do {
+                    try await track(tile.pointing, correct: false)
+                } catch {
+                    onEvent(.message("Tile \(id): couldn't start tracking (\(error)); capturing untracked."))
+                }
                 set(id, .capturing)
                 let r = try await capture(tile, into: folder)
                 record {
@@ -750,29 +1038,116 @@ public final class MosaicSession: @unchecked Sendable {
             throw MosaicError(description: "No frames arrived from the camera.")
         }
         stacks[tile.id] = stack
-        // The mount holds still through the video, so one read serves; the
-        // Moon's part at the frame's centre is taken midway between the first
-        // and last frames.
-        let position = try? mount.status().positionsDeg
+        // Untracked, the mount holds still through the video, so one read
+        // serves, taken against the Moon midway between the first and last
+        // frames. Tracked, the mount follows the Moon, so the read is taken
+        // at its own time.
+        let st = try? mount.status()
+        let position = st?.positionsDeg
         var measured: PixelOffset?
         if let position, let here, let calibration {
+            let when =
+                st?.tracking != nil
+                ? clock().addingTimeInterval(-Double(st?.positionsAgeMs ?? 0) / 1000)
+                : first.addingTimeInterval(last.timeIntervalSince(first) / 2)
             let sky = relativeMove(
-                from: (here.time, [here.azimuthDeg, here.altitudeDeg]),
-                to: (first.addingTimeInterval(last.timeIntervalSince(first) / 2), position))
+                from: (here.time, [here.azimuthDeg, here.altitudeDeg]), to: (when, position))
             let p = calibration.image(for: sky)
             measured = PixelOffset(x: -p.x, y: -p.y)
         }
         return (name, frames, stack.bestSharpness, first, last, position, measured)
     }
 
+    // MARK: Diagnostics
+
+    static func fileStamp(_ d: Date) -> String {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "HHmmss"
+        return f.string(from: d)
+    }
+
+    /// Saves frames as 8-bit PGM under `diagnostics/sub`. Never fails a step.
+    private func keep(_ frames: [(String, Frame)], in sub: String) {
+        guard let diagnostics else { return }
+        let dir = diagnostics.appendingPathComponent(sub)
+        do {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            for (name, f) in frames {
+                let channels = max(1, f.pixels.count / max(1, f.width * f.height))
+                var data = Data("P\(channels == 3 ? 6 : 5)\n\(f.width) \(f.height)\n255\n".utf8)
+                data.append(contentsOf: f.pixels.prefix(f.width * f.height * (channels == 3 ? 3 : 1)))
+                try data.write(to: dir.appendingPathComponent("\(name).\(channels == 3 ? "ppm" : "pgm")"))
+            }
+        } catch {
+            onEvent(.message("Couldn't save \(sub) frames: \(error.localizedDescription)"))
+        }
+    }
+
+    /// Writes a text file under `diagnostics/sub`.
+    private func keepText(_ sub: String, _ name: String, _ text: String) {
+        guard let diagnostics else { return }
+        let dir = diagnostics.appendingPathComponent(sub)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try? Data(text.utf8).write(to: dir.appendingPathComponent(name))
+    }
+
+    /// Appends one JSON line to `diagnostics/sub/records.ndjson`.
+    private func note(_ sub: String, _ record: [String: Any]) {
+        guard let diagnostics else { return }
+        let dir = diagnostics.appendingPathComponent(sub)
+        let url = dir.appendingPathComponent("records.ndjson")
+        guard JSONSerialization.isValidJSONObject(record),
+            var line = try? JSONSerialization.data(withJSONObject: record, options: [.sortedKeys])
+        else { return }
+        line.append(0x0A)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        if let h = try? FileHandle(forWritingTo: url) {
+            h.seekToEndOfFile()
+            h.write(line)
+            try? h.close()
+        } else {
+            try? line.write(to: url)
+        }
+    }
+
     // MARK: Moving
 
-    /// One re-aim at the Moon's centre, for Hold.
+    /// One Hold tick (ADR 0022 amendment 5): a goto to the aim only when not
+    /// tracking yet or off by more than about 2′, then tracking at the
+    /// Moon's rate with a gentle correction toward the aim. Called every
+    /// few seconds, so the image stays put instead of jumping.
     public func hold() async throws {
         guard here != nil else { throw MosaicError(description: "Press Here first.") }
-        try await armForStep()
-        defer { endStep() }
-        try await goToSky(SkyOffset(x: 0, y: 0))
+        let s = try mount.status()
+        let aim = try target(aimOffset, at: clock())
+        let error = s.positionsDeg.map {
+            hypot(wrap180(aim.az - $0[0]) * cos(aim.alt * .pi / 180), aim.alt - $0[1])
+        } ?? .infinity
+        if s.tracking == nil || error > 0.033 {
+            try await armForStep()
+            try await goToSky(aimOffset)
+            endStep()
+        }
+        try await track(aimOffset, correct: true)
+    }
+
+    /// Tracks the sky point `sky` (relative to the Moon's centre): both axes
+    /// at its computed rate, from the ephemeris over ±15 s. With `correct`,
+    /// a little extra (at most 7″/s) closes the gap to it over about 20 s;
+    /// without, the rate alone, so a video sees no extra drift.
+    public func track(_ sky: SkyOffset, correct: Bool) async throws {
+        let now = clock()
+        let a = try target(sky, at: now.addingTimeInterval(-15))
+        let b = try target(sky, at: now.addingTimeInterval(15))
+        var rate = (az: wrap180(b.az - a.az) / 30, alt: (b.alt - a.alt) / 30)
+        if correct, let p = try mount.status().positionsDeg {
+            let c = try target(sky, at: now)
+            let limit = 0.002
+            rate.az += max(-limit, min(limit, wrap180(c.az - p[0]) / 20))
+            rate.alt += max(-limit, min(limit, (c.alt - p[1]) / 20))
+        }
+        try mount.track(azDegS: rate.az, altDegS: rate.alt)
     }
 
     /// Arms the mount for a step's moves. Arming wants fresh, steady
@@ -783,9 +1158,8 @@ public final class MosaicSession: @unchecked Sendable {
         switch s.state {
         case "Armed": return
         case "FaultLatched":
-            throw MosaicError(
-                description:
-                    "The mount is latched on a fault (\(s.lastFault?.detail ?? "?")): press Reset first.")
+            try await recoverFromFault(s.lastFault)
+            return
         default: break
         }
         var last: Error?
@@ -848,17 +1222,14 @@ public final class MosaicSession: @unchecked Sendable {
     /// moving the Moon's way on that axis, so backlash drops out.
     func goTo(az: Double, alt: Double) async throws {
         for (axis, target) in [(MountSession.Axis.azimuth, az), (.altitude, alt)] {
-            let position = try await freshPosition()
-            let delta = wrap180(target - position[axis == .azimuth ? 0 : 1])
-            if abs(delta) < 0.000_05 { continue }
             let way = axis == .azimuth ? approach.az : approach.alt
-            try await retrying { try self.mount.goto(axis, by: delta, approach: way) }
-            try await waitForMotionToEnd()
+            let position = try await freshPosition()
+            try await moveAxis(axis, to: target, approach: way)
             if ProcessInfo.processInfo.environment["MOSAIC_DEBUG"] != nil {
                 let st = try mount.status()
                 onEvent(
                     .message(
-                        "goto \(axis) \(delta)° from \(position) → \(st.positionsDeg ?? []) (age \(st.positionsAgeMs ?? -1) ms, \(st.lastRecord?.lastStage ?? "?"))"
+                        "goto \(axis) to \(target)° from \(position) → \(st.positionsDeg ?? []) (age \(st.positionsAgeMs ?? -1) ms, \(st.lastRecord?.lastStage ?? "?"))"
                     ))
             }
         }
@@ -870,12 +1241,77 @@ public final class MosaicSession: @unchecked Sendable {
     /// and a few-ms exposure freezes the image — not for mosaic capture.
     private func searchGoTo(az: Double, alt: Double) async throws {
         for (axis, target) in [(MountSession.Axis.azimuth, az), (.altitude, alt)] {
+            try await moveAxis(axis, to: target, approach: nil)
+        }
+    }
+
+    /// The mount stopped on a fault during a move.
+    struct FaultStop: Error, CustomStringConvertible {
+        let fault: MountSession.Fault?
+        var description: String { "The mount stopped on a fault: \(fault?.detail ?? "?")" }
+    }
+
+    /// How many times one axis move is tried before the step gives up.
+    static let moveAttempts = 5
+
+    /// One axis's goto to `target`, retried after a fault (ADR 0022 amendment
+    /// 4): in attended operation a fault never ends the step. The fault is
+    /// cleared once the hand controller answers again, and the move is
+    /// re-planned from a fresh position and sent again.
+    private func moveAxis(
+        _ axis: MountSession.Axis, to target: Double, approach way: MountSession.Direction?
+    ) async throws {
+        for attempt in 1...Self.moveAttempts {
             let position = try await freshPosition()
             let delta = wrap180(target - position[axis == .azimuth ? 0 : 1])
-            if abs(delta) < 0.000_05 { continue }
-            try await retrying { try self.mount.goto(axis, by: delta, approach: nil) }
-            try await waitForMotionToEnd()
+            if abs(delta) < 0.000_05 { return }
+            do {
+                // Tracking (during a video) leaves the mount disarmed: arm
+                // again, which also stops the tracking.
+                if (try? mount.status().state) != "Armed" { try await armForStep() }
+                try await retrying { try self.mount.goto(axis, by: delta, approach: way) }
+                try await waitForMotionToEnd()
+                return
+            } catch {
+                let s = try? mount.status()
+                let latched = error is FaultStop || s?.state == "FaultLatched"
+                guard latched, attempt < Self.moveAttempts else { throw error }
+                try await recoverFromFault(s?.lastFault ?? (error as? FaultStop)?.fault)
+                onEvent(.message("Retrying the \(axis) move (attempt \(attempt + 1) of \(Self.moveAttempts))."))
+            }
         }
+    }
+
+    /// Clears a latched fault without the operator (ADR 0022 amendment 4):
+    /// waits until the hand controller answers and the mount is still, then
+    /// resets and re-arms. The operator's own emergency stop is never undone.
+    private func recoverFromFault(_ fault: MountSession.Fault?) async throws {
+        if fault?.kind == "emergency_stop" || fault?.kind == "process_shutdown" {
+            throw MosaicError(description: "Stopped by the operator (\(fault?.kind ?? "")).")
+        }
+        onEvent(
+            .message(
+                "Fault \(fault?.kind ?? "?") (\(fault?.detail ?? "?")): clearing it and carrying on once the hand controller answers."))
+        let end = Date().addingTimeInterval(90)
+        while Date() < end {
+            let s = try mount.status()
+            for m in s.messages { onEvent(.message(m)) }
+            switch s.state {
+            case "Armed":
+                onEvent(.message("Recovered from the fault."))
+                return
+            case "FaultLatched":
+                try? mount.reset()
+            case "Moving", "Stopping":
+                break
+            default:
+                try? mount.arm()
+            }
+            try await Task.sleep(for: .milliseconds(250))
+        }
+        throw MosaicError(
+            description:
+                "The mount didn't recover within 90 s. Unplug the hand controller's USB and the mount's power, plug both back in, and reconnect.")
     }
 
     /// The latest camera frame, without waiting for the image to settle.
@@ -887,7 +1323,8 @@ public final class MosaicSession: @unchecked Sendable {
     }
 
     private func freshPosition() async throws -> [Double] {
-        for _ in 0..<100 {
+        // Up to 20 s: the hand controller can stall for several seconds.
+        for _ in 0..<400 {
             if let p = try mount.status().positionsDeg { return p }
             try await Task.sleep(for: .milliseconds(50))
         }
@@ -918,8 +1355,7 @@ public final class MosaicSession: @unchecked Sendable {
             case "Moving", "Stopping":
                 try await Task.sleep(for: .milliseconds(40))
             case "FaultLatched":
-                throw MosaicError(
-                    description: "The mount stopped on a fault: \(s.lastFault?.detail ?? "?")")
+                throw FaultStop(fault: s.lastFault)
             default:
                 if s.lastRecord?.lastStage == "completed" || s.lastRecord?.lastStage == "cancelled"
                 {
@@ -929,6 +1365,24 @@ public final class MosaicSession: @unchecked Sendable {
             }
         }
         throw MosaicError(description: "The goto didn't finish in 30 s.")
+    }
+
+    /// A frame while tracking, with the mount's latest position and that
+    /// read's own time: tracking holds the pointing against the Moon, so the
+    /// read's time (not the frame's) is the one that pairs with it.
+    private func trackedFrame() async throws -> (Frame, Date, [Double]) {
+        try await Task.sleep(for: .seconds(settings.settleSeconds))
+        let f = try await grabFrame()
+        _ = f
+        for _ in 0..<40 {
+            let st = try mount.status()
+            if let p = st.positionsDeg, let age = st.positionsAgeMs, age < 600 {
+                return (f, clock().addingTimeInterval(-Double(age) / 1000), p)
+            }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        let p = try await freshPosition()
+        return (f, clock(), p)
     }
 
     /// A frame once the image has settled, with its time and the mount's position.
