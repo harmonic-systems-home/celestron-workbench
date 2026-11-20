@@ -203,6 +203,13 @@ public enum Ephemeris {
     /// (Meeus, *Astronomical Algorithms*, ch. 53, without nutation and the
     /// physical libration: good to about 0.1°).
     public static func moonAxis(at date: Date) -> (positionAngleDeg: Double, librationLatDeg: Double) {
+        let a = libration(at: date)
+        return (a.positionAngleDeg, a.latDeg)
+    }
+
+    /// The optical libration in longitude and latitude and the axis's
+    /// position angle, degrees (Meeus ch. 53, as `moonAxis`).
+    public static func libration(at date: Date) -> (lonDeg: Double, latDeg: Double, positionAngleDeg: Double) {
         let d = day(julianDay(date))
         let (lon, lat, _) = moonEcliptic(d)
         let node = deg2rad(normalize(125.1228 - 0.0529538083 * d))
@@ -216,7 +223,14 @@ public enum Ephemeris {
         let omega = atan2(x, y)
         let ra = deg2rad(equatorial(lonDeg: lon, latDeg: lat, obliquityDeg: obliquityDeg(d)).raDeg)
         let p = asin(min(1, max(-1, (x * x + y * y).squareRoot() * cos(ra - omega) / cos(bLib))))
-        return (rad2deg(p), rad2deg(bLib))
+        // Longitude: A − F, F the Moon's argument of latitude.
+        let aa = atan2(sin(w) * cos(b) * cos(i) - sin(b) * sin(i), cos(w) * cos(b))
+        let m = normalize(115.3654 + 13.0649929509 * d)
+        let wPerigee = 318.0634 + 0.1643573223 * d
+        let f = deg2rad(m + wPerigee)  // mean longitude − node
+        var lLib = rad2deg(aa - f)
+        lLib -= 360 * (lLib / 360).rounded()
+        return (lLib, rad2deg(bLib), rad2deg(p))
     }
 
     /// Where lunar north points in the sky frame, as an angle from the

@@ -285,8 +285,11 @@ struct ContentView: View {
                     button("Go to Terminator", enabled: model.calibrated && model.hereSet && model.busy == nil) {
                         model.goTo(.terminator)
                     }
-                    button("Recheck", enabled: model.centreFound && model.busy == nil) { model.recheck() }
+                    button(model.bestCrater.map { "Go to \($0)" } ?? "Go to crater", enabled: model.calibrated && model.hereSet && model.busy == nil && model.bestCrater != nil) {
+                        model.goTo(.crater)
+                    }
                 }
+                button("Recheck (after fine focus)", enabled: model.centreFound && model.busy == nil) { model.recheck() }
                 button("Plan", enabled: model.calibrated && model.busy == nil) {
                     model.makePlan()
                 }

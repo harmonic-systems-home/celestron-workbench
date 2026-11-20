@@ -83,7 +83,7 @@ public enum Rehearsal {
             let clock: @Sendable () -> Date = { epoch.addingTimeInterval(Date().timeIntervalSince(started)) }
             let mount = try MountSession(port: "simulate", safety: ["max_goto_deg": 10.0])
             try mount.setSimSpeed(speed)
-            var optics = SimOptics(focalLengthMm: 2032, sensor: .testMono)
+            var optics = SimOptics(focalLengthMm: 2032, sensor: .asi662mc)
             optics.diagonal = scenario.diagonal
             optics.cameraRotationDeg = scenario.cameraRotationDeg
             let truthOptics = optics
@@ -172,7 +172,7 @@ public enum Rehearsal {
                 })
             else { return Result(scenario: scenario, steps: steps) }
             guard
-                await step("Orient Moon", {
+                await step("Orient Moon", limit: 400, {
                     let fit = try await session.findCentre()
                     let p = camera.pointing
                     guard hypot(p.x, p.y) < 120 else {

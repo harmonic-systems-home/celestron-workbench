@@ -11,6 +11,8 @@ extension MosaicSession {
         /// Where the terminator crosses the axis through the bright limb:
         /// long shadows, the best detail for focusing.
         case terminator
+        /// The catalogue's best crater for focusing now (`Craters.best`).
+        case crater
     }
 
     /// The sky offset from the Moon's centre that puts `feature` mid-frame.
@@ -22,6 +24,11 @@ extension MosaicSession {
         let r = here.moon.diameterDeg / 2 * 3600
         let (lx, ly) = phase.brightLimb
         switch feature {
+        case .crater:
+            guard let c = Craters.best(at: clock(), from: settings.site) else {
+                throw MosaicError(description: "No catalogue crater has the Sun 5–15° up over it now; use Go to Terminator.")
+            }
+            return SkyOffset(x: c.x * r, y: c.y * r)
         case .terminator:
             // a = −cos(phase angle) along the bright limb's axis.
             let a = -cos(phase.phaseAngleDeg * .pi / 180) * r
@@ -47,11 +54,15 @@ extension MosaicSession {
         try await armForStep()
         defer { endStep() }
         try await goToSky(o)
-        onEvent(
-            .message(
-                String(
-                    format: "At the %@: %.0f″, %.0f″ from the Moon's centre.", feature == .limb ? "bright limb" : "terminator",
-                    o.x, o.y)))
+        let name: String
+        switch feature {
+        case .limb: name = "the bright limb"
+        case .terminator: name = "the terminator"
+        case .crater:
+            let c = Craters.best(at: clock(), from: settings.site)
+            name = c.map { String(format: "%@ (Sun %.0f° up over it)", $0.crater.name, $0.sunAltitudeDeg) } ?? "the crater"
+        }
+        onEvent(.message(String(format: "At %@: %.0f″, %.0f″ from the Moon's centre.", name, o.x, o.y)))
     }
 
     /// Recheck (step 8): an SCT focuses by moving its main mirror, which

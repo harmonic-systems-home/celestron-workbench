@@ -1200,7 +1200,13 @@ final class AppModel: ObservableObject {
 
     /// Go to Limb or Go to Terminator (steps 4 and 7), then tracking on.
     func goTo(_ feature: MosaicSession.Feature) {
-        perform(feature == .limb ? "Going to the limb" : "Going to the terminator") { try await $0.goTo(feature) }
+        perform("Going to the \(feature.rawValue)") { try await $0.goTo(feature) }
+    }
+
+    /// The catalogue's best crater for focusing now, for the button.
+    var bestCrater: String? {
+        guard siteSet else { return nil }
+        return Craters.best(at: sessionNow, from: Site(latitudeDeg: latitude, longitudeDeg: longitude))?.crater.name
     }
 
     /// Recheck after fine focus (step 8).

@@ -114,3 +114,10 @@ private func near(_ a: Double, _ b: Double, _ tolerance: Double) -> Bool {
     #expect(abs(a.positionAngleDeg - 15.08) < 0.3, "P \(a.positionAngleDeg)")
     #expect(abs(a.librationLatDeg - 4.19) < 0.2, "b \(a.librationLatDeg)")
 }
+
+/// Meeus example 53.a: l = −1.206°.
+@Test func theLibrationInLongitudeMatchesMeeus() {
+    let t = Date(timeIntervalSince1970: 703_036_800 - 59)
+    let l = Ephemeris.libration(at: t)
+    #expect(abs(l.lonDeg - -1.206) < 0.3, "l \(l.lonDeg)")
+}
