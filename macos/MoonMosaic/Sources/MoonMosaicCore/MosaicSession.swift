@@ -75,8 +75,11 @@ public struct SearchProgress: Sendable {
     /// altitude, to draw it.
     public let fieldDeg: [Double]
     public let altitudeDeg: Double
-    /// Where the search started (azimuth, altitude axis degrees).
+    /// Where the search started (azimuth, altitude axis degrees), and when.
     public let start: [Double]
+    public let startTime: Date
+    /// The pattern moves with the Moon: positions are drawn relative to it.
+    public let followsMoon: Bool
     public let finished: Bool
 }
 
@@ -102,6 +105,11 @@ public final class MosaicSession: @unchecked Sendable {
     /// operator pans it from the app (2026-11-19: the hand controller's
     /// arrow keys fought Hold and twice ran away).
     public var aimOffset = SkyOffset(x: 0, y: 0)
+    /// Follow mode's state (ADR 0022 amendment 7): tracking, nudges, undo.
+    public let follow = FollowState()
+    /// Searches move their pattern with the Moon (off for a fixed test
+    /// target such as the drainpipe).
+    public var searchFollowsMoon = false
 
     /// The sky offset that brings the point at `pixel` (from the frame's
     /// centre) to the centre: calibrated, or the focal-length guess.
@@ -134,10 +142,10 @@ public final class MosaicSession: @unchecked Sendable {
     private var approach: (az: MountSession.Direction, alt: MountSession.Direction) = (
         .positive, .positive
     )
-    private let clock: @Sendable () -> Date
+    let clock: @Sendable () -> Date
     /// The session's time (the rehearsal clock when simulating).
     public var now: Date { clock() }
-    private let onEvent: @Sendable (MosaicEvent) -> Void
+    let onEvent: @Sendable (MosaicEvent) -> Void
 
     public init(
         mount: MountSession, camera: Camera, settings: MosaicSettings,
@@ -573,6 +581,15 @@ public final class MosaicSession: @unchecked Sendable {
         var history: [SearchStop] = []
         let searchStamp = Self.fileStamp(clock())
         let pattern = offsets.map { [$0.0, $0.1] }
+        // With the Moon: the pattern rides on its motion since the start, so
+        // a rising Moon doesn't climb through the rows.
+        let searchStart = clock()
+        let moonStart = Self.moonAxes(at: searchStart, settings.site)
+        func drift(_ t: Date) -> (Double, Double) {
+            guard searchFollowsMoon else { return (0, 0) }
+            let m = Self.moonAxes(at: t, settings.site)
+            return (wrap180(m.az - moonStart.az), m.alt - moonStart.alt)
+        }
         let field = [
             Double(camera.info.width) * scaleGuess / 3600, Double(camera.info.height) * scaleGuess / 3600,
         ]
@@ -583,7 +600,8 @@ public final class MosaicSession: @unchecked Sendable {
                 .search(
                     SearchProgress(
                         pattern: pattern, visited: visited, brightness: brightness, fieldDeg: field,
-                        altitudeDeg: start[1], start: start, finished: finished)))
+                        altitudeDeg: Self.moonAxes(at: searchStart, settings.site).alt, start: start, startTime: searchStart,
+                        followsMoon: searchFollowsMoon, finished: finished)))
         }
         progress()
         defer { progress(true) }
@@ -597,7 +615,8 @@ public final class MosaicSession: @unchecked Sendable {
             // settle wait. A few-ms exposure freezes any residual motion, so
             // the brightness read is good the instant the move ends. This is
             // what keeps a 40-stop search to seconds, not minutes.
-            try await searchGoTo(az: start[0] + dAz, alt: start[1] + dAlt)
+            let d = drift(clock().addingTimeInterval(0.5))
+            try await searchGoTo(az: start[0] + dAz + d.0, alt: start[1] + dAlt + d.1)
             stops += 1
             let pos = try await freshPosition()
             let frame = try await grabFrame()
@@ -607,7 +626,8 @@ public final class MosaicSession: @unchecked Sendable {
             // frame is lit".
             let blob = Blob.find(frame, thresholdFraction: 0.3)
             history.append(SearchStop(position: pos, blob: blob))
-            visited.append([wrap180(pos[0] - start[0]), pos[1] - start[1]])
+            let dNow = drift(clock())
+            visited.append([wrap180(pos[0] - start[0]) - dNow.0, pos[1] - start[1] - dNow.1])
             brightness.append(blob.map { Double($0.peak) / 255 * min(1, $0.brightFraction * 3) } ?? 0)
             progress()
             keep([("\(searchStamp)-stop\(String(format: "%03d", stops))", frame)], in: "search")
@@ -1304,7 +1324,7 @@ public final class MosaicSession: @unchecked Sendable {
     /// 4): in attended operation a fault never ends the step. The fault is
     /// cleared once the hand controller answers again, and the move is
     /// re-planned from a fresh position and sent again.
-    private func moveAxis(
+    func moveAxis(
         _ axis: MountSession.Axis, to target: Double, approach way: MountSession.Direction?
     ) async throws {
         for attempt in 1...Self.moveAttempts {
@@ -1361,14 +1381,14 @@ public final class MosaicSession: @unchecked Sendable {
     }
 
     /// The latest camera frame, without waiting for the image to settle.
-    private func grabFrame() async throws -> Frame {
+    func grabFrame() async throws -> Frame {
         for _ in 0..<20 {
             if let f = try camera.frame(timeoutMs: 1_000) { return f }
         }
         throw MosaicError(description: "No frames from the camera.")
     }
 
-    private func freshPosition() async throws -> [Double] {
+    func freshPosition() async throws -> [Double] {
         // Up to 20 s: the hand controller can stall for several seconds.
         for _ in 0..<400 {
             if let p = try mount.status().positionsDeg { return p }

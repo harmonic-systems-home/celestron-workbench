@@ -26,10 +26,21 @@ struct SearchMap: View {
             func pt(_ p: CGPoint) -> CGPoint { CGPoint(x: ox + k * p.x, y: oy - k * p.y) }
 
             ctx.fill(Path(CGRect(origin: .zero, size: size)), with: .color(.black))
+            // A pattern riding on the Moon is drawn in the Moon's frame: its
+            // motion since the start comes off every position.
+            var drift = (0.0, 0.0)
+            if progress.followsMoon {
+                let site = Site(latitudeDeg: model.latitude, longitudeDeg: model.longitude)
+                let a = Ephemeris.moon(at: progress.startTime, from: site).horizontal
+                let b = Ephemeris.moon(at: model.sessionNow, from: site).horizontal
+                var dAz = b.azDeg - a.azDeg
+                dAz -= 360 * (dAz / 360).rounded()
+                drift = (dAz, b.altDeg - a.altDeg)
+            }
             func fromStart(_ p: [Double]) -> CGPoint {
                 var dAz = p[0] - progress.start[0]
                 dAz -= 360 * (dAz / 360).rounded()
-                return sky([dAz, p[1] - progress.start[1]])
+                return sky([dAz - drift.0, p[1] - progress.start[1] - drift.1])
             }
             // Where the mount is now: when simulating, from the same reading
             // as the true Moon, so the two don't jitter against each other.
@@ -38,6 +49,23 @@ struct SearchMap: View {
                 now = fromStart(m)
             } else if let p = model.positionDeg, p.count == 2 {
                 now = fromStart(p)
+            }
+            // The sky behind, fixed on the axes: dots every 0.5° that drift
+            // across as the pattern rides on the Moon, so the sweep shows.
+            if progress.followsMoon {
+                let g = 0.5
+                let span = Int(((maxX - minX) / g).rounded(.up)) + 4
+                let i0 = Int(((minX + drift.0 * cosAlt) / g).rounded(.down)) - 2
+                let j0 = Int(((minY + drift.1) / g).rounded(.down)) - 2
+                for i in i0..<(i0 + span) {
+                    for j in j0..<(j0 + span) {
+                        let c = pt(CGPoint(x: Double(i) * g - drift.0 * cosAlt, y: Double(j) * g - drift.1))
+                        guard c.x > 0, c.y > 0, c.x < size.width, c.y < size.height else { continue }
+                        ctx.fill(
+                            Path(ellipseIn: CGRect(x: c.x - 1, y: c.y - 1, width: 2, height: 2)),
+                            with: .color(Color(white: 0.45)))
+                    }
+                }
             }
             // The true Moon (simulation only).
             if sim.attached, let moonAxes = sim.moonAxesDeg {
@@ -88,6 +116,18 @@ struct SearchMap: View {
             ctx.draw(
                 Text(label).font(.system(size: 11)).foregroundColor(.white), at: CGPoint(x: 6, y: 4),
                 anchor: .topLeading)
+            // Where the pattern's centre is on the sky now (it rides on the Moon).
+            if progress.followsMoon {
+                let site = Site(latitudeDeg: model.latitude, longitudeDeg: model.longitude)
+                let a = Ephemeris.moon(at: progress.startTime, from: site).horizontal
+                ctx.draw(
+                    Text(
+                        String(
+                            format: "centre ≈ az %.2f°, alt %.2f° · moving with the Moon", a.azDeg + drift.0,
+                            a.altDeg + drift.1)
+                    ).font(.system(size: 10)).foregroundColor(.gray),
+                    at: CGPoint(x: 6, y: size.height - 4), anchor: .bottomLeading)
+            }
         }
         .clipShape(RoundedRectangle(cornerRadius: 6))
     }

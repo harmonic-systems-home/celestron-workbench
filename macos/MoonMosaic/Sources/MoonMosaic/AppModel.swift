@@ -127,6 +127,18 @@ final class AppModel: ObservableObject {
     /// (for focusing) when the mount isn't tracking.
     @Published private(set) var holding = false
     private var holdTask: Task<Void, Never>?
+    /// Follow mode (ADR 0022 amendment 7): tracking from Track on, nudges
+    /// stay, Undo goes back.
+    @Published private(set) var following = false
+    @Published private(set) var undoDepth = 0
+    private var followTask: Task<Void, Never>?
+    private var followStop: Flag?
+    /// The guided flow's steps: which are done, which is running, and each
+    /// automated step's time against its estimate.
+    @Published private(set) var flowDone: Set<FlowStep> = []
+    @Published private(set) var flowActive: FlowStep?
+    /// Asks the main window to show the mosaic preview (after a capture).
+    @Published var showPreviewRequest = 0
     private var holdStop: Flag?
     /// The hand controller has stopped answering (or answers slowly): it
     /// may have hung with a motor still running, which only cutting the
@@ -365,6 +377,7 @@ final class AppModel: ObservableObject {
             installSimProvider()
         }
         connected = true
+        flowDone = [.connect]
         busy = nil
         let o = mount.opened
         say(
@@ -403,6 +416,10 @@ final class AppModel: ObservableObject {
         simConnect = nil
         simClock = nil
         simulator.detach()
+        pauseFollow()
+        followTask = nil
+        flowDone = []
+        flowActive = nil
         session = nil
         camera = nil
         mount = nil
@@ -515,6 +532,9 @@ final class AppModel: ObservableObject {
         if simulate, simulator.speed != 1 { applySimSpeed(simulator.speed) }
     }
 
+    /// The session's time (the rehearsal clock when simulating).
+    var sessionNow: Date { session?.now ?? Date() }
+
     /// Rehearsal speed (simulated mount only).
     func applySimSpeed(_ k: Double) {
         guard simulate, let mount else { return }
@@ -538,17 +558,24 @@ final class AppModel: ObservableObject {
     /// after it succeeds, so the Moon isn't left to drift out of the frame.
     /// With `holdAfter`, Hold starts after it succeeds either way.
     private func perform(
-        _ name: String, resumeHold: Bool = false, holdAfter: Bool = false,
+        _ name: String, step: FlowStep? = nil, resumeHold: Bool = false, holdAfter: Bool = false,
         _ body: @escaping @Sendable (MosaicSession) async throws -> Void
     ) {
         guard let session, busy == nil else { return }
         busy = name
-        // A step takes over the mount: Hold ends, after its move in progress.
+        // A step takes over the mount: Hold and Follow end, after any move
+        // in progress; Follow comes back afterwards.
         let hold = holdTask
         let wasHolding = holding
         stopHold()
+        let follow = followTask
+        let wasFollowing = following
+        pauseFollow()
+        let started = Date()
+        if let step { flowActive = step }
         Task.detached { [weak self] in
             await hold?.value
+            await follow?.value
             var ok = true
             do {
                 try await body(session)
@@ -564,8 +591,105 @@ final class AppModel: ObservableObject {
                 if ok && ((resumeHold && wasHolding) || holdAfter) && !self.holding {
                     self.toggleHold()
                 }
+                if wasFollowing && !self.holding && !self.following { self.startFollow() }
+                if let step {
+                    if self.flowActive == step { self.flowActive = nil }
+                    if ok { self.flowDone.insert(step) }
+                    self.logStepTime(step, Date().timeIntervalSince(started), ok: ok)
+                }
             }
         }
+    }
+
+    /// Each step's time against its designed estimate (amendment 7's time
+    /// budget), in the log, so the estimates can be checked.
+    private func logStepTime(_ step: FlowStep, _ seconds: Double, ok: Bool) {
+        guard let estimate = step.estimateSeconds else { return }
+        let d = seconds - estimate
+        say(
+            String(
+                format: "%@ %@ in %.0f s (estimate %.0f s, %@%.0f s).", step.title, ok ? "done" : "stopped",
+                seconds, estimate, d >= 0 ? "+" : "−", abs(d)))
+    }
+
+    // MARK: - Follow (ADR 0022 amendment 7)
+
+    /// Track / Stop Tracking.
+    func toggleTrack() {
+        if following || followTask != nil {
+            stopFollow()
+        } else {
+            guard connected, busy == nil, !testMode else { return }
+            stopHold()
+            let hold = holdTask
+            Task { @MainActor [weak self] in
+                await hold?.value
+                self?.startFollow()
+                self?.say("Tracking the Moon. Nudge with the arrows or the hand controller; Undo goes back.")
+            }
+        }
+    }
+
+    private func startFollow() {
+        guard let session, followTask == nil else { return }
+        // Before any search or Here, the encoder's altitude is tied to the
+        // sky from the Moon's computed altitude: the spotting scope is on it.
+        if let mount, (try? mount.status().altitudeDeg) == nil {
+            let alt = Ephemeris.moon(at: session.now, from: Site(latitudeDeg: latitude, longitudeDeg: longitude))
+                .horizontal.altDeg
+            try? mount.setAltitudeReference(alt)
+        }
+        following = true
+        flowDone.insert(.track)
+        let stop = Flag()
+        followStop = stop
+        followTask = Task.detached { [weak self] in
+            do {
+                try await session.runFollow(cancelled: { stop.value })
+            } catch {
+                await MainActor.run { self?.say("Tracking stopped: \(error)") }
+            }
+            await MainActor.run {
+                guard let self else { return }
+                self.followTask = nil
+                if self.followStop === stop { self.following = false }
+            }
+        }
+    }
+
+    /// Ends the follow loop but leaves the mount tracking (a step takes over).
+    private func pauseFollow() {
+        followStop?.value = true
+        following = false
+    }
+
+    /// Stop Tracking: the loop ends, then the mount stops.
+    private func stopFollow() {
+        pauseFollow()
+        let task = followTask
+        let mount = self.mount
+        Task.detached {
+            await task?.value
+            try? mount?.stopTracking()
+        }
+        say("Tracking stopped.")
+    }
+
+    /// Ends a nudge (app or hand controller); tracking carries on.
+    func stopNudge() {
+        guard following, let session else { return }
+        session.followStop()
+    }
+
+    /// Back to where the scope was against the Moon before the last nudge.
+    func undo() {
+        guard following, let session else { return }
+        session.followUndo()
+    }
+
+    /// The operator marks a by-hand step (camera settings, focus) done.
+    func markDone(_ step: FlowStep) {
+        if flowDone.contains(step) { flowDone.remove(step) } else { flowDone.insert(step) }
     }
 
     func resetBestFocus() {
@@ -642,8 +766,17 @@ final class AppModel: ObservableObject {
         let converge: MosaicSession.Converge? = test ? nil : MosaicSession.Converge()
         let hold = holdTask
         stopHold()
+        // The search moves the mount itself: Follow pauses and comes back
+        // after it. With the Moon, the pattern rides on its motion.
+        let follow = followTask
+        if following { resumeFollowAfterSearch = true }
+        pauseFollow()
+        session.searchFollowsMoon = !test
+        searchStarted = Date()
+        flowActive = .find
         searchTask = Task.detached { [weak self] in
             await hold?.value
+            await follow?.value
             do {
                 let outcome: MosaicSession.SearchOutcome
                 switch pattern {
@@ -677,11 +810,11 @@ final class AppModel: ObservableObject {
             say("Marked in view after \(outcome.stops) stops; search stopped.")
         } else if outcome.found, let b = outcome.blob {
             if outcome.convergeSteps == 0 && outcome.converged {
-                say(String(format: "Found the Moon after %d stops, on the disk (%.0f%% lit). Press Here.", outcome.stops, b.brightFraction * 100))
+                say(String(format: "Found the Moon after %d stops, on the disk (%.0f%% lit). ", outcome.stops, b.brightFraction * 100))
             } else if outcome.converged {
                 say(
                     String(
-                        format: "Found the Moon after %d stops and stepped onto the disk in %d moves (%.0f%% lit). Press Here.",
+                        format: "Found the Moon after %d stops and stepped onto the disk in %d moves (%.0f%% lit).",
                         outcome.stops, outcome.convergeSteps, b.brightFraction * 100))
             } else {
                 say(
@@ -692,8 +825,21 @@ final class AppModel: ObservableObject {
         } else {
             say("Search finished (\(outcome.stops) stops) without a clear target.")
         }
+        let found = outcome.found || byOperator
+        if flowActive == .find { flowActive = nil }
+        if found { flowDone.insert(.find) }
+        logStepTime(.find, Date().timeIntervalSince(searchStarted), ok: found)
         searchEnded()
+        if resumeFollowAfterSearch {
+            resumeFollowAfterSearch = false
+            startFollow()
+        }
+        // Landing on the disk ties the encoders to the sky: Here happens by
+        // itself (amendment 7: no separate Here step).
+        if found && !testMode { here() }
     }
+    private var resumeFollowAfterSearch = false
+    private var searchStarted = Date()
 
     private func searchEnded() {
         searching = false
@@ -816,6 +962,7 @@ final class AppModel: ObservableObject {
         }
         // A hold still finishing its last move can't be restarted yet.
         guard let session, hereSet, busy == nil, holdTask == nil else { return }
+        if following { pauseFollow() }
         holding = true
         say(
             session.aimOffset.x == 0 && session.aimOffset.y == 0
@@ -859,6 +1006,11 @@ final class AppModel: ObservableObject {
         guard let session, connected else { return }
         let px = PixelOffset(
             x: fx * Double(session.camera.info.width), y: fy * Double(session.camera.info.height))
+        if following {
+            // Follow: a nudge on top of tracking; it stays, and Undo returns.
+            session.followNudge(session.panSky(for: px))
+            return
+        }
         if hereSet {
             let d = session.panSky(for: px)
             session.aimOffset = SkyOffset(x: session.aimOffset.x + d.x, y: session.aimOffset.y + d.y)
@@ -914,11 +1066,11 @@ final class AppModel: ObservableObject {
     }
 
     func calibrate() {
-        perform("Calibrating", resumeHold: true) { try await $0.calibrate() }
+        perform("Calibrating", step: .orientCamera, resumeHold: true) { try await $0.calibrate() }
     }
 
     func findCentre() {
-        perform("Finding the centre", resumeHold: true) { try await $0.findCentre() }
+        perform("Finding the centre", step: .orientMoon, resumeHold: true) { try await $0.findCentre() }
     }
 
     private func applySurvey() {
@@ -958,6 +1110,7 @@ final class AppModel: ObservableObject {
             try FileManager.default.createDirectory(
                 at: runFolder!, withIntermediateDirectories: true)
             sync()
+            flowDone.insert(.plan)
             say("Saving to \(runFolder!.path)")
             let need = Int64(session.plan?.tiles.count ?? 0) * bytesPerTile()
             if let free = freeBytes(at: runFolder!) {
@@ -1028,8 +1181,14 @@ final class AppModel: ObservableObject {
         let shouldContinue: @Sendable () -> Bool = { !paused.value }
         // Afterwards Hold re-centres on the Moon and keeps it there, ready
         // for another run without finding it again.
-        perform(tiles == nil ? "Capturing" : "Redoing", holdAfter: true) {
+        perform(tiles == nil ? "Capturing" : "Redoing", step: .start, holdAfter: true) { [weak self] in
             try await $0.run(tiles: tiles, into: runFolder, shouldContinue: shouldContinue)
+            await MainActor.run {
+                guard let self else { return }
+                // Done: show the mosaic.
+                self.makePreview()
+                self.showPreviewRequest += 1
+            }
         }
     }
 
@@ -1105,6 +1264,7 @@ final class AppModel: ObservableObject {
             mountState = s.state
             altitude = s.altitudeDeg
             positionDeg = s.positionsDeg
+            undoDepth = session?.follow.undoDepth ?? 0
             if let b = s.battery { checkBattery(b) }
             latchedReason = s.state == "FaultLatched" ? (s.lastFault?.detail ?? "a fault") : nil
             for m in s.messages { say(m) }

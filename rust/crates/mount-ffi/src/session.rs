@@ -646,8 +646,8 @@ impl Inner {
             }
             _ => {}
         }
-        if rates.iter().any(|r| !r.is_finite() || r.abs() > 0.05) {
-            return Err(format!("tracking rates {rates:?} deg/s are out of range (0.05 max)"));
+        if rates.iter().any(|r| !r.is_finite() || r.abs() > 2.0) {
+            return Err(format!("tracking rates {rates:?} deg/s are out of range (2 max)"));
         }
         for axis in Axis::BOTH {
             let r = rates[axis.index()];

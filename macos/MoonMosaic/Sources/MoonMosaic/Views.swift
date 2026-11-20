@@ -34,6 +34,7 @@ struct ContentView: View {
     var body: some View {
         VStack(spacing: 12) {
             if let alarm = model.linkAlarm { alarmBanner(alarm) }
+            flowStrip
             HStack(alignment: .top, spacing: 14) {
                 // Scrolls on its own so the long button column stays reachable
                 // on a short laptop screen.
@@ -66,6 +67,7 @@ struct ContentView: View {
         .foregroundStyle(palette.text)
         .font(.system(size: 17, design: .rounded))
         .preferredColorScheme(model.isNight ? .dark : .light)
+        .onChange(of: model.showPreviewRequest) { panel = .preview }
         .sheet(isPresented: $model.showSettings) { SettingsView(model: model, palette: palette) }
         .alert(
             "Not enough disk space",
@@ -76,6 +78,31 @@ struct ContentView: View {
             Button("Cancel", role: .cancel) { model.diskWarning = nil }
         } message: {
             Text(model.diskWarning ?? "")
+        }
+    }
+
+    /// The guided flow (ADR 0022 amendment 7): done, running and to come.
+    /// Steps done by hand are marked by clicking them.
+    private var flowStrip: some View {
+        HStack(spacing: 4) {
+            ForEach(FlowStep.allCases) { step in
+                let done = model.flowDone.contains(step)
+                let active = model.flowActive == step || (step == .track && model.following)
+                Text(step.title)
+                    .font(.system(size: 13, weight: active ? .semibold : .regular, design: .rounded))
+                    .lineLimit(1)
+                    .padding(.horizontal, 8).padding(.vertical, 5)
+                    .frame(maxWidth: .infinity)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(done ? palette.bright.opacity(0.25) : Color.clear))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6)
+                            .stroke(active ? palette.bright : palette.dim.opacity(0.4), lineWidth: active ? 2 : 1))
+                    .foregroundStyle(done || active ? palette.text : palette.dim)
+                    .onTapGesture { if step.byHand { model.markDone(step) } }
+                    .help(step.byHand ? "Click when done" : step.estimateSeconds.map { "Designed time \(Int($0)) s" } ?? "")
+            }
         }
     }
 
@@ -139,27 +166,42 @@ struct ContentView: View {
                     model.connect()
                 }
             }
+            if !model.testMode {
+                button(
+                    model.following ? "Tracking (tap to stop)" : "Track",
+                    enabled: model.connected && (model.busy == nil || model.following)
+                ) { model.toggleTrack() }
+                panControls
+                HStack(spacing: 10) {
+                    button("Stop nudge", enabled: model.following) { model.stopNudge() }
+                    button(
+                        model.undoDepth > 0 ? "Undo (\(model.undoDepth))" : "Undo",
+                        enabled: model.following && model.undoDepth > 0
+                    ) { model.undo() }
+                }
+            }
             searchControls
             if !model.testMode {
-                Text("Or centre it by hand with the arrow keys, then:")
-                    .font(.system(size: 13, design: .rounded)).foregroundStyle(palette.dim)
-                button("1  Here", enabled: model.connected && model.busy == nil) { model.here() }
-                button(
-                    model.holding ? "Holding (tap to release)" : "Hold on Moon",
-                    enabled: model.hereSet && model.busy == nil
-                ) { model.toggleHold() }
-                panControls
-                button("2  Calibrate", enabled: model.hereSet && model.busy == nil) {
+                HStack(spacing: 10) {
+                    button("Here", enabled: model.connected && model.busy == nil) { model.here() }
+                    button(
+                        model.holding ? "Locked" : "Lock",
+                        enabled: model.hereSet && model.busy == nil
+                    ) { model.toggleHold() }
+                }
+                Text("Find sets Here by itself; press Here after centring by hand. Lock holds a fixed aim.")
+                    .font(.system(size: 12, design: .rounded)).foregroundStyle(palette.dim)
+                button("Orient camera", enabled: model.hereSet && model.busy == nil) {
                     model.calibrate()
                 }
                 button(
-                    model.centreFound ? "3  Find centre (found)" : "3  Find centre",
+                    model.centreFound ? "Orient Moon (found)" : "Orient Moon",
                     enabled: model.calibrated && model.busy == nil
                 ) { model.findCentre() }
-                button("4  Plan", enabled: model.calibrated && model.busy == nil) {
+                button("Plan", enabled: model.calibrated && model.busy == nil) {
                     model.makePlan()
                 }
-                button("5  Start", enabled: model.plan != nil && model.busy == nil) { model.start() }
+                button("Start", enabled: model.plan != nil && model.busy == nil) { model.start() }
                 button(
                     model.darkTiles > 0 ? "Earthshine: \(model.darkTiles) dark tiles" : "Earthshine",
                     enabled: model.darkTiles > 0 && model.busy == nil
@@ -180,6 +222,7 @@ struct ContentView: View {
                     enabled: !model.selected.isEmpty && model.busy == nil
                 ) { model.redoSelected() }
             }
+            if model.simulator.attached { SimulatorBox(model: model, sim: model.simulator, palette: palette) }
             Spacer(minLength: 12)
             button("Settings", enabled: model.busy == nil) { model.showSettings = true }
         }
@@ -190,7 +233,14 @@ struct ContentView: View {
     private var searchControls: some View {
         VStack(alignment: .leading, spacing: 10) {
             Toggle(isOn: $model.testMode) {
-                Text("Test mode (drainpipe) — no tracking")
+                Stepper(
+                value: $model.searchReachDeg, in: 0.25...4, step: 0.25
+            ) {
+                Text(String(format: "Search area ±%.2g°", model.searchReachDeg))
+                    .font(.system(size: 13, design: .rounded))
+            }
+            .disabled(model.searching)
+            Text("Test mode (drainpipe) — no tracking")
                     .font(.system(size: 13, design: .rounded))
             }
             .toggleStyle(.switch)
@@ -235,7 +285,7 @@ struct ContentView: View {
     @State private var fineP = false
     private var panControls: some View {
         let step = fineP ? 1.0 / 12 : 0.25
-        let on = model.connected && (model.busy == nil || model.holding)
+        let on = model.connected && (model.busy == nil || model.holding || model.following)
         return HStack(spacing: 6) {
             ForEach(
                 [("◀", -step, 0.0), ("▲", 0.0, -step), ("▼", 0.0, step), ("▶", step, 0.0)], id: \.0
@@ -651,5 +701,41 @@ struct SettingsView: View {
         panel.canCreateDirectories = true
         panel.directoryURL = model.folder
         if panel.runModal() == .OK, let url = panel.url { model.folder = url }
+    }
+}
+
+/// The simulator's main settings, in the main window while simulating: the
+/// scene (from the scene library) and the rehearsal speed. Everything else
+/// is in the simulator window.
+struct SimulatorBox: View {
+    @ObservedObject var model: AppModel
+    @ObservedObject var sim: SimulatorModel
+    let palette: Palette
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Simulator").font(.system(size: 15, weight: .semibold, design: .rounded))
+            Picker("Scene", selection: $sim.libraryScene) {
+                ForEach(sim.library, id: \.self) { url in
+                    Text(url.deletingPathExtension().lastPathComponent).tag(Optional(url))
+                }
+            }
+            .onChange(of: sim.libraryScene) { if sim.sceneChoice != .library { sim.sceneChoice = .library } }
+            .disabled(sim.library.isEmpty)
+            if sim.loadingScene { ProgressView().controlSize(.small) }
+            Text(sim.sceneNote).font(.system(size: 11)).foregroundStyle(palette.dim).lineLimit(2)
+            HStack {
+                Text("Speed \(Int(sim.speed))×").font(.system(size: 13))
+                Slider(value: $sim.speed, in: 1...10, step: 1).disabled(!model.simulate)
+            }
+            HStack {
+                Button("Random scenario") { sim.randomize(reachDeg: model.searchReachDeg) }
+                Button("More…") { openWindow(id: "simulator") }
+            }
+            .font(.system(size: 13))
+        }
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 10).stroke(palette.dim.opacity(0.5), lineWidth: 1))
     }
 }
