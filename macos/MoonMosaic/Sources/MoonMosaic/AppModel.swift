@@ -98,9 +98,13 @@ final class AppModel: ObservableObject {
     /// The sky the search looks against ("auto": day while the Sun is up,
     /// else a clear night); each has its own trigger (Blob.Sky).
     @Published var searchSky: String { didSet { save() } }
+    /// The session's site: a rehearsal of a scene taken elsewhere uses the
+    /// scene's (whole-degree) place, so its Sun and Moon match the photo.
+    var sessionSite: Site { session?.settings.site ?? Site(latitudeDeg: latitude, longitudeDeg: longitude) }
+
     var effectiveSky: Blob.Sky {
         if let s = Blob.Sky(rawValue: searchSky) { return s }
-        let site = Site(latitudeDeg: latitude, longitudeDeg: longitude)
+        let site = sessionSite
         let t = sessionNow
         let sunAlt = Ephemeris.horizontal(Ephemeris.sun(at: t), at: t, from: site).altDeg
         return sunAlt > -6 ? .day : .clearNight
@@ -464,7 +468,10 @@ final class AppModel: ObservableObject {
                 say(String(format: "Simulated sky set to %.2f for the Sun at %.0f°.", level, sunAlt))
             }
         }
-        _ = simSite
+        if simulate, simSite != site {
+            settings.site = simSite
+            say("Rehearsing from the scene's place (\(simulator.sceneMomentPlace ?? "its sidecar"), to whole degrees).")
+        }
         let session = MosaicSession(
             mount: mount, camera: camera, settings: settings, clock: clock,
             onEvent: { [weak self] event in
@@ -637,7 +644,7 @@ final class AppModel: ObservableObject {
             let start = simStart, let connect = simConnect, let clock = simClock,
             let mount
         else { return }
-        let site = Site(latitudeDeg: latitude, longitudeDeg: longitude)
+        let site = sessionSite
         let test = testMode
         let fixedAlt = testAltitudeDeg
         // Off-centre at connect, within the search reach and out of frame
@@ -801,7 +808,7 @@ final class AppModel: ObservableObject {
         // Before any search or Here, the encoder's altitude is tied to the
         // sky from the Moon's computed altitude: the spotting scope is on it.
         if let mount, (try? mount.status().altitudeDeg) == nil {
-            let alt = Ephemeris.moon(at: session.now, from: Site(latitudeDeg: latitude, longitudeDeg: longitude))
+            let alt = Ephemeris.moon(at: session.now, from: sessionSite)
                 .horizontal.altDeg
             try? mount.setAltitudeReference(alt)
         }
@@ -896,7 +903,7 @@ final class AppModel: ObservableObject {
             test
             ? testAltitudeDeg
             : Ephemeris.moon(
-                at: session.now, from: Site(latitudeDeg: latitude, longitudeDeg: longitude)
+                at: session.now, from: sessionSite
             ).horizontal.altDeg
         searchStop.value = false
         sawTarget.value = false
@@ -1237,7 +1244,7 @@ final class AppModel: ObservableObject {
     /// The catalogue's best crater for focusing now, for the button.
     var bestCrater: String? {
         guard siteSet else { return nil }
-        return Craters.best(at: sessionNow, from: Site(latitudeDeg: latitude, longitudeDeg: longitude))?.crater.name
+        return Craters.best(at: sessionNow, from: sessionSite)?.crater.name
     }
 
     /// Recheck after fine focus (step 8).

@@ -180,3 +180,24 @@ func movingThePointingMovesTheImageAsTheOpticsSay(diagonal: Bool, barlow: Double
     let moving = try change(shimmer: 3)
     #expect(moving > still * 1.3, "still \(still), shimmering \(moving)")
 }
+
+/// A bright daytime sky on the colour sensor, with no Moon in view, doesn't
+/// pass as the Moon under any trigger; with the Moon in view it does under
+/// the day trigger.
+@Test func aPlainDaytimeSkyIsNotTheMoon() throws {
+    let c = SimCamera(optics: SimOptics(focalLengthMm: 2032, sensor: .asi662mc), scene: MoonScene.synthetic(size: 512, phaseAngleDeg: 60))
+    var k = SimCamera.Conditions()
+    k.skyLevel = 0.3
+    k.shakeArcsec = 0
+    c.conditions = k
+    try c.configure(exposureUs: 1000, gain: 100)
+    c.pointing = (3000, 3000)
+    let sky = c.render(at: Date())
+    for trigger in Blob.Sky.allCases {
+        #expect(!Blob.looksLikeMoon(Blob.find(sky, thresholdFraction: 0.3), sky: trigger), "\(trigger)")
+    }
+    // The bright limb crossing the frame, as a sweep sees it.
+    c.pointing = (900, 0)
+    let moon = c.render(at: Date().addingTimeInterval(1))
+    #expect(Blob.looksLikeMoon(Blob.find(moon, thresholdFraction: 0.3), sky: .day))
+}

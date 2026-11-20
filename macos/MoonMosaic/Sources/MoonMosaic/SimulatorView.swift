@@ -234,6 +234,8 @@ struct SkyMap: View {
             ]
             pts += sim.footprint
             pts += sim.trail
+            // Nothing absurd in the fit (a stray far point zooms it to nothing).
+            pts = pts.filter { abs($0.x) < 1e5 && abs($0.y) < 1e5 }
             let pad = 0.06 * max(box.width, box.height, 2 * r0)
             let minX = (pts.map(\.x).min() ?? 0) - pad, maxX = (pts.map(\.x).max() ?? 0) + pad
             let minY = (pts.map(\.y).min() ?? 0) - pad, maxY = (pts.map(\.y).max() ?? 0) + pad

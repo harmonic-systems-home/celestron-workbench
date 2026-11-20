@@ -30,7 +30,7 @@ struct SearchMap: View {
             // motion since the start comes off every position.
             var drift = (0.0, 0.0)
             if progress.followsMoon {
-                let site = Site(latitudeDeg: model.latitude, longitudeDeg: model.longitude)
+                let site = model.sessionSite
                 let a = Ephemeris.moon(at: progress.startTime, from: site).horizontal
                 let b = Ephemeris.moon(at: model.sessionNow, from: site).horizontal
                 var dAz = b.azDeg - a.azDeg
@@ -127,7 +127,7 @@ struct SearchMap: View {
                 anchor: .topLeading)
             // Where the pattern's centre is on the sky now (it rides on the Moon).
             if progress.followsMoon {
-                let site = Site(latitudeDeg: model.latitude, longitudeDeg: model.longitude)
+                let site = model.sessionSite
                 let a = Ephemeris.moon(at: progress.startTime, from: site).horizontal
                 ctx.draw(
                     Text(

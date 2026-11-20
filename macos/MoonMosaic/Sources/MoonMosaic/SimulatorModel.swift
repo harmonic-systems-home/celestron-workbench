@@ -75,6 +75,10 @@ final class SimulatorModel: ObservableObject {
     }
     @Published var rehearseAt: RehearseAt = .scene
 
+    var sceneMomentPlace: String? {
+        libraryScene.flatMap { MoonScene.Info.sidecar(for: $0)?.place }
+    }
+
     var sceneMoment: (time: Date, site: Site?)? {
         guard let url = libraryScene, let info = MoonScene.Info.sidecar(for: url), let t = info.taken else { return nil }
         let site = info.latitude.flatMap { lat in info.longitude.map { Site(latitudeDeg: lat, longitudeDeg: $0) } }
@@ -107,7 +111,14 @@ final class SimulatorModel: ObservableObject {
     /// A search started with the camera here (the truth, from the Moon's
     /// centre); its stops span `box` from there.
     func noteSearch(box: CGRect) {
-        if let p = camera?.pointing { searchCentre = CGPoint(x: p.x, y: p.y) }
+        // The camera's truth now, or the last good one: with no position
+        // read at that instant the provider answers (1e6, 1e6), which put
+        // the box a world away and zoomed the view out to nothing.
+        if let p = camera?.pointing, abs(p.x) < 1e5, abs(p.y) < 1e5 {
+            searchCentre = CGPoint(x: p.x, y: p.y)
+        } else {
+            searchCentre = pointing
+        }
         searchBox = box
         trail = []
     }

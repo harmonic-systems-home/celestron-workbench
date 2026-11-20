@@ -28,6 +28,8 @@ public enum Blob {
         /// near the terminator too, where a threshold set by a bright
         /// crater misses it (2026-11-20).
         public var background: Int = 0
+        /// The brightest 2×2 mean (hot pixels don't reach it).
+        public var smoothPeak: Int = 0
         public var litAboveSky: Double = 0
         /// The frame's 256-level histogram.
         public var histogram: [Int] = []
@@ -49,17 +51,35 @@ public enum Blob {
         guard !px.isEmpty, frame.width > 0, frame.height > 0 else { return nil }
 
         var peak: UInt8 = 0
-        var hist = [Int](repeating: 0, count: 256)
-        for p in px {
-            hist[Int(p)] += 1
-            if p > peak { peak = p }
-        }
+        for p in px where p > peak { peak = p }
         guard Int(peak) >= minPeak else { return nil }
+        // The sky, the lit share and the histogram from 2×2 means: a colour
+        // sensor's raw frame of a blue sky has bright blue and dark red
+        // pixels side by side, and noise and hot pixels shrink too, so a
+        // bright, plain sky no longer reads as half lit (2026-11-20,
+        // simulator: a daytime sky passed as the Moon). The Moon is far
+        // bigger than 2×2, so it is unchanged.
+        var hist = [Int](repeating: 0, count: 256)
+        var binnedPeak = 0
+        let (bw, bh) = (frame.width / 2, frame.height / 2)
+        if bw > 0, bh > 0 {
+            for y in 0..<bh {
+                let r0 = 2 * y * frame.width, r1 = r0 + frame.width
+                for x in 0..<bw {
+                    let v = (Int(px[r0 + 2 * x]) + Int(px[r0 + 2 * x + 1]) + Int(px[r1 + 2 * x]) + Int(px[r1 + 2 * x + 1]) + 2) / 4
+                    hist[v] += 1
+                    if v > binnedPeak { binnedPeak = v }
+                }
+            }
+        } else {
+            for p in px { hist[Int(p)] += 1 }
+        }
+        let cells = max(1, hist.reduce(0, +))
         var background = 0
         var seen = 0
         for (v, c) in hist.enumerated() {
             seen += c
-            if seen * 5 >= px.count {
+            if seen * 5 >= cells {
                 background = v
                 break
             }
@@ -101,7 +121,8 @@ public enum Blob {
             pixels: count,
             brightFraction: Double(count) / Double(px.count),
             background: background,
-            litAboveSky: Double(litCount) / Double(px.count),
+            smoothPeak: binnedPeak,
+            litAboveSky: Double(litCount) / Double(cells),
             histogram: hist
         )
     }
@@ -137,7 +158,8 @@ extension Blob {
         guard let b else { return false }
         let t = sky.trigger
         let share = t.lit == 20 ? b.litAboveSky : b.litAbove(t.lit)
-        return b.peak >= b.background + t.peak && share >= t.share
+        let peak = b.smoothPeak > 0 ? b.smoothPeak : b.peak
+        return peak >= b.background + t.peak && share >= t.share
     }
 }
 
