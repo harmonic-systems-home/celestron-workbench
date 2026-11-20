@@ -78,9 +78,9 @@ import Testing
                 nearX * nearX + nearY * nearY < rr * rr, "\(diameter)°: tile \(tile.id) is all sky")
         }
     }
-    // Serpentine: consecutive tiles in a row are one step apart.
+    // Consecutive tiles in a row are one step apart, always the same way.
     for (p, q) in zip(plan.tiles, plan.tiles.dropFirst()) where p.row == q.row {
-        #expect(abs(abs(p.center.x - q.center.x) - 1920 * 0.75) < 1e-6)
+        #expect(abs((q.center.x - p.center.x) - 1920 * 0.75) < 1e-6)
     }
 }
 

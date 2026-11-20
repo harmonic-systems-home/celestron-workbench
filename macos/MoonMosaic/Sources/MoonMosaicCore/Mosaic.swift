@@ -104,10 +104,13 @@ public struct MosaicPlan: Sendable, Equatable {
 public enum MosaicPlanner {
     /// A grid in the camera's own frame covering the Moon's disk (plus
     /// `margin` of its radius), tiles overlapping by `overlap` of the frame,
-    /// tiles that miss the disk dropped, in serpentine order.
+    /// tiles that miss the disk dropped. Every row runs the same way
+    /// (amendment 7), so each move along a row takes up the gears' slack the
+    /// same way and the tiles land consistently; `serpentine` alternates
+    /// instead (shorter moves between rows).
     public static func plan(
         moonDiameterDeg: Double, calibration: CameraCalibration, frameWidth: Int, frameHeight: Int,
-        overlap: Double = 0.25, margin: Double = 0.03
+        overlap: Double = 0.25, margin: Double = 0.03, serpentine: Bool = false
     ) -> MosaicPlan {
         let (w, h) = (Double(frameWidth), Double(frameHeight))
         let radius = moonDiameterDeg / 2 * 3600 / calibration.arcsecPerPixel
@@ -122,7 +125,7 @@ public enum MosaicPlanner {
         var tiles: [Tile] = []
         for (r, j) in (-ny...ny).enumerated() {
             let columns = Array(-nx...nx)
-            for i in r.isMultiple(of: 2) ? columns : columns.reversed() {
+            for i in (!serpentine || r.isMultiple(of: 2)) ? columns : columns.reversed() {
                 let center = PixelOffset(x: Double(i) * sx, y: Double(j) * sy)
                 // The share's nearest point to the Moon's centre.
                 let nearX = max(abs(center.x) - sx / 2, 0)
