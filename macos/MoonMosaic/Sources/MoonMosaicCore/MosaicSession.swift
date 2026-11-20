@@ -134,6 +134,9 @@ public final class MosaicSession: @unchecked Sendable {
     public private(set) var centreFit: MoonCentre.Fit?
     /// The survey's sunlit cells, relative to the Moon's centre.
     private var litSky: [SkyOffset] = []
+    /// Every survey cell, from the Moon's centre in units of its radius, and
+    /// whether it was sunlit (for the rotation check).
+    private var surveyCells: [(x: Double, y: Double, lit: Bool)] = []
     /// The image orientation a converging search found works before a
     /// calibration (the guess can be mirrored by a star diagonal). Recentre
     /// uses it too.
@@ -1018,6 +1021,9 @@ public final class MosaicSession: @unchecked Sendable {
         litSky = samples.filter { $0.mean >= fit.levels.lit }.map {
             SkyOffset(x: $0.sky.x - fit.centre.x, y: $0.sky.y - fit.centre.y)
         }
+        surveyCells = samples.map {
+            (x: ($0.sky.x - fit.centre.x) / radius, y: ($0.sky.y - fit.centre.y) / radius, lit: $0.mean >= fit.levels.lit)
+        }
         centreFit = fit
         plan = nil
         checkRotation()
@@ -1043,20 +1049,43 @@ public final class MosaicSession: @unchecked Sendable {
         return fit
     }
 
-    /// Orient Moon's rotation check (amendment 7): the survey's sunlit cells
-    /// lie toward the bright limb the ephemeris predicts, if the camera's
-    /// turn and mirroring are right. Away from full only (the lit part's
-    /// centroid is then well off the centre). Returns the disagreement.
+    /// Orient Moon's rotation check (amendment 7): the sunlit shape the
+    /// ephemeris predicts is turned through a full circle, and the turn that
+    /// best matches the survey's sunlit and dark cells on the disk is the
+    /// camera's error. Every covered cell counts, so where the survey
+    /// happened to reach doesn't bias it (the lit cells' centroid did:
+    /// 2026-11-20, the test runner, 34–69° off with the wider ASI482MC).
+    /// Away from full only. Returns the error in degrees.
     @discardableResult
     func checkRotation() -> Double? {
         let phase = Ephemeris.phase(at: clock(), from: settings.site)
-        guard phase.phaseAngleDeg > 35, litSky.count >= 4 else { return nil }
-        let cx = litSky.map(\.x).reduce(0, +) / Double(litSky.count)
-        let cy = litSky.map(\.y).reduce(0, +) / Double(litSky.count)
-        guard hypot(cx, cy) > 1 else { return nil }
-        let seen = atan2(cx, cy) * 180 / .pi
-        let predicted = atan2(phase.brightLimb.x, phase.brightLimb.y) * 180 / .pi
-        let off = abs(wrap180(seen - predicted))
+        guard phase.phaseAngleDeg > 35 else { return nil }
+        let cells = surveyCells.filter {
+            let d = hypot($0.x, $0.y)
+            return d < 0.97
+        }
+        guard cells.count >= 20, cells.contains(where: \.lit), cells.contains(where: { !$0.lit }) else { return nil }
+        let c = cos(phase.phaseAngleDeg * .pi / 180)
+        let base = atan2(phase.brightLimb.x, phase.brightLimb.y)
+        func score(_ turnDeg: Double) -> Int {
+            let t = base + turnDeg * .pi / 180
+            let (lx, ly) = (sin(t), cos(t))
+            var n = 0
+            for p in cells {
+                let a = p.x * lx + p.y * ly
+                let b = -p.x * ly + p.y * lx
+                let term = -c * max(0, 1 - b * b).squareRoot()
+                if abs(a - term) < 0.04 { continue }
+                if (a > term) == p.lit { n += 1 }
+            }
+            return n
+        }
+        var best = (turn: 0.0, n: -1)
+        for turn in stride(from: -180.0, to: 180, by: 2) {
+            let n = score(turn)
+            if n > best.n || (n == best.n && abs(turn) < abs(best.turn)) { best = (turn, n) }
+        }
+        let off = abs(best.turn)
         onEvent(
             .message(
                 off < 30

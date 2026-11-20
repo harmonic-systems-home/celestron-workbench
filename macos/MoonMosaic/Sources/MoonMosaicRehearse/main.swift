@@ -6,7 +6,7 @@ import MoonMosaicCore
 //
 //   swift run -c release MoonMosaicRehearse [first-seed] [count] [--tiles N] [--speed K] [--out file.json] [--keep dir] [--verbose]
 //       [--camera 662|482|both]
-//   swift run -c release MoonMosaicRehearse --set phases [--rotations 30,210] [--camera 662|482|both] ...
+//   swift run -c release MoonMosaicRehearse --set phases [--rotations 30,210] [--camera 662|482|both] [--phase "waxing crescent"] ...
 //
 // The phases set: each major phase (waxing crescent to waning crescent, full
 // included) × direct and mirrored (diagonal) × each rotation × each camera.
@@ -44,7 +44,8 @@ if option("--set") == "phases" {
     let rotations = (option("--rotations") ?? "30,210").split(separator: ",").compactMap { Double($0) }
     var seed = first
     for camera in cameras {
-        for phase in Rehearsal.Phase.allCases {
+        let only = option("--phase").flatMap { name in Rehearsal.Phase.allCases.first { $0.rawValue == name } }
+        for phase in Rehearsal.Phase.allCases where only == nil || phase == only {
             for diagonal in [false, true] {
                 for rotation in rotations {
                     scenarios.append(
