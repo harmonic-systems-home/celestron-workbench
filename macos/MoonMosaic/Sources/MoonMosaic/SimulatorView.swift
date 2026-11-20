@@ -211,23 +211,32 @@ struct SkyMap: View {
 
     var body: some View {
         Canvas { ctx, size in
-            // Fit the search area and the Moon, with a margin.
-            let reach = sim.reachArcsec
+            // Zoom to fit: the search area as it really runs, the Moon, the
+            // camera's frame and its path, with a margin.
+            let r0 = sim.moonRadiusArcsec
             let centre = sim.searchCentre
-            let minX = min(centre.x - reach, -sim.moonRadiusArcsec) - 600
-            let maxX = max(centre.x + reach, sim.moonRadiusArcsec) + 600
-            let minY = min(centre.y - 0.6 * reach, -sim.moonRadiusArcsec) - 600
-            let maxY = max(centre.y + 0.6 * reach, sim.moonRadiusArcsec) + 600
+            let box: CGRect = {
+                if let b = sim.searchBox { return b.offsetBy(dx: centre.x, dy: centre.y) }
+                let reach = sim.reachArcsec
+                return CGRect(x: centre.x - reach, y: centre.y - 0.6 * reach, width: 2 * reach, height: 1.2 * reach)
+            }()
+            var pts: [CGPoint] = [
+                CGPoint(x: box.minX, y: box.minY), CGPoint(x: box.maxX, y: box.maxY),
+                CGPoint(x: -r0, y: -r0), CGPoint(x: r0, y: r0),
+            ]
+            pts += sim.footprint
+            pts += sim.trail
+            let pad = 0.06 * max(box.width, box.height, 2 * r0)
+            let minX = (pts.map(\.x).min() ?? 0) - pad, maxX = (pts.map(\.x).max() ?? 0) + pad
+            let minY = (pts.map(\.y).min() ?? 0) - pad, maxY = (pts.map(\.y).max() ?? 0) + pad
             let k = min(size.width / (maxX - minX), size.height / (maxY - minY))
             let ox = size.width / 2 - k * (minX + maxX) / 2
             let oy = size.height / 2 + k * (minY + maxY) / 2
             func pt(_ p: CGPoint) -> CGPoint { CGPoint(x: ox + k * p.x, y: oy - k * p.y) }
 
-            // Search area.
-            let area = CGRect(
-                x: pt(CGPoint(x: centre.x - reach, y: centre.y + 0.6 * reach)).x,
-                y: pt(CGPoint(x: centre.x - reach, y: centre.y + 0.6 * reach)).y,
-                width: 2 * reach * k, height: 1.2 * reach * k)
+            // Search area (the stops' extent).
+            let corner = pt(CGPoint(x: box.minX, y: box.maxY))
+            let area = CGRect(x: corner.x, y: corner.y, width: box.width * k, height: box.height * k)
             ctx.stroke(Path(area), with: .color(.gray), style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
             // The Moon, with its bright limb marked.
             let r = sim.moonRadiusArcsec

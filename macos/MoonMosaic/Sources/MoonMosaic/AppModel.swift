@@ -1404,7 +1404,16 @@ final class AppModel: ObservableObject {
             default: break
             }
             if case .failed(let why) = state { say("Tile \(id) failed: \(why)") }
-        case .search(let p): searchProgress = p
+        case .search(let p):
+            // A new search: tell the simulator where it runs on the sky.
+            if p.startTime != searchProgress?.startTime, simulator.attached {
+                let c = cos(p.altitudeDeg * .pi / 180)
+                let xs = p.pattern.map { $0[0] * c * 3600 }, ys = p.pattern.map { $0[1] * 3600 }
+                if let x0 = xs.min(), let x1 = xs.max(), let y0 = ys.min(), let y1 = ys.max() {
+                    simulator.noteSearch(box: CGRect(x: x0, y: y0, width: x1 - x0, height: y1 - y0))
+                }
+            }
+            searchProgress = p
         case .detail(let d): stepDetail = d
         }
     }

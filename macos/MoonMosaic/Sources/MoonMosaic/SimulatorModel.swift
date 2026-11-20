@@ -89,6 +89,18 @@ final class SimulatorModel: ObservableObject {
     @Published private(set) var trail: [CGPoint] = []
     @Published private(set) var footprint: [CGPoint] = []
     @Published private(set) var searchCentre: CGPoint = .zero
+    /// The search's pattern as it lies on the sky (arcseconds from its
+    /// start): set when a search starts, so the sky view shows where it
+    /// really runs.
+    @Published private(set) var searchBox: CGRect?
+
+    /// A search started with the camera here (the truth, from the Moon's
+    /// centre); its stops span `box` from there.
+    func noteSearch(box: CGRect) {
+        if let p = camera?.pointing { searchCentre = CGPoint(x: p.x, y: p.y) }
+        searchBox = box
+        trail = []
+    }
     @Published private(set) var reachArcsec: Double = 7200
     @Published private(set) var moonRadiusArcsec: Double = 930
     @Published private(set) var brightLimbDeg: Double?

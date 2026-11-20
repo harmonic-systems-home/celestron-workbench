@@ -29,7 +29,9 @@ extension MosaicSession {
         let home = offset(of: p0, at: searchStart)
 
         // Rows: the start's row, then alternately above and below.
-        let rows = Int((halfHeightDeg / rowSpacingDeg).rounded(.down))
+        // (A hair over, so 1.2 / 0.4 counts 3 rows each way, not 2.9999…:
+        // 2026-11-20, rows stopped at ±0.8° of a ±1.2° area.)
+        let rows = Int((halfHeightDeg / rowSpacingDeg + 1e-6).rounded(.down))
         var order = [0]
         for k in 1...max(rows, 1) where k <= rows {
             order += [k, -k]
