@@ -548,6 +548,56 @@ The same routine could coarse-focus first from the Detail readout. To do: choose
 the focuser and its protocol (Celestron's own focuser sits on the AUX bus), and
 give the simulator a focuser.
 
+### Future: measuring the turbulence
+
+A short step (a few seconds of video at a high frame rate, on Moon detail)
+measures the seeing:
+- **Image motion between frames:** from two separated regions, their
+  differential motion (as a DIMM does) gives the seeing's size (Fried's r0),
+  independent of the mount's own shake.
+- **How fast it changes:** from how quickly the motion and the sharpness lose
+  correlation (the coherence time).
+- **The spread of sharpness:** across the frames.
+
+It would inform the capture: an exposure shorter than the coherence time; more
+frames per tile (a longer video) when the seeing is poor, so enough sharp frames
+survive selection; and a note to wait when it's very poor. Logged per session, it
+also shows how the seeing affected each mosaic.
+
+### Future: a web demonstration
+
+A web page version of the interface, running the simulator only: simulated
+images, or images a visitor provides. It would demonstrate the app to the public,
+and let the owner of a similar scope try the whole flow before buying anything.
+It needs rehostable scenes (public domain, or licences that allow it), and their
+date, time and location to drive the simulated sky.
+
+### Future: drift-scan capture
+
+An alternative to tiles: aim the camera with the Moon just off one edge of the
+field, stop tracking (or slow it), and record while the Moon drifts through. Then
+go to the next strip.
+
+- **For:** nothing moves during the recording, so there is no backlash, settling or
+  tracking error, and each point on the Moon crosses many sensor pixels, which
+  averages out the fixed pattern.
+- **Frames:** with tracking stopped, the Moon drifts about 14.5″/s. With the
+  ASI662MC on the SCT (565″ × 318″), a point stays in view about 39 s along the
+  long side (22 s along the short), about 2,300 frames at 60 fps, against about
+  180 per tile today (3 s). That's far more than needed. The count is controlled
+  by tracking at a fraction of the Moon's rate instead of stopping: the drift
+  becomes any speed, and with rates on both axes, any direction, such as along the
+  camera's long side.
+- **Time and data:** about 8 strips (254″ each, after overlap) across the 1,860″
+  disk, each (chord + 565″) / drift rate. With tracking stopped, that's about 20
+  minutes, against about 5 minutes for the tiles in this amendment. Recording
+  continuously at 60 fps for that long is about 140 GB, so the frame rate or the
+  drift would be chosen for the frames each point needs.
+- **Still to work out:** stacking frames that each show a different part of the
+  Moon (aligned per region, not per frame), field rotation over the run, and how
+  the strips are placed when the drift isn't along an axis. To be compared with
+  the tiled plan in the simulator, by time, data and the quality of the result.
+
 ### Simulator
 
 The simulated camera is the key to testing every step before the next clear night.
@@ -621,6 +671,16 @@ It could well be more code than the app.
   injection (a stuck keypad move, a dropped link). It also has the wide sky view,
   with the true Moon and the camera's footprint. The app's own buttons (Track,
   nudges, Stop, Undo, Orient Camera, and so on) are tested against it.
+- **Atmosphere (can be turned on):** beyond one blur and one tip-tilt per frame:
+  a distortion that varies across the field and boils from frame to frame (so
+  different regions are sharp in different frames, as in lucky imaging);
+  scintillation; atmospheric dispersion at low altitude (colour fringes, which
+  shift the Bayer channels apart); extinction and reddening with airmass; and
+  refraction flattening the Moon near the horizon.
+- **Scene metadata drives the run:** a scene's date, time and location (from the
+  image's metadata or its sidecar) set the simulated site and clock, so the
+  ephemeris (phase, bright limb, rotation on the sky, altitude) matches the image.
+  Images without them are aligned by their bright limb.
 - **Real time:** streamed frames at the camera's real frame rate (30 fps or more),
   timestamped, for sweeps. Today's fake camera takes seconds per frame. The new
   one warps a prepared, multi-resolution scene on the GPU (Core Image or Metal)
@@ -629,6 +689,12 @@ It could well be more code than the app.
   exposure. A scenario runner drives the whole flow and scores each step (centre,
   rotation and scale errors, exposure, the share of the disk the mosaic covers),
   along with its time against the budget.
+- **A test runner:** a test version of the app runs the whole flow against the
+  simulator, for a series of scenarios: camera rotations, mirroring, phases,
+  optics and conditions, including downloaded images of the Moon behind clouds.
+  Each run must end oriented and focused, with a well-chosen exposure, gain and
+  frame rate, and a mosaic plan that covers the lit disk. The runner reports
+  pass or fail per scenario, with the scores and times.
 
 ### Still open
 

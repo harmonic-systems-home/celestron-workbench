@@ -299,7 +299,7 @@ final class AppModel: ObservableObject {
                     port: port, safety: attendedSafety, trace: trace, setup: setup)
                 let camera = SharedCamera(
                     simulate
-                        ? FakeCamera(width: 1920, height: 1080, scale: 0.3, rotationDeg: 25)
+                        ? SimCamera(optics: .sct8, scene: MoonScene.synthetic(size: 1024))
                         : try ZWOCamera(library: ZWOLibrary()))
                 await MainActor.run {
                     self.connected(mount: mount, camera: camera, port: port)
@@ -455,7 +455,9 @@ final class AppModel: ObservableObject {
     /// calibrate and the mosaic rehearse exactly as before; the test-mode
     /// "drainpipe" is a fixed terrestrial target that doesn't drift.
     private func installSimProvider() {
-        guard let fake = camera?.camera as? FakeCamera,
+        let fake = camera?.camera as? FakeCamera
+        let sim = camera?.camera as? SimCamera
+        guard fake != nil || sim != nil,
             let start = simStart, let connect = simConnect, let clock = simClock,
             let mount
         else { return }
@@ -465,7 +467,16 @@ final class AppModel: ObservableObject {
         // Off-centre at connect, within the search reach and out of frame.
         let anchorAz = start[0] + 0.4
         let anchorAlt = start[1] + 0.25
-        fake.provider = { [weak mount] in
+        if let sim {
+            // Tonight's Moon: its size, and a synthetic scene at its phase
+            // with the bright limb where the ephemeris puts it.
+            let now = clock()
+            let phase = Ephemeris.phase(at: now, from: site)
+            sim.moonRadiusArcsec = Ephemeris.moon(at: now, from: site).diameterDeg * 1800
+            sim.scene = MoonScene.synthetic(size: 1024, phaseAngleDeg: phase.phaseAngleDeg, brightLimbDeg: 0)
+            sim.alignBrightLimb(toDeg: phase.brightLimbFromZenithDeg)
+        }
+        let provider: @Sendable () -> (x: Double, y: Double) = { [weak mount] in
             guard let p = try? mount?.status().positionsDeg else { return (1e6, 1e6) }
             var targetAz = anchorAz
             var targetAlt = anchorAlt
@@ -484,6 +495,8 @@ final class AppModel: ObservableObject {
             let dAlt = (p[1] - targetAlt) * 3600
             return (dAz, dAlt)
         }
+        fake?.provider = provider
+        sim?.provider = provider
     }
 
     // MARK: - Steps
