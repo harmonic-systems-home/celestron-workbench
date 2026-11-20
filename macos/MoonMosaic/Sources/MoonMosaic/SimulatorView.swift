@@ -238,6 +238,26 @@ struct SkyMap: View {
             let corner = pt(CGPoint(x: box.minX, y: box.maxY))
             let area = CGRect(x: corner.x, y: corner.y, width: box.width * k, height: box.height * k)
             ctx.stroke(Path(area), with: .color(.gray), style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
+            ctx.draw(
+                Text(sim.searchBox == nil ? "search area (planned)" : "search area").font(.caption2).foregroundColor(.gray),
+                at: CGPoint(x: area.minX + 4, y: area.maxY - 3), anchor: .bottomLeading)
+            // A scale bar: a round number of degrees about a fifth of the view.
+            let want = (maxX - minX) / 5 / 3600
+            let deg = [0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10].last { $0 <= want } ?? 0.05
+            let bar = deg * 3600 * k
+            let y0 = size.height - 12
+            var scale = Path()
+            scale.move(to: CGPoint(x: size.width - 12 - bar, y: y0))
+            scale.addLine(to: CGPoint(x: size.width - 12, y: y0))
+            scale.move(to: CGPoint(x: size.width - 12 - bar, y: y0 - 4))
+            scale.addLine(to: CGPoint(x: size.width - 12 - bar, y: y0 + 4))
+            scale.move(to: CGPoint(x: size.width - 12, y: y0 - 4))
+            scale.addLine(to: CGPoint(x: size.width - 12, y: y0 + 4))
+            ctx.stroke(scale, with: .color(.white), lineWidth: 1.5)
+            ctx.draw(
+                Text(deg >= 1 ? String(format: "%.0f°", deg) : String(format: "%.0f′", deg * 60)).font(.caption)
+                    .foregroundColor(.white),
+                at: CGPoint(x: size.width - 12 - bar / 2, y: y0 - 6), anchor: .bottom)
             // The Moon, with its bright limb marked.
             let r = sim.moonRadiusArcsec
             let disk = CGRect(x: ox - k * r, y: oy - k * r, width: 2 * k * r, height: 2 * k * r)
