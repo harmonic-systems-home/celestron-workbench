@@ -40,7 +40,9 @@ private func expectedShift(_ c: SimCamera, _ d: (x: Double, y: Double)) -> (Doub
     // Refit from the pixels alone.
     let refit = MoonScene(
         name: "refit", width: scene.width, height: scene.height, pixels: scene.levels[0].pixels)
-    #expect(abs(refit.centre.x - 256.5) < 1.5 && abs(refit.centre.y - 256.5) < 1.5, "\(refit.centre)")
+    // From the sunlit limb alone (the dark side is black, as in a real
+    // image without earthshine): within 2.5 px of the true centre.
+    #expect(abs(refit.centre.x - 256.5) < 2.5 && abs(refit.centre.y - 256.5) < 2.5, "\(refit.centre)")
     #expect(abs(refit.radius - scene.radius) < 2, "\(refit.radius) vs \(scene.radius)")
     let limb = try #require(scene.brightLimbDeg)
     #expect(abs(limb - 90) < 5, "bright limb \(limb)")
