@@ -113,6 +113,8 @@ public final class MosaicSession: @unchecked Sendable {
     public let follow = FollowState()
     /// The goto in progress, for a progress bar and an ETA.
     public let motion = MotionInfo()
+    /// Whether camera frames are being saved, and what for.
+    public let saving = SavingInfo()
     /// Searches move their pattern with the Moon (off for a fixed test
     /// target such as the drainpipe).
     public var searchFollowsMoon = false
@@ -1114,6 +1116,8 @@ public final class MosaicSession: @unchecked Sendable {
             height: camera.info.height, colorID: SerWriter.colorID(for: camera.info),
             instrument: camera.info.name, telescope: "Moon mosaic", start: clock())
         var stack = QuickStack(keep: 8)
+        saving.begin(.product("tile \(tile.id) video"))
+        defer { saving.end() }
         let end = clock().addingTimeInterval(settings.videoSeconds)
         // The first and last frames' times, on the session's clock.
         var first: Date?
@@ -1123,6 +1127,7 @@ public final class MosaicSession: @unchecked Sendable {
             last = clock().addingTimeInterval(frame.time.timeIntervalSinceNow)
             if first == nil { first = last }
             try writer.append(frame)
+            saving.saved(1, purpose: nil)
             stack.offer(frame)
             await Task.yield()
         }
@@ -1164,6 +1169,7 @@ public final class MosaicSession: @unchecked Sendable {
     /// Saves frames as 8-bit PGM under `diagnostics/sub`. Never fails a step.
     func keep(_ frames: [(String, Frame)], in sub: String) {
         guard let diagnostics else { return }
+        saving.saved(frames.count, purpose: SavingInfo.purpose(of: sub))
         let dir = diagnostics.appendingPathComponent(sub)
         do {
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -1549,4 +1555,54 @@ public final class MotionInfo: @unchecked Sendable {
         lock.withLock { move = Move(axis: axis, from: from, to: to, started: Date()) }
     }
     func clear() { lock.withLock { move = nil } }
+}
+
+/// Whether camera frames are going to disk, and what for: the product
+/// (mosaic video) or diagnostics (search, orientation, survey frames kept
+/// for review). Shared with the app's status line.
+public final class SavingInfo: @unchecked Sendable {
+    public enum Purpose: Sendable, Equatable {
+        case product(String)
+        case diagnostic(String)
+        public var text: String {
+            switch self {
+            case .product(let what): "Recording product: \(what)"
+            case .diagnostic(let what): "Saving \(what) (for review)"
+            }
+        }
+        public var isProduct: Bool { if case .product = self { true } else { false } }
+    }
+    private let lock = NSLock()
+    private var active: Purpose?
+    private var last: (purpose: Purpose, time: Date)?
+    private var count = 0
+
+    static func purpose(of sub: String) -> Purpose {
+        switch sub {
+        case "search": .diagnostic("search frames")
+        case "orient": .diagnostic("orientation frames")
+        case "survey": .diagnostic("Orient Moon survey frames")
+        case "calibration": .diagnostic("calibration frames")
+        default: .diagnostic("\(sub) frames")
+        }
+    }
+
+    func begin(_ p: Purpose) { lock.withLock { active = p; count = 0 } }
+    func end() { lock.withLock { if let a = active { last = (a, Date()) }; active = nil } }
+    func saved(_ n: Int, purpose: Purpose?) {
+        lock.withLock {
+            count += n
+            if let p = purpose ?? active { last = (p, Date()) }
+        }
+    }
+
+    /// What is being saved now (a video in progress, or frames kept in the
+    /// last two seconds), and the frames so far; nil when nothing is.
+    public var now: (purpose: Purpose, frames: Int)? {
+        lock.withLock {
+            if let a = active { return (a, count) }
+            if let l = last, Date().timeIntervalSince(l.time) < 2 { return (l.purpose, count) }
+            return nil
+        }
+    }
 }

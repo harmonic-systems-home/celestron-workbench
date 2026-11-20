@@ -41,7 +41,7 @@ struct ContentView: View {
                 VStack(alignment: .leading, spacing: 6) {
                     // A fixed height, so the buttons below don't jump as
                     // lines (a move's progress, a step's detail) come and go.
-                    statusPanel.frame(width: 300, height: 215, alignment: .top).clipped()
+                    statusPanel.frame(width: 300, height: 240, alignment: .top).clipped()
                     ScrollView(.vertical) {
                         controls.frame(width: 300)
                     }
@@ -174,6 +174,17 @@ struct ContentView: View {
                     Label(t.text, systemImage: t.symbol)
                         .font(.system(size: 15, weight: .semibold, design: .rounded))
                         .foregroundStyle([Color.green, Color.orange, Color.blue, palette.dim][t.kind])
+                }
+                if model.connected {
+                    if let sv = model.savingNow {
+                        Label(sv.product ? "\(sv.text) (\(sv.frames) frames)" : sv.text, systemImage: "record.circle")
+                            .font(.system(size: 14, weight: .semibold, design: .rounded))
+                            .foregroundStyle(sv.product ? Color.red : Color.orange)
+                            .lineLimit(1)
+                    } else {
+                        Label("Not saving frames", systemImage: "circle")
+                            .font(.system(size: 14, design: .rounded)).foregroundStyle(palette.dim)
+                    }
                 }
                 if let m = model.moveProgress {
                     VStack(alignment: .leading, spacing: 2) {

@@ -120,6 +120,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var positionDeg: [Double]?
     /// A long goto in progress: done fraction, seconds left, size, axis.
     @Published private(set) var moveProgress: (fraction: Double, eta: Double?, degrees: Double, axis: String)?
+    /// Frames going to disk now: what for, whether it's the product, how many.
+    @Published private(set) var savingNow: (text: String, product: Bool, frames: Int)?
     /// The mount's tracking rates while it tracks (deg/s), else nil.
     @Published private(set) var mountTrackingRates: [Double]?
 
@@ -1288,6 +1290,7 @@ final class AppModel: ObservableObject {
             altitude = s.altitudeDeg
             positionDeg = s.positionsDeg
             mountTrackingRates = s.tracking
+            savingNow = session?.saving.now.map { ($0.purpose.text, $0.purpose.isProduct, $0.frames) }
             moveProgress = nil
             if let m = session?.motion.current, let p = s.positionsDeg, abs(m.to - m.from) > 0.3 {
                 var done = p[m.axis] - m.from
