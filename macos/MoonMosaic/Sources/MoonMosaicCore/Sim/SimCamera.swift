@@ -17,8 +17,8 @@ public final class SimCamera: Camera, @unchecked Sendable {
         public var skyLevel: Double = 0
         /// The Moon's glow just outside the limb (scattered light), against
         /// the lit Moon, and how fast it fades, arcseconds.
-        public var glowLevel: Double = 0.02
-        public var glowArcsec: Double = 300
+        public var glowLevel: Double = 0.003
+        public var glowArcsec: Double = 120
         /// Light let through (1 clear; thin cloud 0.3–0.8).
         public var transmission: Double = 1
         /// Shake after a move: the tube rings at `shakeHz`, dying away over

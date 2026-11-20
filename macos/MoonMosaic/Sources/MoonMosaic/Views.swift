@@ -436,7 +436,7 @@ struct ContentView: View {
             if panel == .camera {
                 Text(
                     model.calibrated
-                        ? "Click the image to recentre there and search finer."
+                        ? "Click the image to bring that point to the centre."
                         : "Click-to-recentre works once the camera is oriented.")
                     .font(.system(size: 12, design: .rounded)).foregroundStyle(palette.dim)
             }
