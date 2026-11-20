@@ -48,6 +48,8 @@ final class SimulatorModel: ObservableObject {
     @Published private(set) var libraryFolder: URL? =
         UserDefaults.standard.string(forKey: "simSceneLibrary").map { URL(fileURLWithPath: $0) }
     @Published private(set) var library: [URL] = []
+    /// Each library scene's name for the picker: phase, place, date.
+    @Published private(set) var libraryNames: [URL: String] = [:]
     @Published var libraryScene: URL? { didSet { if sceneChoice == .library, oldValue != libraryScene { applyScene() } } }
     @Published private(set) var loadingScene = false
     /// The chosen library scene's time and place, which set the simulated
@@ -185,8 +187,40 @@ final class SimulatorModel: ObservableObject {
         for sub in files where (try? sub.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true {
             all += (try? FileManager.default.contentsOfDirectory(at: sub, includingPropertiesForKeys: nil)) ?? []
         }
-        library = all.filter { kinds.contains($0.pathExtension.lowercased()) }
-            .sorted { $0.lastPathComponent.lowercased() < $1.lastPathComponent.lowercased() }
+        let images = all.filter { kinds.contains($0.pathExtension.lowercased()) }
+        var names: [URL: String] = [:]
+        var order: [URL: Double] = [:]
+        for url in images {
+            let info = MoonScene.Info.sidecar(for: url)
+            guard let t = info?.taken else {
+                names[url] = url.deletingPathExtension().lastPathComponent
+                order[url] = 2
+                continue
+            }
+            // Phase from the moment: the lit fraction, and waxing or waning.
+            let f = Ephemeris.phase(at: t, from: site).illuminatedFraction
+            let later = Ephemeris.phase(at: t.addingTimeInterval(6 * 3600), from: site).illuminatedFraction
+            let waxing = later > f
+            let kind: String
+            switch f {
+            case ..<0.03: kind = "New"
+            case ..<0.40: kind = waxing ? "Waxing crescent" : "Waning crescent"
+            case ..<0.60: kind = waxing ? "First quarter" : "Last quarter"
+            case ..<0.97: kind = waxing ? "Waxing gibbous" : "Waning gibbous"
+            default: kind = "Full"
+            }
+            let place = info?.place ?? "unknown place"
+            names[url] = String(format: "%@ %.0f%% · %@ · %@", kind, f * 100, place, t.formatted(date: .abbreviated, time: .omitted))
+            // Sorted through the month: waxing 0→1, then waning 1→2.
+            order[url] = waxing ? f : 2 - f
+        }
+        // Two images of one moment: tell them apart by file name.
+        let counts = Dictionary(grouping: names.values, by: { $0 }).mapValues(\.count)
+        for (url, name) in names where (counts[name] ?? 0) > 1 {
+            names[url] = name + " · " + url.deletingPathExtension().lastPathComponent
+        }
+        libraryNames = names
+        library = images.sorted { (order[$0] ?? 3, names[$0] ?? "") < (order[$1] ?? 3, names[$1] ?? "") }
     }
 
     /// The library image whose phase (from its sidecar's time) is nearest

@@ -811,7 +811,7 @@ struct SimulatorBox: View {
             Text("Simulator").font(.system(size: 15, weight: .semibold, design: .rounded))
             Picker("Scene", selection: $sim.libraryScene) {
                 ForEach(sim.library, id: \.self) { url in
-                    Text(url.deletingPathExtension().lastPathComponent).tag(Optional(url))
+                    Text(sim.libraryNames[url] ?? url.deletingPathExtension().lastPathComponent).tag(Optional(url))
                 }
             }
             .onChange(of: sim.libraryScene) { if sim.sceneChoice != .library { sim.sceneChoice = .library } }

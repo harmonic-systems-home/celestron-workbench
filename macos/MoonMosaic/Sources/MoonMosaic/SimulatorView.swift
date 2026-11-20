@@ -99,7 +99,7 @@ struct SimulatorView: View {
                 }
                 if sim.sceneChoice == .library {
                     Picker("Image", selection: $sim.libraryScene) {
-                        ForEach(sim.library, id: \.self) { Text($0.lastPathComponent).tag(Optional($0)) }
+                        ForEach(sim.library, id: \.self) { Text(sim.libraryNames[$0] ?? $0.lastPathComponent).tag(Optional($0)) }
                     }
                 }
                 HStack {

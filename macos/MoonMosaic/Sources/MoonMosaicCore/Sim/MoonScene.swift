@@ -36,6 +36,8 @@ public final class MoonScene: @unchecked Sendable {
         /// repo carry whole degrees). Without it, the app's own site is used.
         public var latitude: Double?
         public var longitude: Double?
+        /// Where it was taken, in words ("home", "Germany", "La Silla, Chile").
+        public var place: String?
         public init(source: String? = nil, licence: String? = nil, taken: Date? = nil, northDeg: Double? = nil) {
             self.source = source
             self.licence = licence
