@@ -817,7 +817,13 @@ final class AppModel: ObservableObject {
                     outcome = try await session.searchSpiral(
                         stepDeg: step, reachDeg: reach, referenceAltitudeDeg: refAlt,
                         converge: converge, found: found, cancelled: cancelled, sighted: sighted)
+                case .raster where !test:
+                    // Rows as single moves, the video watched (amendment 7).
+                    outcome = try await session.searchSweep(
+                        halfWidthDeg: reach, halfHeightDeg: reach * 0.6, rowSpacingDeg: 0.4,
+                        converge: converge, found: found, cancelled: cancelled, sighted: sighted)
                 case .raster:
+                    // A fixed test target: stop-and-shoot, no tracking.
                     outcome = try await session.searchRaster(
                         halfWidthDeg: reach, halfHeightDeg: reach * 0.6, rowSpacingDeg: step,
                         captureStepDeg: step, referenceAltitudeDeg: refAlt,
