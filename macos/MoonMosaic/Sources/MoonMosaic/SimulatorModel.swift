@@ -53,7 +53,7 @@ final class SimulatorModel: ObservableObject {
     @Published var seeingArcsec: Double = 2.5 { didSet { applyConditions() } }
     @Published var skyLevel: Double = 0 { didSet { applyConditions() } }
     @Published var transmission: Double = 1 { didSet { applyConditions() } }
-    @Published var glowLevel: Double = 0.003 { didSet { applyConditions() } }
+    @Published var glowLevel: Double = 0.0001 { didSet { applyConditions() } }
     @Published var shakeArcsec: Double = 20 { didSet { applyConditions() } }
     @Published var seed: UInt64 = 1
     /// Where the Moon starts, from the mount's position at connect (degrees

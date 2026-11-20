@@ -16,9 +16,13 @@ public final class SimCamera: Camera, @unchecked Sendable {
         /// about 0.1–0.4 by day, more near the Sun).
         public var skyLevel: Double = 0
         /// The Moon's glow just outside the limb (scattered light), against
-        /// the lit Moon, and how fast it fades, arcseconds.
-        public var glowLevel: Double = 0.003
-        public var glowArcsec: Double = 120
+        /// the lit Moon, and how fast it fades, arcseconds. Moonlit sky near
+        /// the Moon is about 10⁻⁵–10⁻⁴ of the lit surface per unit area; haze
+        /// and the optics' own scatter raise it. Orient Moon's survey frames
+        /// are 500 times brighter than the video, so 10⁻⁴ already reads 10
+        /// counts there, and 10⁻³ saturates.
+        public var glowLevel: Double = 0.0001
+        public var glowArcsec: Double = 300
         /// Light let through (1 clear; thin cloud 0.3–0.8).
         public var transmission: Double = 1
         /// Shake after a move: the tube rings at `shakeHz`, dying away over

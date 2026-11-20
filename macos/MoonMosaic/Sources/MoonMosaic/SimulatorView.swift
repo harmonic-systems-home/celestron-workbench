@@ -119,8 +119,8 @@ struct SimulatorView: View {
                 Slider(value: $sim.transmission, in: 0.05...1, step: 0.05) {
                     Text(String(format: "Cloud: %.0f%% through", sim.transmission * 100))
                 }
-                Slider(value: $sim.glowLevel, in: 0...0.2, step: 0.01) {
-                    Text(String(format: "Glow %.2f", sim.glowLevel))
+                Slider(value: $sim.glowLevel, in: 0...0.005, step: 0.0001) {
+                    Text(String(format: "Glow %.4f (haze raises it)", sim.glowLevel))
                 }
                 Slider(value: $sim.shakeArcsec, in: 0...60, step: 5) {
                     Text(String(format: "Shake after moves %.0f″", sim.shakeArcsec))
