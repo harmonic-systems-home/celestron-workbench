@@ -34,6 +34,13 @@ public final class SimCamera: Camera, @unchecked Sendable {
         /// Faults: the share of frames lost (each frame call returns nil),
         /// and a camera that stops delivering until a moment (USB trouble).
         public var dropFrames: Double = 0
+        /// The atmosphere beyond blur: the whole image's tip-tilt wanders
+        /// (RMS 0.3 × seeing) with this time constant, and parts of the
+        /// image move against each other (shimmer, RMS `shimmerArcsec`) over
+        /// patches about `patchArcsec` across, changing a few times a second.
+        public var tiltSeconds: Double = 0.05
+        public var shimmerArcsec: Double = 0.6
+        public var patchArcsec: Double = 30
         public var stalledUntil: Date? = nil
         public init() {}
     }
@@ -55,6 +62,8 @@ public final class SimCamera: Camera, @unchecked Sendable {
     private var peakSpeed = 0.0
     private var moveDirection = (x: 0.0, y: 0.0)
     private var shakeStart: (time: Date, amplitude: Double, x: Double, y: Double)?
+    /// The tip-tilt's state (arcseconds) and when it was last drawn.
+    private var tilt = (x: 0.0, y: 0.0, time: Date.distantPast)
     private var fixedPattern: [Float] = []
     private var hot: [Int] = []
     private let seed: UInt64
@@ -199,7 +208,16 @@ public final class SimCamera: Camera, @unchecked Sendable {
         var rng = Rng(seed &+ n &* 0x9E37_79B9_7F4A_7C15)
         // Seeing: this frame's blur and its tip-tilt.
         let seeing = c.seeingArcsec * (0.75 + 0.5 * rng.uniform())
-        let jitter = (0.3 * c.seeingArcsec * rng.gaussian(), 0.3 * c.seeingArcsec * rng.gaussian())
+        // Tip-tilt: a random walk pulled back to zero (AR(1)), so frames
+        // taken close together move together, as through real air.
+        let sd = 0.3 * c.seeingArcsec
+        let jitter: (Double, Double) = lock.withLock {
+            let dt = max(0, taken.timeIntervalSince(tilt.time))
+            let rho = c.tiltSeconds > 0 ? exp(-dt / c.tiltSeconds) : 0
+            let fresh = (1 - rho * rho).squareRoot() * sd
+            tilt = (tilt.x * rho + fresh * rng.gaussian(), tilt.y * rho + fresh * rng.gaussian(), taken)
+            return (tilt.x, tilt.y)
+        }
         var p = (x: p0.x - focus.shift.x + jitter.0, y: p0.y - focus.shift.y + jitter.1)
         // Motion over the exposure, from the last frame's pointing.
         var velocity = (x: 0.0, y: 0.0)
@@ -263,6 +281,35 @@ public final class SimCamera: Camera, @unchecked Sendable {
         }
         let dxu = (cr * qxu - sr * qyu) / k / lf
         let dyu = -(sr * qxu + cr * qyu) / k / lf
+        let dxv = (cr * qxv - sr * qyv) / k / lf
+        let dyv = -(sr * qxv + cr * qyv) / k / lf
+        // Shimmer: a few drifting waves of displacement (image pixels),
+        // worked out on a coarse grid and interpolated.
+        let cell = 32
+        let (gw, gh) = (w / cell + 2, h / cell + 2)
+        var grid = [Double](repeating: 0, count: gw * gh * 2)
+        if c.shimmerArcsec > 0, c.patchArcsec > 0 {
+            var modeRng = Rng(seed &* 0x2545_F491_4F6C_DD1D &+ 7)
+            let time = taken.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 10_000)
+            let lambda = c.patchArcsec * 2 / scale
+            let amp = c.shimmerArcsec / scale / 2.0.squareRoot()
+            for _ in 0..<4 {
+                let dir = 2 * Double.pi * modeRng.uniform()
+                let (kx, ky) = (cos(dir) * 2 * .pi / lambda, sin(dir) * 2 * .pi / lambda)
+                let pol = 2 * Double.pi * modeRng.uniform()
+                let omega = 2 * Double.pi * (1 + 4 * modeRng.uniform())
+                let phase = 2 * Double.pi * modeRng.uniform()
+                let a = amp / 2 * (0.5 + modeRng.uniform())
+                for gy in 0..<gh {
+                    for gx in 0..<gw {
+                        let s = a * sin(kx * Double(gx * cell) + ky * Double(gy * cell) + omega * time + phase)
+                        grid[(gy * gw + gx) * 2] += s * cos(pol)
+                        grid[(gy * gw + gx) * 2 + 1] += s * sin(pol)
+                    }
+                }
+            }
+        }
+        let shimmer = c.shimmerArcsec > 0
 
         var light = [Float](repeating: 0, count: w * h)
         let glow = Float(c.glowLevel)
@@ -280,6 +327,17 @@ public final class SimCamera: Camera, @unchecked Sendable {
                     for y in (chunk * 16)..<min(h, chunk * 16 + 16) {
                         let v = Double(y) - Double(h) / 2
                         let row = base + y * w
+                        // This row's shimmer at each grid column, in scene steps.
+                        let gy = y / cell, fy = Double(y % cell) / Double(cell)
+                        var rowShift = [(Double, Double)](repeating: (0, 0), count: gw)
+                        if shimmer {
+                            for gx in 0..<gw {
+                                let i0 = (gy * gw + gx) * 2, i1 = ((gy + 1) * gw + gx) * 2
+                                let du = grid[i0] + (grid[i1] - grid[i0]) * fy
+                                let dv = grid[i0 + 1] + (grid[i1 + 1] - grid[i0 + 1]) * fy
+                                rowShift[gx] = (du * dxu + dv * dxv, du * dyu + dv * dyv)
+                            }
+                        }
                         for tap in 0..<taps {
                             // Taps spread the pointing along the motion.
                             let f = taps == 1 ? 0 : (Double(tap) / Double(taps - 1) - 0.5) * exposureS
@@ -290,7 +348,14 @@ public final class SimCamera: Camera, @unchecked Sendable {
                             for x in 0..<w {
                                 // Bilinear sample of the scene (0 off its edge).
                                 var b: Float = 0
-                                let fx = sx - 0.5, fy = sy - 0.5
+                                var (wx, wy) = (sx, sy)
+                                if shimmer {
+                                    let g = x / cell, f = Double(x % cell) / Double(cell)
+                                    let (a0, a1) = (rowShift[g], rowShift[g + 1])
+                                    wx += a0.0 + (a1.0 - a0.0) * f
+                                    wy += a0.1 + (a1.1 - a0.1) * f
+                                }
+                                let fx = wx - 0.5, fy = wy - 0.5
                                 let x0 = Int(fx.rounded(.down)), y0 = Int(fy.rounded(.down))
                                 if x0 >= 0, y0 >= 0, x0 + 1 < lw, y0 + 1 < lh {
                                     let ax = Float(fx - Double(x0)), ay = Float(fy - Double(y0))

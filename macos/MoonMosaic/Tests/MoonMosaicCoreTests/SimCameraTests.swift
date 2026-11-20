@@ -154,3 +154,27 @@ func movingThePointingMovesTheImageAsTheOpticsSay(diagonal: Bool, barlow: Double
     // Debug builds are far slower than release; this only catches a collapse.
     #expect(each < 20.0)
 }
+
+/// The atmosphere: with shimmer, parts of the image move against each other
+/// from frame to frame; without it (and with little tip-tilt) they hold still.
+@Test func shimmerMovesPartsOfTheImage() throws {
+    func change(shimmer: Double) throws -> Double {
+        let c = camera()
+        var k = SimCamera.Conditions()
+        k.seeingArcsec = 0.3
+        k.shimmerArcsec = shimmer
+        k.shakeArcsec = 0
+        c.conditions = k
+        c.pointing = (-300, 100)
+        try c.configure(exposureUs: 2000, gain: 100)
+        try c.start()
+        defer { c.stop() }
+        let a = try #require(try c.frame(timeoutMs: 1000))
+        Thread.sleep(forTimeInterval: 0.12)
+        let b = try #require(try c.frame(timeoutMs: 1000))
+        return Double(zip(a.pixels, b.pixels).map { abs(Int($0) - Int($1)) }.reduce(0, +)) / Double(a.pixels.count)
+    }
+    let still = try change(shimmer: 0)
+    let moving = try change(shimmer: 3)
+    #expect(moving > still * 1.3, "still \(still), shimmering \(moving)")
+}

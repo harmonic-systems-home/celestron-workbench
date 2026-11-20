@@ -125,6 +125,9 @@ struct SimulatorView: View {
                 Slider(value: $sim.shakeArcsec, in: 0...60, step: 5) {
                     Text(String(format: "Shake after moves %.0f″", sim.shakeArcsec))
                 }
+                Slider(value: $sim.shimmerArcsec, in: 0...3, step: 0.1) {
+                    Text(String(format: "Shimmer %.1f″ (parts of the image wobbling)", sim.shimmerArcsec))
+                }
             }
             Section("Faults (rehearse recovery)") {
                 HStack {

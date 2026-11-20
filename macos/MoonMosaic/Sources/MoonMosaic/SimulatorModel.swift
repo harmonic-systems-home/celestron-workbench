@@ -64,6 +64,8 @@ final class SimulatorModel: ObservableObject {
     @Published var transmission: Double = 1 { didSet { applyConditions() } }
     @Published var glowLevel: Double = 0.0001 { didSet { applyConditions() } }
     @Published var shakeArcsec: Double = 20 { didSet { applyConditions() } }
+    /// Shimmer: parts of the image moving against each other, arcseconds RMS.
+    @Published var shimmerArcsec: Double = 0.6 { didSet { applyConditions() } }
     @Published var seed: UInt64 = 1
     /// Where the Moon starts, from the mount's position at connect (degrees
     /// of azimuth and altitude axis).
@@ -303,6 +305,7 @@ final class SimulatorModel: ObservableObject {
         c.glowLevel = glowLevel
         c.shakeArcsec = shakeArcsec
         c.dropFrames = dropFrames
+        c.shimmerArcsec = shimmerArcsec
         c.stalledUntil = cameraStalledUntil
         camera?.conditions = c
     }
