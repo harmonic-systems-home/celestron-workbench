@@ -70,35 +70,11 @@ extension MosaicSession {
             let r = moonRate(at: clock())
             try mount.track(azDegS: r.az + extraAz, altDegS: r.alt)
         }
-        /// After a sweep the mount coasts down from the row's rate: stop
-        /// tracking and wait for the reads to show it still, or arming sees
-        /// motion with no command (2026-11-20, simulator: an
-        /// unexpected-motion fault).
-        func waitSteady() async throws {
-            try? mount.stopTracking()
-            var last: (time: Date, p: [Double])?
-            for _ in 0..<50 {
-                try await Task.sleep(for: .milliseconds(100))
-                let st = try mount.status()
-                guard let p = st.positionsDeg, let age = st.positionsAgeMs else { continue }
-                let t = Date().addingTimeInterval(-Double(age) / 1000)
-                if let l = last, t.timeIntervalSince(l.time) > 0.15 {
-                    let moved = hypot(wrap180(p[0] - l.p[0]) * cosAlt, p[1] - l.p[1]) * 3600
-                    if moved < 3 { return }
-                    last = (t, p)
-                } else if last == nil {
-                    last = (t, p)
-                }
-            }
-        }
+        // Moves between rows (and back to a sighting) are rate moves too:
+        // the firmware's slow goto crawled (2026-11-20, simulator).
         func goto(_ pt: [Double]) async throws {
-            try await waitSteady()
-            let a = axes(pt, at: clock().addingTimeInterval(1))
-            try await armForStep()
-            for (axis, target) in [(MountSession.Axis.azimuth, a.az), (.altitude, a.alt)] {
-                try await moveAxis(axis, to: target, approach: nil)
-            }
-            endStep()
+            try await rateMove(to: axes(pt, at: clock()), speedDegS: 1.5)
+            try await Task.sleep(for: .milliseconds(Int(max(200, settings.settleSeconds * 600))))
         }
 
         onEvent(
@@ -121,19 +97,29 @@ extension MosaicSession {
             let wallStart = Date()
             sweeps += 1
             var hit: (Frame, Blob.Found, Double)?
+            var rowY = a[1]
             var lastReport = Date.distantPast
             var best: (Double, Double)?  // score, sweep x at it
             while Date().timeIntervalSince(wallStart) < duration {
                 if cancelled() { break }
                 guard let f = try camera.frame(timeoutMs: 500) else { continue }
-                // How far along the row this frame was taken (pattern units).
-                let along = max(0, f.time.timeIntervalSince(wallStart)) * abs(azRate)
-                let x = a[0] + dir * along
+                // Where along the row this frame was taken (pattern units):
+                // from the latest encoder read, carried forward at the sweep's
+                // rate to the frame's moment (the move to the row's start
+                // isn't exact, so the row's own start can't be trusted).
+                var x = a[0] + dir * max(0, f.time.timeIntervalSince(wallStart)) * abs(azRate)
+                if let st = try? mount.status(), let p = st.positionsDeg, let age = st.positionsAgeMs {
+                    let readWall = Date().addingTimeInterval(-Double(age) / 1000)
+                    let readSession = clock().addingTimeInterval(-Double(age) / 1000)
+                    let o = offset(of: p, at: readSession)
+                    x = wrap180(o.az - home.az) + azRate * f.time.timeIntervalSince(readWall)
+                    rowY = o.alt - home.alt
+                }
                 let blob = Blob.find(f, thresholdFraction: 0.3)
                 let score = Double(blob?.peak ?? 0) / 255 * min(1, (blob?.litAboveSky ?? 0) * 3)
                 if score > (best?.0 ?? 0) { best = (score, x) }
                 if Date().timeIntervalSince(lastReport) > 0.15 {
-                    visited.append([x, a[1]])
+                    visited.append([x, rowY])
                     brightness.append(score)
                     lastReport = Date()
                     progress()
@@ -151,19 +137,27 @@ extension MosaicSession {
             try trackMoon()
             _ = startAxes
             if let (f, blob, x) = hit {
-                visited.append([x, a[1]])
+                visited.append([x, rowY])
                 brightness.append(1)
                 onEvent(
                     .message(
                         String(format: "Sweep: the Moon came into view on row %d; going back to that spot.", sweeps)))
                 keep([("\(Self.fileStamp(clock()))-sweep-sighting", f)], in: "search")
-                try await goto([x, a[1]])
+                try await goto([x, rowY])
                 try trackMoon()
                 try await Task.sleep(for: .milliseconds(Int(max(300, settings.settleSeconds * 1000))))
                 let now = try await grabFrame()
                 let seen = Blob.find(now, thresholdFraction: 0.3) ?? blob
-                guard let converge else {
-                    return SearchOutcome(found: true, atAzAltDeg: try? await freshPosition(), blob: seen, stops: sweeps)
+                // Found: the Moon is in view. Before Orient camera nothing
+                // knows which way the image turns, so stepping further would
+                // only be guessing (2026-11-20: 13 guessed steps, then lost).
+                // In view is enough: Orient camera works from here.
+                guard let converge, calibration != nil else {
+                    let inView = found(seen)
+                    onEvent(.message(inView ? "Sweep: the Moon is in view." : "Sweep: lost it going back; search again."))
+                    return SearchOutcome(
+                        found: inView, atAzAltDeg: try? await freshPosition(), blob: seen, stops: sweeps,
+                        converged: inView)
                 }
                 var outcome = try await convergeOnDisk(from: seen, converge, cancelled)
                 try trackMoon()

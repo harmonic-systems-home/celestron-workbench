@@ -906,56 +906,21 @@ final class AppModel: ObservableObject {
 
     /// Click-to-recentre (ADR 0022): the operator clicked a spot in the live
     /// image. `fraction` is that spot from the frame's centre, each axis in
-    /// −0.5…0.5 of the displayed image (x right, y down). Slew it to the
-    /// centre, then start a finer search there to settle the target in.
+    /// −0.5…0.5 of the displayed image (x right, y down). It comes to the
+    /// centre; nothing else (no new search). While following it is a nudge,
+    /// so Undo takes it back. Offered once the camera is oriented.
     func recentre(fraction: CGSize) {
-        // A recentre may interrupt a running search, but not capture or any
-        // other step.
-        guard let session, connected, busy == nil || searching else { return }
+        guard let session, connected, calibrated else { return }
         let px = PixelOffset(
             x: Double(fraction.width) * Double(session.camera.info.width),
             y: Double(fraction.height) * Double(session.camera.info.height))
-        // Hand off any running search cleanly, then recentre and go finer.
-        let running = searchTask
-        if searching { searchStop.value = true }
-        let test = testMode
-        let (step, reach) = (max(searchStepDeg / 2, 0.02), max(searchReachDeg / 2, searchStepDeg))
-        let refAlt =
-            test
-            ? testAltitudeDeg
-            : Ephemeris.moon(
-                at: session.now, from: Site(latitudeDeg: latitude, longitudeDeg: longitude)
-            ).horizontal.altDeg
-        say("Recentring on the clicked point, then a finer search there.")
-        recentring = true
-        busy = "Recentring"
-        searching = false
-        let hold = holdTask
-        stopHold()
-        Task.detached { [weak self] in
-            await running?.value
-            await hold?.value
-            do {
-                try await session.recentre(pixelOffset: px)
-                await MainActor.run {
-                    guard let self else { return }
-                    self.recentring = false
-                    self.searchStop.value = false
-                    self.sawTarget.value = false
-                    self.searching = true
-                    self.busy = "Searching"
-                    self.runSearch(
-                        session, pattern: self.searchPattern, test: test,
-                        step: step, reach: reach, refAlt: refAlt)
-                }
-            } catch {
-                await MainActor.run {
-                    guard let self else { return }
-                    self.recentring = false
-                    self.say("Recentre failed: \(error)")
-                    self.searchEnded()
-                }
-            }
+        if searching { stopSearch() }
+        if following {
+            session.followNudge(session.panSky(for: px))
+            say("Recentring on the clicked point (Undo takes it back).")
+        } else if busy == nil {
+            say("Recentring on the clicked point.")
+            perform("Recentring") { try await $0.recentre(pixelOffset: px) }
         }
     }
 

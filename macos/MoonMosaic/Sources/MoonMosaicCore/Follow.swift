@@ -210,6 +210,31 @@ extension MosaicSession {
         }
     }
 
+    /// A straight move to axis angles `target` (the Moon-relative point a
+    /// moment ahead): extra tracking rate on both axes together for as long
+    /// as the move takes at `speedDegS` on the sky, then tracking on. Fast
+    /// (the firmware's slow goto crawls), cross-coupled, and accurate to a
+    /// few arcseconds per second of command latency, which is plenty for
+    /// searching.
+    func rateMove(to target: (az: Double, alt: Double), speedDegS: Double = 1.5) async throws {
+        if (try? mount.status().state) == "Armed" { endStep() }
+        let p = try await freshPosition()
+        let alt = Self.moonAxes(at: clock(), settings.site).alt
+        let dAz = wrap180(target.az - p[0])
+        let dAlt = target.alt - p[1]
+        let sky = hypot(dAz * cos(alt * .pi / 180), dAlt)
+        let r = moonRate(at: clock())
+        guard sky > 1.0 / 3600 else { return }
+        // Within the session's 2°/s on each axis (azimuth runs faster than
+        // the sky by 1/cos(altitude)).
+        var seconds = max(0.3, sky / speedDegS)
+        seconds = max(seconds, abs(dAz) / 1.9, abs(dAlt) / 1.9)
+        // The target moves with the Moon meanwhile; the Moon's rate covers it.
+        try mount.track(azDegS: r.az + dAz / seconds, altDegS: r.alt + dAlt / seconds)
+        try await Task.sleep(for: .seconds(seconds))
+        try mount.track(azDegS: r.az, altDegS: r.alt)
+    }
+
     /// A goto back to `back` against the Moon, aimed a moment ahead.
     private func undo(to back: FollowState.Offset) async throws {
         let lead = 3.0
