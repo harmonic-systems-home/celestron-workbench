@@ -84,7 +84,14 @@ extension MosaicSession {
 
             // 1. Drift.
             try mount.stopTracking()
+            let stopped = Date()
             try await Task.sleep(for: .milliseconds(500))
+            // A read made after the mount stopped, so every frame's position
+            // is the still mount's: a read from while it still tracked, then
+            // a fresh one partway through, put a jump of up to the Moon's
+            // rate × 2 s into the drift (2026-11-20, the test runner: ±3–4%
+            // scale errors, worse with the ASI482MC).
+            _ = try await readAfter(stopped.addingTimeInterval(0.2), limit: 4)
             var drift: [(Frame, (Date, [Double]))] = []
             let t0 = Date()
             let step = settings.driftSeconds / Double(settings.driftFrames)
