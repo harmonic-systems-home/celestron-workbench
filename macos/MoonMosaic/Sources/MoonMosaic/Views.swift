@@ -105,7 +105,7 @@ struct ContentView: View {
             Group {
                 Text("Peak \(st.peak)  mean \(String(format: "%.0f", st.mean))")
                 Text(String(format: "Lit %.0f%%  clipped %.2f%%", st.lit * 100, st.clipped * 100))
-                Text("Moon: peak ≥ 60, lit ≥ 5%").foregroundStyle(.gray)
+                Text("Sky \(String(format: "%d", st.background)), \(st.skyName) trigger").foregroundStyle(.gray)
             }
             .font(.system(size: 11, design: .monospaced))
         }
@@ -268,7 +268,15 @@ struct ContentView: View {
     private var searchControls: some View {
         VStack(alignment: .leading, spacing: 10) {
             Toggle(isOn: $model.testMode) {
-                Stepper(
+                Picker("Sky", selection: $model.searchSky) {
+                Text("Auto").tag("auto")
+                Text("Clear night").tag(Blob.Sky.clearNight.rawValue)
+                Text("Cloudy night").tag(Blob.Sky.cloudyNight.rawValue)
+                Text("Day").tag(Blob.Sky.day.rawValue)
+            }
+            .font(.system(size: 13, design: .rounded))
+            .disabled(model.searching)
+            Stepper(
                 value: $model.searchReachDeg, in: 0.25...4, step: 0.25
             ) {
                 Text(String(format: "Search area ±%.2g°", model.searchReachDeg))

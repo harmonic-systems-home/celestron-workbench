@@ -73,6 +73,16 @@ final class AppModel: ObservableObject {
         }
     }
     @Published var testAltitudeDeg: Double { didSet { save() } }
+    /// The sky the search looks against ("auto": day while the Sun is up,
+    /// else a clear night); each has its own trigger (Blob.Sky).
+    @Published var searchSky: String { didSet { save() } }
+    var effectiveSky: Blob.Sky {
+        if let s = Blob.Sky(rawValue: searchSky) { return s }
+        let site = Site(latitudeDeg: latitude, longitudeDeg: longitude)
+        let t = sessionNow
+        let sunAlt = Ephemeris.horizontal(Ephemeris.sun(at: t), at: t, from: site).altDeg
+        return sunAlt > -6 ? .day : .clearNight
+    }
 
     // State.
     /// The red night palette is showing.
@@ -204,6 +214,7 @@ final class AppModel: ObservableObject {
         searchReachDeg = d["searchReachDeg"] as? Double ?? 2.0
         testMode = d["testMode"] as? Bool ?? false
         testAltitudeDeg = d["testAltitudeDeg"] as? Double ?? 10
+        searchSky = d["searchSky"] as? String ?? "auto"
         save()
         updatePalette()
         simulator.onSkyChanged = { [weak self] in self?.reinstallSimulatedSky() }
@@ -220,7 +231,7 @@ final class AppModel: ObservableObject {
             "gain": gain, "surveyExposureMs": surveyExposureMs, "surveyGain": surveyGain,
             "simulate": simulate, "simulatedCamera": simulatedCamera, "setHandController": setHandController, "paletteMode": paletteMode, "folder": folder.path,
             "searchPattern": searchPattern.rawValue, "searchStepDeg": searchStepDeg,
-            "searchReachDeg": searchReachDeg, "testMode": testMode, "testAltitudeDeg": testAltitudeDeg,
+            "searchReachDeg": searchReachDeg, "testMode": testMode, "testAltitudeDeg": testAltitudeDeg, "searchSky": searchSky,
         ]
         do {
             try FileManager.default.createDirectory(
@@ -459,7 +470,8 @@ final class AppModel: ObservableObject {
                 if let frame = recent == true ? camera.latest : try? camera.frame(timeoutMs: 500) {
                     let image = Imaging.image(fromFrame: frame)
                     let focus = Imaging.image(crop: Focus.crop(frame), binned: color)
-                    let stats = FrameStats(frame)
+                    let sky = await MainActor.run { self?.effectiveSky ?? .clearNight }
+                    let stats = FrameStats(frame, sky: sky)
                     await MainActor.run {
                         guard let self else { return }
                         self.frameStats = stats
@@ -763,7 +775,8 @@ final class AppModel: ObservableObject {
         if test {
             found = { _ in false }
         } else {
-            found = { Blob.looksLikeMoon($0) }
+            let sky = effectiveSky
+            found = { Blob.looksLikeMoon($0, sky: sky) }
         }
         // Automatic acquisition then steps onto the disk (track 2, 2c): the
         // first frame that passes is often only glow or a sliver of limb.

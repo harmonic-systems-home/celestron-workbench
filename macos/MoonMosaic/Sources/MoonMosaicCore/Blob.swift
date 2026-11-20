@@ -23,6 +23,14 @@ public enum Blob {
         /// Those pixels as a fraction of the frame: tiny = a small bright
         /// spot, large = the Moon fills the field (or the frame is saturated).
         public let brightFraction: Double
+        /// The sky's level (the frame's 20th percentile), and the share of
+        /// the frame clearly above it (by 20 counts): lit Moon however dim,
+        /// near the terminator too, where a threshold set by a bright
+        /// crater misses it (2026-11-20).
+        public var background: Int = 0
+        public var litAboveSky: Double = 0
+        /// The frame's 256-level histogram.
+        public var histogram: [Int] = []
     }
 
     /// The blob above `thresholdFraction` of the peak, or nil if nothing is
@@ -41,8 +49,23 @@ public enum Blob {
         guard !px.isEmpty, frame.width > 0, frame.height > 0 else { return nil }
 
         var peak: UInt8 = 0
-        for p in px where p > peak { peak = p }
+        var hist = [Int](repeating: 0, count: 256)
+        for p in px {
+            hist[Int(p)] += 1
+            if p > peak { peak = p }
+        }
         guard Int(peak) >= minPeak else { return nil }
+        var background = 0
+        var seen = 0
+        for (v, c) in hist.enumerated() {
+            seen += c
+            if seen * 5 >= px.count {
+                background = v
+                break
+            }
+        }
+        let litLevel = min(255, background + 20)
+        let litCount = hist[litLevel...].reduce(0, +)
 
         let threshold = UInt8(max(1, min(255, Int((Double(peak) * thresholdFraction).rounded()))))
         let w = frame.width
@@ -76,19 +99,55 @@ public enum Blob {
             peak: Int(peak),
             meanAbove: sumW / Double(count),
             pixels: count,
-            brightFraction: Double(count) / Double(px.count)
+            brightFraction: Double(count) / Double(px.count),
+            background: background,
+            litAboveSky: Double(litCount) / Double(px.count),
+            histogram: hist
         )
     }
 }
 
 extension Blob {
-    /// The search's test for "the Moon is in view" (night): a clear peak and
-    /// enough of the frame lit, counting pixels above 30% of the peak.
-    /// 2026-11-20 (simulator, a real gibbous image): frames near the
-    /// terminator peak at only ~100 with 5–15% lit; hot pixels alone give a
-    /// peak of ~70 with nothing lit.
-    public static func looksLikeMoon(_ b: Found?) -> Bool {
-        (b?.peak ?? 0) >= 60 && (b?.brightFraction ?? 0) >= 0.05
+    /// The sky the search looks against: each has its own trigger.
+    public enum Sky: String, CaseIterable, Sendable {
+        /// Dark sky: the Moon stands far above it.
+        case clearNight
+        /// Haze or thin cloud: lower contrast, a glow around the Moon.
+        case cloudyNight
+        /// Daylight: a bright sky, and the Moon only somewhat brighter.
+        case day
+
+        /// How far above the sky the peak must be, how far above the sky a
+        /// pixel counts as lit, and the share of the frame that must be lit.
+        public var trigger: (peak: Int, lit: Int, share: Double) {
+            switch self {
+            case .clearNight: (40, 20, 0.03)
+            case .cloudyNight: (20, 10, 0.03)
+            case .day: (15, 10, 0.05)
+            }
+        }
+    }
+
+    /// The search's test for "the Moon is in view": a peak well above the
+    /// sky and enough of the frame clearly above it. 2026-11-20 (simulator,
+    /// real images): near the terminator the lit area is dim beside a few
+    /// bright crater rims, so a threshold set by the peak missed it; hot
+    /// pixels alone are far fewer than 3%.
+    public static func looksLikeMoon(_ b: Found?, sky: Sky = .clearNight) -> Bool {
+        guard let b else { return false }
+        let t = sky.trigger
+        let share = t.lit == 20 ? b.litAboveSky : b.litAbove(t.lit)
+        return b.peak >= b.background + t.peak && share >= t.share
+    }
+}
+
+extension Blob.Found {
+    /// The share of the frame more than `counts` above the sky.
+    public func litAbove(_ counts: Int) -> Double {
+        guard counts != 20 else { return litAboveSky }
+        let level = min(255, background + counts)
+        let n = histogram.reduce(0, +)
+        return n > 0 ? Double(histogram[level...].reduce(0, +)) / Double(n) : 0
     }
 }
 
@@ -101,10 +160,12 @@ public struct FrameStats: Sendable, Equatable {
     public let clipped: Double
     public let lit: Double
     public let moonInView: Bool
+    public let background: Int
+    public let skyName: String
     /// 64-bin histogram, each bin's share of the pixels.
     public let histogram: [Double]
 
-    public init(_ f: Frame) {
+    public init(_ f: Frame, sky: Blob.Sky = .clearNight) {
         var hist = [Int](repeating: 0, count: 64)
         var sum = 0
         var top: UInt8 = 0
@@ -120,8 +181,10 @@ public struct FrameStats: Sendable, Equatable {
         peak = Int(top)
         mean = Double(sum) / n
         clipped = Double(full) / n
-        lit = blob?.brightFraction ?? 0
-        moonInView = Blob.looksLikeMoon(blob)
+        lit = blob.map { $0.litAbove(sky.trigger.lit) } ?? 0
+        moonInView = Blob.looksLikeMoon(blob, sky: sky)
+        background = blob?.background ?? 0
+        skyName = ["clearNight": "clear-night", "cloudyNight": "cloudy-night", "day": "day"][sky.rawValue] ?? sky.rawValue
         histogram = hist.map { Double($0) / n }
     }
 }
