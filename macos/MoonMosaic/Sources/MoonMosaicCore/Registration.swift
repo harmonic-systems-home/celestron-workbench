@@ -39,9 +39,15 @@ public enum Registration {
         let fb = spectrum(b, n: n, window: window, setup: setup, log2n: log2n, offset: offset)
         // Once aligned, the true peak is near zero; the fixed pattern would
         // sit at minus the offset, so only a small window is searched.
+        // When the frame's edge stopped the crop short of the first estimate,
+        // what's left of the shift isn't near zero: search around it
+        // (2026-11-20: a 512-high crop in a 540-high binned frame has only
+        // ±14 binned pixels to move, so most vertical shifts were clipped and
+        // the window around zero held no peak).
+        let residual = (first.dx - Double(fb.used.0), first.dy - Double(fb.used.1))
         let second = correlate(
             fa, fb, n: n, setup: setup, log2n: log2n,
-            within: minShift > 0 ? max(4, minShift / 4) : nil)
+            within: minShift > 0 ? max(4, minShift / 4) : nil, around: residual)
         return (
             2 * (Double(fb.used.0) + second.dx), 2 * (Double(fb.used.1) + second.dy), second.peak
         )
@@ -51,7 +57,8 @@ public enum Registration {
     private static func correlate(
         _ fa: (re: [Float], im: [Float], used: (Int, Int)),
         _ fb: (re: [Float], im: [Float], used: (Int, Int)), n: Int,
-        setup: FFTSetup, log2n: vDSP_Length, exclude: Double = 0, within: Double? = nil
+        setup: FFTSetup, log2n: vDSP_Length, exclude: Double = 0, within: Double? = nil,
+        around: (Double, Double) = (0, 0)
     ) -> (dx: Double, dy: Double, peak: Double) {
         // Normalized cross-power with the band-pass applied.
         var real = [Float](repeating: 0, count: n * n)
@@ -83,7 +90,9 @@ public enum Registration {
             let dy = Double(y < n / 2 ? y : y - n)
             let dx = Double(x < n / 2 ? x : x - n)
             let r = (dx * dx + dy * dy).squareRoot()
-            return r >= exclude && (within.map { r <= $0 } ?? true)
+            // The peak sits at minus the shift (a·conj(b)).
+            let near = hypot(dx + around.0, dy + around.1)
+            return r >= exclude && (within.map { near <= $0 } ?? true)
         }
         var best = -1
         for i in 0..<(n * n) where allowed(i) && (best < 0 || real[i] > real[best]) { best = i }

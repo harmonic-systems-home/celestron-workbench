@@ -38,11 +38,14 @@ struct ContentView: View {
             HStack(alignment: .top, spacing: 14) {
                 // Scrolls on its own so the long button column stays reachable
                 // on a short laptop screen.
-                ScrollView(.vertical) {
-                    controls.frame(width: 300)
+                VStack(alignment: .leading, spacing: 6) {
+                    statusPanel.frame(width: 300)
+                    ScrollView(.vertical) {
+                        controls.frame(width: 300)
+                    }
+                    .scrollIndicators(.automatic)
                 }
                 .frame(width: 300)
-                .scrollIndicators(.automatic)
                 VStack(spacing: 12) {
                     imagePanel
                     HStack(alignment: .top, spacing: 12) {
@@ -160,15 +163,25 @@ struct ContentView: View {
 
     // MARK: Controls
 
-    private var controls: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            VStack(alignment: .leading, spacing: 3) {
+    /// The mount's status, above the scrolling buttons so it stays in view.
+    private var statusPanel: some View {
+        VStack(alignment: .leading, spacing: 3) {
                 Text(model.mountState).font(.system(size: 22, weight: .semibold, design: .rounded))
                 if model.connected {
                     let t = model.trackingStatus
                     Label(t.text, systemImage: t.symbol)
                         .font(.system(size: 15, weight: .semibold, design: .rounded))
                         .foregroundStyle([Color.green, Color.orange, Color.blue, palette.dim][t.kind])
+                }
+                if let m = model.moveProgress {
+                    VStack(alignment: .leading, spacing: 2) {
+                        ProgressView(value: m.fraction).tint(.blue)
+                        Text(
+                            String(format: "%.1f° on %@, %.0f%%", m.degrees, m.axis, m.fraction * 100)
+                                + (m.eta.map { String(format: ", about %.0f s left", $0) } ?? "")
+                        )
+                        .font(.system(size: 12, design: .rounded)).foregroundStyle(palette.dim)
+                    }
                 }
                 if let alt = model.altitude {
                     Text(String(format: "Tube altitude %.2f°", alt)).foregroundStyle(palette.dim)
@@ -185,6 +198,10 @@ struct ContentView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.bottom, 6)
+    }
+
+    private var controls: some View {
+        VStack(alignment: .leading, spacing: 10) {
 
             if let reason = model.latchedReason {
                 VStack(alignment: .leading, spacing: 8) {
@@ -406,12 +423,17 @@ struct ContentView: View {
                 if panel == .camera, let st = model.frameStats { brightnessPanel(st) }
             }
             .overlay {
-                if panel == .camera, model.connected, let img = model.liveImage {
+                // Only once the camera is oriented: before that a click can't
+                // be turned into a move on the sky reliably.
+                if panel == .camera, model.connected, model.calibrated, let img = model.liveImage {
                     clickToRecentre(img)
                 }
             }
             if panel == .camera {
-                Text("Click the image to recentre there and search finer.")
+                Text(
+                    model.calibrated
+                        ? "Click the image to recentre there and search finer."
+                        : "Click-to-recentre works once the camera is oriented.")
                     .font(.system(size: 12, design: .rounded)).foregroundStyle(palette.dim)
             }
             if panel == .focus {

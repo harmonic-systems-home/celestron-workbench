@@ -107,6 +107,8 @@ public final class MosaicSession: @unchecked Sendable {
     public var aimOffset = SkyOffset(x: 0, y: 0)
     /// Follow mode's state (ADR 0022 amendment 7): tracking, nudges, undo.
     public let follow = FollowState()
+    /// The goto in progress, for a progress bar and an ETA.
+    public let motion = MotionInfo()
     /// Searches move their pattern with the Moon (off for a fixed test
     /// target such as the drainpipe).
     public var searchFollowsMoon = false
@@ -725,7 +727,7 @@ public final class MosaicSession: @unchecked Sendable {
     /// centre) is undone and the next orientation tried: as guessed, mirrored
     /// left-right, mirrored top-bottom, turned 180°. The one that works is
     /// kept for later steps and for recentre. Runs inside `walk`'s armed step.
-    private func convergeOnDisk(
+    func convergeOnDisk(
         from sighting: Blob.Found, _ c: Converge,
         _ cancelled: @escaping @Sendable () -> Bool
     ) async throws -> SearchOutcome {
@@ -1331,6 +1333,9 @@ public final class MosaicSession: @unchecked Sendable {
             let position = try await freshPosition()
             let delta = wrap180(target - position[axis == .azimuth ? 0 : 1])
             if abs(delta) < 0.000_05 { return }
+            let index = axis == .azimuth ? 0 : 1
+            motion.set(axis: index, from: position[index], to: position[index] + delta)
+            defer { motion.clear() }
             do {
                 // Tracking (during a video) leaves the mount disarmed: arm
                 // again, which also stops the tracking.
@@ -1500,4 +1505,22 @@ public enum SearchOrientation: Sendable, CaseIterable, Equatable {
         case .turned180: "turned 180°"
         }
     }
+}
+
+/// The goto in progress (which axis, from and to, since when), shared with
+/// the app for a progress bar.
+public final class MotionInfo: @unchecked Sendable {
+    public struct Move: Sendable {
+        public let axis: Int
+        public let from: Double
+        public let to: Double
+        public let started: Date
+    }
+    private let lock = NSLock()
+    private var move: Move?
+    public var current: Move? { lock.withLock { move } }
+    func set(axis: Int, from: Double, to: Double) {
+        lock.withLock { move = Move(axis: axis, from: from, to: to, started: Date()) }
+    }
+    func clear() { lock.withLock { move = nil } }
 }

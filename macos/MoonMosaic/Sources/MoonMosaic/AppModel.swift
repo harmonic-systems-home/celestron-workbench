@@ -116,6 +116,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var searchProgress: SearchProgress?
     /// The mount's axis positions (degrees), as last read.
     @Published private(set) var positionDeg: [Double]?
+    /// A long goto in progress: done fraction, seconds left, size, axis.
+    @Published private(set) var moveProgress: (fraction: Double, eta: Double?, degrees: Double, axis: String)?
     /// The mount's tracking rates while it tracks (deg/s), else nil.
     @Published private(set) var mountTrackingRates: [Double]?
 
@@ -1298,6 +1300,15 @@ final class AppModel: ObservableObject {
             altitude = s.altitudeDeg
             positionDeg = s.positionsDeg
             mountTrackingRates = s.tracking
+            moveProgress = nil
+            if let m = session?.motion.current, let p = s.positionsDeg, abs(m.to - m.from) > 0.3 {
+                var done = p[m.axis] - m.from
+                done -= 360 * (done / 360).rounded()
+                let f = min(max(done / (m.to - m.from), 0), 1)
+                let elapsed = Date().timeIntervalSince(m.started)
+                let eta = f > 0.05 ? elapsed * (1 - f) / f : nil
+                moveProgress = (f, eta, abs(m.to - m.from), m.axis == 0 ? "azimuth" : "altitude")
+            }
             undoDepth = session?.follow.undoDepth ?? 0
             if let b = s.battery { checkBattery(b) }
             latchedReason = s.state == "FaultLatched" ? (s.lastFault?.detail ?? "a fault") : nil
