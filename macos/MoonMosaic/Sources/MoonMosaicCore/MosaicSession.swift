@@ -1021,13 +1021,22 @@ public final class MosaicSession: @unchecked Sendable {
             moonDiameterDeg: here.moon.diameterDeg, calibration: calibration,
             frameWidth: camera.info.width, frameHeight: camera.info.height,
             overlap: settings.overlap, margin: settings.planMargin)
-        if centreFit != nil {
+        var dropped = 0
+        if let fit = centreFit {
             // Lit or dark from the ephemeris (where the Sun lights the disk),
-            // not the survey's sparse cells; Start shoots every tile either way.
+            // with a margin of a tenth of a frame for error in the centre and
+            // the turn. Dark tiles stay in the plan, for the Earthshine pass,
+            // only when the survey saw earthshine; otherwise there is nothing
+            // in them to capture (2026-11-20: they came out black).
             let phase = Ephemeris.phase(at: clock(), from: settings.site)
             let r = here.moon.diameterDeg / 2 * 3600
             plan = MosaicPlanner.markLit(
                 plan, calibration: calibration, phase: phase, radiusArcsec: r)
+            if !fit.earthshine {
+                let before = plan.tiles.count
+                plan = MosaicPlanner.withoutDark(plan)
+                dropped = before - plan.tiles.count
+            }
         }
         self.plan = plan
         states = Dictionary(uniqueKeysWithValues: plan.tiles.map { ($0.id, .pending) })
@@ -1036,8 +1045,8 @@ public final class MosaicSession: @unchecked Sendable {
         onEvent(
             .message(
                 lit == plan.tiles.count
-                    ? "Plan: \(plan.tiles.count) tiles."
-                    : "Plan: \(plan.tiles.count) tiles (\(lit) seen lit in the survey); Start shoots them all."))
+                    ? "Plan: \(plan.tiles.count) tiles\(dropped > 0 ? " (\(dropped) on the dark side left out: no earthshine seen)" : "")."
+                    : "Plan: \(plan.tiles.count) tiles, \(lit) sunlit; Start shoots those, and Earthshine the \(plan.tiles.count - lit) on the dark side."))
         return plan
     }
 
@@ -1068,12 +1077,13 @@ public final class MosaicSession: @unchecked Sendable {
             }
             loggedPlanIn = folder
         }
-        // Every planned tile overlaps the disk, so the main pass shoots them
-        // all. The survey's lit/dark marks are too sparse to skip on: on
-        // 2026-11-19 they left interior tiles near the terminator unshot.
+        // The main pass shoots the sunlit tiles (from the ephemeris, with a
+        // margin; on 2026-11-19 the survey's sparse marks left interior
+        // tiles near the terminator unshot). The dark ones wait for the
+        // Earthshine pass, at its own exposure.
         let ids =
             tiles
-            ?? plan.tiles.map(\.id).filter {
+            ?? plan.tiles.filter(\.lit).map(\.id).filter {
                 if case .done = states[$0] { return false } else { return true }
             }
         for id in ids {

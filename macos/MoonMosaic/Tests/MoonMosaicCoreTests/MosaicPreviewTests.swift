@@ -34,8 +34,31 @@ import Testing
     let cy = preview.height / 2
     #expect(preview.pixels[cy * preview.width + cx] > 0.3)
     #expect(preview.pixels[0] < 0.1)
-    // A soft tile: much less sharp than the rest.
-    let first = plan.tiles[0].id
-    states[first] = .done(file: "", frames: 1, sharpness: 0)
-    #expect(MosaicPreview.make(plan: plan, stacks: stacks, states: states).soft == [first])
+    #expect(preview.soft.isEmpty, "soft \(preview.soft)")
+    // A soft tile: blurred, so its shared strips are less sharp than its
+    // neighbours' views of the same Moon.
+    let middle = try #require(plan.tiles.min { hypot($0.center.x, $0.center.y) < hypot($1.center.x, $1.center.y) })
+    camera.pointing = (middle.pointing.x, middle.pointing.y)
+    var blurred = QuickStack(keep: 1)
+    blurred.offer(boxBlur(try #require(try camera.frame(timeoutMs: 0)), radius: 8))
+    stacks[middle.id] = blurred
+    states[middle.id] = .done(file: "", frames: 1, sharpness: blurred.bestSharpness)
+    #expect(MosaicPreview.make(plan: plan, stacks: stacks, states: states).soft == [middle.id])
+}
+
+private func boxBlur(_ f: Frame, radius r: Int) -> Frame {
+    var out = [UInt8](repeating: 0, count: f.pixels.count)
+    for y in 0..<f.height {
+        for x in 0..<f.width {
+            var (s, n) = (0, 0)
+            for yy in max(0, y - r)...min(f.height - 1, y + r) {
+                for xx in max(0, x - r)...min(f.width - 1, x + r) {
+                    s += Int(f.pixels[yy * f.width + xx])
+                    n += 1
+                }
+            }
+            out[y * f.width + x] = UInt8(s / n)
+        }
+    }
+    return Frame(width: f.width, height: f.height, pixels: out, time: f.time)
 }

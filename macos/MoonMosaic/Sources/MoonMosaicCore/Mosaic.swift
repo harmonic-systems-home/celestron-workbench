@@ -145,21 +145,23 @@ public enum MosaicPlanner {
     /// Marks each tile lit if a sunlit survey cell falls in its frame (a
     /// cell's width of margin either way). A part of the Moon at sky offset
     /// s from the centre shows at −M·s in the camera's frame.
-    /// Marks each tile lit when any part of it falls on the sunlit part of
-    /// the disk as the ephemeris predicts it (`phase`), sampling the tile on
-    /// a grid.
+    /// Marks each tile lit when any part of it, or of a margin around it
+    /// (`margin` of the frame each way, for error in the centre and the
+    /// turn), falls on the sunlit part of the disk as the ephemeris predicts
+    /// it (`phase`), sampling the tile on a grid.
     public static func markLit(
         _ plan: MosaicPlan, calibration: CameraCalibration, phase: Ephemeris.Phase,
-        radiusArcsec r: Double
+        radiusArcsec r: Double, margin: Double = 0.1
     ) -> MosaicPlan {
+        let (hw, hh) = (Double(plan.frameWidth) / 2 * (1 + 2 * margin), Double(plan.frameHeight) / 2 * (1 + 2 * margin))
         let tiles = plan.tiles.map { t -> Tile in
             var t = t
             var lit = false
-            for gx in -6...6 where !lit {
-                for gy in -4...4 {
+            for gx in -8...8 where !lit {
+                for gy in -6...6 {
                     let px = PixelOffset(
-                        x: -(t.center.x + Double(gx) * Double(plan.frameWidth) / 12),
-                        y: -(t.center.y + Double(gy) * Double(plan.frameHeight) / 8))
+                        x: -(t.center.x + Double(gx) / 8 * hw),
+                        y: -(t.center.y + Double(gy) / 6 * hh))
                     let sky = calibration.sky(for: px)
                     if phase.isLit(sky.x / r, sky.y / r) {
                         lit = true
@@ -172,6 +174,17 @@ public enum MosaicPlanner {
         }
         return MosaicPlan(
             tiles: tiles, overlap: plan.overlap, moonRadiusPixels: plan.moonRadiusPixels,
+            frameWidth: plan.frameWidth, frameHeight: plan.frameHeight)
+    }
+
+    /// The plan without its dark tiles (no earthshine to capture), ids
+    /// renumbered in order.
+    public static func withoutDark(_ plan: MosaicPlan) -> MosaicPlan {
+        let kept = plan.tiles.filter(\.lit).enumerated().map { i, t in
+            Tile(id: i, row: t.row, column: t.column, center: t.center, pointing: t.pointing, lit: true)
+        }
+        return MosaicPlan(
+            tiles: kept, overlap: plan.overlap, moonRadiusPixels: plan.moonRadiusPixels,
             frameWidth: plan.frameWidth, frameHeight: plan.frameHeight)
     }
 
