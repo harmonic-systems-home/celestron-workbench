@@ -759,7 +759,10 @@ final class AppModel: ObservableObject {
         if test {
             found = { _ in false }
         } else {
-            found = { ($0?.peak ?? 0) >= 120 && ($0?.brightFraction ?? 0) >= 0.1 }
+            // 2026-11-20 (simulator, a real gibbous image): frames near the
+            // terminator peak at only ~100 with 5–15% lit and were missed at
+            // 120 / 10%. Hot pixels alone give a peak of ~70 with nothing lit.
+            found = { ($0?.peak ?? 0) >= 60 && ($0?.brightFraction ?? 0) >= 0.05 }
         }
         // Automatic acquisition then steps onto the disk (track 2, 2c): the
         // first frame that passes is often only glow or a sliver of limb.
@@ -825,7 +828,9 @@ final class AppModel: ObservableObject {
         } else {
             say("Search finished (\(outcome.stops) stops) without a clear target.")
         }
-        let found = outcome.found || byOperator
+        // Only a search that ended on the disk counts as found (and ties the
+        // encoders to the sky); a sighting it couldn't step onto doesn't.
+        let found = outcome.found && outcome.converged
         if flowActive == .find { flowActive = nil }
         if found { flowDone.insert(.find) }
         logStepTime(.find, Date().timeIntervalSince(searchStarted), ok: found)
