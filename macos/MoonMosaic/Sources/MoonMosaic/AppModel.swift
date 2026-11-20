@@ -406,7 +406,8 @@ final class AppModel: ObservableObject {
         // Everything from connect on: the log and the calibration and survey
         // frames, so a failed setup can be studied later.
         let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
-        let setup = folder.appendingPathComponent("setup-\(stamp)")
+        let setup = folder.appendingPathComponent(
+            camera.camera is SimCamera || mount.opened.simulated ? "setup-\(stamp)-simulated" : "setup-\(stamp)")
         try? FileManager.default.createDirectory(at: setup, withIntermediateDirectories: true)
         session.diagnostics = setup
         setupFolder = setup
@@ -1140,7 +1141,9 @@ final class AppModel: ObservableObject {
             try session.makePlan(allowWithoutCentre: true)
             let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(
                 of: ":", with: "-")
-            runFolder = folder.appendingPathComponent(stamp)
+            // A rehearsal's folder says so in its name too.
+            let simulated = simulate || camera?.camera is SimCamera
+            runFolder = folder.appendingPathComponent(simulated ? stamp + "-simulated" : stamp)
             try FileManager.default.createDirectory(
                 at: runFolder!, withIntermediateDirectories: true)
             sync()

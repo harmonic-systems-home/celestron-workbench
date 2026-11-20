@@ -1047,9 +1047,17 @@ public final class MosaicSession: @unchecked Sendable {
         let log = SessionLog(folder: folder)
         if loggedPlanIn != folder, let calibration, let here {
             record {
+                let sim = camera as? SimCamera ?? (camera as? SharedCamera)?.camera as? SimCamera
+                let simulated = mount.opened.simulated || sim != nil
                 try log.plan(
                     plan, calibration: calibration, moonDiameterDeg: here.moon.diameterDeg,
-                    colorID: SerWriter.colorID(for: camera.info), time: clock())
+                    colorID: SerWriter.colorID(for: camera.info), time: clock(),
+                    simulated: simulated,
+                    mount: mount.opened.simulated ? "simulated" : (mount.opened.model ?? "real"),
+                    camera: camera.info.name, scene: sim?.scene.name)
+                if simulated {
+                    onEvent(.message("This run is SIMULATED (\(mount.opened.simulated ? "simulated mount" : "real mount"), \(sim != nil ? "simulated camera" : "real camera")); its session.ndjson says so."))
+                }
             }
             loggedPlanIn = folder
         }

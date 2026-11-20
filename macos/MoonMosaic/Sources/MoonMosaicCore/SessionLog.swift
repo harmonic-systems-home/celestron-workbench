@@ -42,6 +42,13 @@ public final class SessionLog {
         /// Pixels per arcsecond: image = [[a, b], [c, d]] · sky.
         let calibration: [String: Double]
         let tiles: [PlannedTile]
+        /// Where the data came from: a simulated mount or camera, and which
+        /// (so a rehearsal's run can never pass for a real one).
+        var simulated: Bool? = nil
+        var mount: String? = nil
+        var camera: String? = nil
+        /// The simulated camera's scene, when there is one.
+        var scene: String? = nil
     }
 
     public struct PlannedTile: Encodable {
@@ -77,7 +84,8 @@ public final class SessionLog {
 
     public func plan(
         _ plan: MosaicPlan, calibration c: CameraCalibration, moonDiameterDeg: Double,
-        colorID: Int32, time: Date
+        colorID: Int32, time: Date, simulated: Bool? = nil, mount: String? = nil, camera: String? = nil,
+        scene: String? = nil
     ) throws {
         try append(
             PlanRecord(
@@ -93,7 +101,7 @@ public final class SessionLog {
                         id: $0.id, row: $0.row, column: $0.column,
                         center: XY(x: $0.center.x, y: $0.center.y),
                         pointing: XY(x: $0.pointing.x, y: $0.pointing.y), lit: $0.lit)
-                }))
+                }, simulated: simulated, mount: mount, camera: camera, scene: scene))
     }
 
     public func done(
