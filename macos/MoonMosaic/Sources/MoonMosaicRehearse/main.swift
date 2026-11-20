@@ -5,6 +5,11 @@ import MoonMosaicCore
 // camera for many seeded scenarios, one after another, with a JSON record.
 //
 //   swift run -c release MoonMosaicRehearse [first-seed] [count] [--tiles N] [--speed K] [--out file.json] [--keep dir] [--verbose]
+//       [--camera 662|482|both]
+//   swift run -c release MoonMosaicRehearse --set phases [--rotations 30,210] [--camera 662|482|both] ...
+//
+// The phases set: each major phase (waxing crescent to waning crescent, full
+// included) × direct and mirrored (diagonal) × each rotation × each camera.
 setvbuf(stdout, nil, _IOLBF, 0)
 let args = Array(CommandLine.arguments.dropFirst())
 let numbers = args.prefix { !$0.hasPrefix("--") }.compactMap { UInt64($0) }
@@ -28,15 +33,48 @@ struct Report: Codable {
     let failed: Int
 }
 
+let cameras: [Rehearsal.CameraModel] =
+    switch option("--camera") {
+    case "482": [.asi482mc]
+    case "both": [.asi662mc, .asi482mc]
+    default: [.asi662mc]
+    }
+var scenarios: [Rehearsal.Scenario] = []
+if option("--set") == "phases" {
+    let rotations = (option("--rotations") ?? "30,210").split(separator: ",").compactMap { Double($0) }
+    var seed = first
+    for camera in cameras {
+        for phase in Rehearsal.Phase.allCases {
+            for diagonal in [false, true] {
+                for rotation in rotations {
+                    scenarios.append(
+                        Rehearsal.Scenario(seed: seed, phase: phase, camera: camera, rotationDeg: rotation, diagonal: diagonal))
+                    seed += 1
+                }
+            }
+        }
+    }
+} else {
+    for seed in first..<(first + UInt64(count)) {
+        for camera in cameras {
+            var s = Rehearsal.Scenario(seed: seed)
+            s.camera = camera
+            scenarios.append(s)
+        }
+    }
+}
+print("\(scenarios.count) scenarios.")
+
 let started = Date()
 var results: [Rehearsal.Result] = []
-for seed in first..<(first + UInt64(count)) {
-    let s = Rehearsal.Scenario(seed: seed)
+for s in scenarios {
+    let seed = s.seed
     print(
         String(
-            format: "seed %llu: camera %.0f°%@, Moon %.2f°, %.2f° off, seeing %.1f″", seed, s.cameraRotationDeg,
-            s.diagonal ? " (diagonal)" : "", s.moonOffsetAz, s.moonOffsetAlt, s.seeingArcsec))
-    let dir = keep?.appendingPathComponent("seed-\(seed)")
+            format: "seed %llu: %@%@, camera %.0f°%@, Moon %.2f°, %.2f° off, seeing %.1f″", seed,
+            s.camera == .asi482mc ? "ASI482MC" : "ASI662MC", s.phase.map { ", " + $0.rawValue } ?? "",
+            s.cameraRotationDeg, s.diagonal ? " (diagonal)" : "", s.moonOffsetAz, s.moonOffsetAlt, s.seeingArcsec))
+    let dir = keep?.appendingPathComponent("seed-\(seed)-\(s.camera.rawValue)")
     if let dir { try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true) }
     let r = await Rehearsal.run(s, speed: speed, tiles: tiles, folder: dir, log: { if verbose { print("    \($0)") } })
     for step in r.steps {

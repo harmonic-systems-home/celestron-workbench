@@ -18,6 +18,66 @@ public struct SeededGenerator: RandomNumberGenerator {
 /// step's result and time recorded, so a change can be judged on many
 /// scenarios at once rather than one rehearsal by hand.
 public enum Rehearsal {
+    /// The major phases, for test sets: each picks a moment when the Moon
+    /// is at that phase and well up at the test site.
+    public enum Phase: String, Sendable, Codable, CaseIterable {
+        case waxingCrescent = "waxing crescent"
+        case firstQuarter = "first quarter"
+        case waxingGibbous = "waxing gibbous"
+        case full
+        case waningGibbous = "waning gibbous"
+        case lastQuarter = "last quarter"
+        case waningCrescent = "waning crescent"
+
+        /// The phase angle (0 full, 180 new) and whether it is waxing.
+        public var angleDeg: Double {
+            switch self {
+            case .waxingCrescent, .waningCrescent: 125
+            case .firstQuarter, .lastQuarter: 90
+            case .waxingGibbous, .waningGibbous: 45
+            case .full: 4
+            }
+        }
+        public var waxing: Bool? {
+            switch self {
+            case .waxingCrescent, .firstQuarter, .waxingGibbous: true
+            case .full: nil
+            default: false
+            }
+        }
+    }
+
+    /// The cameras the operator has.
+    public enum CameraModel: String, Sendable, Codable, CaseIterable {
+        case asi662mc = "662"
+        case asi482mc = "482"
+        public var sensor: SimSensor { self == .asi662mc ? .asi662mc : .asi482mc }
+    }
+
+    /// The first moment from 2026-11-01 when the Moon is at `phase` (within
+    /// 8°, full within 10°) and at least 30° up, at night if it can be.
+    public static func moment(for phase: Phase, site: Site) -> Date? {
+        let start = Date(timeIntervalSince1970: 1_793_491_200)
+        for night in [true, false] {
+            var t = start
+            for _ in 0..<(24 * 4 * 70) {
+                defer { t.addTimeInterval(900) }
+                let p = Ephemeris.phase(at: t, from: site)
+                let tolerance = phase == .full ? 10.0 : 8.0
+                guard abs(p.phaseAngleDeg - phase.angleDeg) < tolerance || (phase == .full && p.phaseAngleDeg < tolerance)
+                else { continue }
+                if let waxing = phase.waxing {
+                    let later = Ephemeris.phase(at: t.addingTimeInterval(6 * 3600), from: site)
+                    guard (later.illuminatedFraction > p.illuminatedFraction) == waxing else { continue }
+                }
+                guard Ephemeris.moon(at: t, from: site).horizontal.altDeg > 30 else { continue }
+                if night, Ephemeris.horizontal(Ephemeris.sun(at: t), at: t, from: site).altDeg > -6 { continue }
+                return t
+            }
+        }
+        return nil
+    }
+
     /// What a seed sets: the camera's turn and mirroring, where the Moon is
     /// against the start, the seeing, the hidden best focus, the phase.
     public struct Scenario: Sendable, Codable, Equatable {
@@ -31,6 +91,20 @@ public enum Rehearsal {
         public var phaseAngleDeg: Double
         /// Hours after the first time the Moon is high at the test site.
         public var hoursLater: Double
+        /// A test set's choices, overriding the seed's: the phase (the
+        /// moment comes from it), the camera, its turn and the diagonal.
+        public var phase: Phase?
+        public var camera: CameraModel = .asi662mc
+
+        /// A test set's scenario: the seed sets the rest (where the Moon is,
+        /// the seeing).
+        public init(seed: UInt64, phase: Phase?, camera: CameraModel, rotationDeg: Double, diagonal: Bool) {
+            self.init(seed: seed)
+            self.phase = phase
+            self.camera = camera
+            self.cameraRotationDeg = rotationDeg
+            self.diagonal = diagonal
+        }
 
         public init(seed: UInt64, reachDeg: Double = 1.5) {
             var g = SeededGenerator(seed)
@@ -72,18 +146,27 @@ public enum Rehearsal {
     ) async -> Result {
         var steps: [Step] = []
         do {
-            // The first time the Moon is well up, then the scenario's hours on.
-            var t = Date(timeIntervalSince1970: 1_793_491_200)
-            for _ in 0..<(24 * 30) {
-                if Ephemeris.moon(at: t, from: site).horizontal.altDeg > 40 { break }
-                t.addTimeInterval(3600)
+            // The test set's phase; else the first time the Moon is well up,
+            // then the scenario's hours on.
+            let epoch: Date
+            if let phase = scenario.phase {
+                guard let m = moment(for: phase, site: site) else {
+                    throw MosaicError(description: "no moment found for the \(phase.rawValue) Moon")
+                }
+                epoch = m
+            } else {
+                var t = Date(timeIntervalSince1970: 1_793_491_200)
+                for _ in 0..<(24 * 30) {
+                    if Ephemeris.moon(at: t, from: site).horizontal.altDeg > 40 { break }
+                    t.addTimeInterval(3600)
+                }
+                epoch = t.addingTimeInterval(scenario.hoursLater * 3600)
             }
-            let epoch = t.addingTimeInterval(scenario.hoursLater * 3600)
             let started = Date()
             let clock: @Sendable () -> Date = { epoch.addingTimeInterval(Date().timeIntervalSince(started)) }
             let mount = try MountSession(port: "simulate", safety: ["max_goto_deg": 10.0])
             try mount.setSimSpeed(speed)
-            var optics = SimOptics(focalLengthMm: 2032, sensor: .asi662mc)
+            var optics = SimOptics(focalLengthMm: 2032, sensor: scenario.camera.sensor)
             optics.diagonal = scenario.diagonal
             optics.cameraRotationDeg = scenario.cameraRotationDeg
             let truthOptics = optics

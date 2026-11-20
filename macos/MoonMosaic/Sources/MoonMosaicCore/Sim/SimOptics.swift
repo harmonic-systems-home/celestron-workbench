@@ -71,6 +71,12 @@ public struct SimSensor: Sendable, Equatable, Codable {
     public static let asi662mc = SimSensor(
         name: "Simulated ASI662MC", width: 1920, height: 1080, pixelSizeUm: 2.9, isColor: true,
         fps: 60)
+    /// The operator's other camera (ADR 0015): the same sensor size with
+    /// pixels twice as big, so 0.59″ per pixel and a 19′ × 11′ field at
+    /// 2032 mm.
+    public static let asi482mc = SimSensor(
+        name: "Simulated ASI482MC", width: 1920, height: 1080, pixelSizeUm: 5.8, isColor: true,
+        fps: 60)
     /// A wider field: larger sensor, larger pixels.
     public static let wide = SimSensor(
         name: "Simulated wide camera", width: 3096, height: 2080, pixelSizeUm: 2.4,

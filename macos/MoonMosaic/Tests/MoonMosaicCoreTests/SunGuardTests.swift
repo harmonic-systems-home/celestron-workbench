@@ -90,3 +90,15 @@ import Testing
         #expect(throws: SunTooClose.self) { try s.checkSun(from: a, to: b, what: "test") }
     }
 }
+
+/// The test runner's phases: a moment is found for each, at that phase,
+/// waxing or waning as asked, with the Moon well up.
+@Test func eachPhaseHasAMoment() throws {
+    let site = Site(latitudeDeg: 40, longitudeDeg: -100)
+    for phase in Rehearsal.Phase.allCases {
+        let t = try #require(Rehearsal.moment(for: phase, site: site), "\(phase)")
+        let p = Ephemeris.phase(at: t, from: site)
+        #expect(abs(p.phaseAngleDeg - phase.angleDeg) < 10 || (phase == .full && p.phaseAngleDeg < 10), "\(phase): \(p.phaseAngleDeg)")
+        #expect(Ephemeris.moon(at: t, from: site).horizontal.altDeg > 30)
+    }
+}

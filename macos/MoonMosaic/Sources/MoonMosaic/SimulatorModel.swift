@@ -14,7 +14,14 @@ final class SimulatorModel: ObservableObject {
         case sct8Barlow = "8″ SCT, ASI662MC, 2× Barlow"
         case sct8Reducer = "8″ SCT, ASI662MC, 0.63× reducer"
         case sct8Wide = "8″ SCT, wide camera"
+        case sct8With482 = "8″ SCT, ASI482MC, diagonal"
+        case sct8With482Straight = "8″ SCT, ASI482MC, no diagonal"
         var id: String { rawValue }
+        var uses482: Bool { self == .sct8With482 || self == .sct8With482Straight }
+        /// The same camera with the diagonal in or out.
+        func withDiagonal(_ on: Bool) -> OpticsPreset {
+            uses482 ? (on ? .sct8With482 : .sct8With482Straight) : (on ? .sct8 : .sct8Straight)
+        }
         var optics: SimOptics {
             var o = SimOptics.sct8
             switch self {
@@ -23,6 +30,10 @@ final class SimulatorModel: ObservableObject {
             case .sct8Barlow: o.multiplier = 2
             case .sct8Reducer: o.multiplier = 0.63
             case .sct8Wide: o.sensor = .wide
+            case .sct8With482: o.sensor = .asi482mc
+            case .sct8With482Straight:
+                o.sensor = .asi482mc
+                o.diagonal = false
             }
             return o
         }
@@ -269,7 +280,7 @@ final class SimulatorModel: ObservableObject {
     /// with or without the star diagonal).
     func randomizeRotation() {
         cameraRotationDeg = Double(Int.random(in: 0..<360))
-        preset = Bool.random() ? .sct8Straight : .sct8
+        preset = preset.withDiagonal(Bool.random())
     }
 
     /// Just where the Moon is in the search area, at random, out of view of
@@ -298,7 +309,7 @@ final class SimulatorModel: ObservableObject {
         var g = SeededGenerator(seed)
         cameraRotationDeg = Double.random(in: 0..<360, using: &g)
         let straight = Bool.random(using: &g)
-        preset = straight ? .sct8Straight : .sct8
+        preset = preset.withDiagonal(!straight)
         // Out of view: at least the Moon's radius plus half the field's
         // diagonal from the start, within the search area.
         let field = preset.optics.fieldArcmin

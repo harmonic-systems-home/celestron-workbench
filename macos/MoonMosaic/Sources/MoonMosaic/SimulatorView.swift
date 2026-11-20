@@ -41,7 +41,7 @@ struct SimulatorView: View {
                     "Diagonal",
                     isOn: Binding(
                         get: { sim.preset.optics.diagonal },
-                        set: { sim.preset = $0 ? .sct8 : .sct8Straight }))
+                        set: { sim.preset = sim.preset.withDiagonal($0) }))
                 Button("Random turn") { sim.randomizeRotation() }
             }
             HStack {
