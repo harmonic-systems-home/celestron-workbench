@@ -273,6 +273,20 @@ struct ContentView: View {
                     model.centreFound ? "Orient Moon (found)" : "Orient Moon",
                     enabled: model.calibrated && model.busy == nil
                 ) { model.findCentre() }
+                HStack(spacing: 10) {
+                    button("Go to Limb", enabled: model.calibrated && model.hereSet && model.busy == nil) {
+                        model.goTo(.limb)
+                    }
+                    button("Auto-set exposure", enabled: model.connected && model.busy == nil) {
+                        model.autoSetExposure()
+                    }
+                }
+                HStack(spacing: 10) {
+                    button("Go to Terminator", enabled: model.calibrated && model.hereSet && model.busy == nil) {
+                        model.goTo(.terminator)
+                    }
+                    button("Recheck", enabled: model.centreFound && model.busy == nil) { model.recheck() }
+                }
                 button("Plan", enabled: model.calibrated && model.busy == nil) {
                     model.makePlan()
                 }

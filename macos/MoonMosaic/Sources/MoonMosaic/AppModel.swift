@@ -1170,6 +1170,29 @@ final class AppModel: ObservableObject {
         perform("Finding the centre", step: .orientMoon, resumeHold: true) { try await $0.findCentre() }
     }
 
+    /// Auto-set (step 4): exposure and gain from the frame in view (best
+    /// with the bright limb in it: Go to Limb).
+    func autoSetExposure() {
+        perform("Auto-set exposure") { [weak self] s in
+            try await s.autoExposure()
+            let (e, g) = (s.settings.exposureUs, s.settings.gain)
+            await MainActor.run {
+                self?.exposureMs = Double(e) / 1000
+                self?.gain = g
+            }
+        }
+    }
+
+    /// Go to Limb or Go to Terminator (steps 4 and 7), then tracking on.
+    func goTo(_ feature: MosaicSession.Feature) {
+        perform(feature == .limb ? "Going to the limb" : "Going to the terminator") { try await $0.goTo(feature) }
+    }
+
+    /// Recheck after fine focus (step 8).
+    func recheck() {
+        perform("Rechecking", step: .recheck) { try await $0.recheck() }
+    }
+
     private func applySurvey() {
         session?.setSurvey(exposureUs: Int(surveyExposureMs * 1000), gain: surveyGain)
     }

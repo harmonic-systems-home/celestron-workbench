@@ -1008,6 +1008,7 @@ public final class MosaicSession: @unchecked Sendable {
         let moonNow = Ephemeris.moon(at: now, from: settings.site).horizontal
         try mount.setAltitudeReference(moonNow.altDeg + wrap180(pos[1] - centreNow.alt))
         try await goToSky(SkyOffset(x: 0, y: 0))
+        if let p = try? await freshPosition() { markOnMoon(p, at: clock()) }
         onEvent(
             .message(
                 String(
