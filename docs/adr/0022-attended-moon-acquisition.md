@@ -305,3 +305,344 @@ off Find centre's map of the survey, and misplaced the tiles.
   2× Barlow), the drift alone recovers 0.600″/px against a true 0.6. The angle
   comes out at 20.1° against 20°, the residuals at 0–2%, and mirroring is
   detected both ways.
+
+## Amendment 7: track first, then a guided flow (proposed, 2026-11-20)
+
+Status: **proposed**, for review before any code. It comes from a design discussion
+the morning after the 2026-11-19 runs. That night, about half the observing time
+went into searches. Hand-controller runaways lost the Moon twice. A symmetric plan
+missed an egg-shaped gibbous Moon, and Hold's correction fought the operator's
+nudges.
+
+### Priorities
+
+In order: **safety, correctness, accuracy, timeliness.** Each design choice below is
+weighed in that order, but safety is balanced against timeliness, not bought at
+any cost.
+
+- **What safety means here:** amendment 4 stands. No fault latches, and missed
+  feedback never stops the run. Safety is instead a limit on what the app itself
+  commands:
+  - a cap on rate-move speeds (about 2°/s; sweeps at 1°/s);
+  - a cap on net movement: app-commanded moves never take the aim more than a set
+    distance from the Moon's predicted position (beyond the search area), except a
+    slew the operator asks for explicitly.
+
+  A command over a limit is refused with a message. It doesn't latch, and nothing
+  already running stops. The operator's hand-controller moves are never limited.
+- **Sun avoidance** (daytime and twilight). Today it is one check at Here: the Moon
+  at least 40° from the Sun, whatever the Sun's altitude, and nothing checks where
+  the scope actually points. With Here gone, it changes to:
+  - **The scope's pointing, not the Moon's:** every app-commanded move's path and
+    target, and the whole search area, keep at least the minimum separation from
+    the Sun (40° by default).
+  - **Only while the Sun is up:** active while the Sun's altitude is above about
+    −2° (its disk plus refraction). After sunset it is off by itself, so a thin
+    crescent in twilight needs no override.
+  - **Override** for sunrise and sunset: an explicit, confirmed setting for this
+    session (the separation lowered, or off), logged, and reset when the app
+    restarts.
+  - Hand-controller moves can't be refused. If the pointing comes within the
+    separation, the app warns at once. Cover the spotting scope in daylight: it's
+    an eye hazard the app can't guard.
+- **Correctness** before accuracy: the right tiles in the right places, with the
+  right orientation, before sub-arcsecond refinement.
+
+### Tracking is the baseline
+
+- **Track / Stop Tracking** is one toggle, right after Connect. It needs only the
+  ephemeris, the site and the clock, not Here. The Moon's rates in azimuth and
+  altitude don't depend on where the encoders think the mount points. Point with
+  the spotting scope, press Track, and the Moon stays put.
+- Track first sends `T 00` (the hand controller's tracking off, so the two never
+  overwrite each other's rate), then sets the variable rates. `T 00` also cancels
+  our own rate, so it is never sent while tracking runs, except by Stop Tracking.
+- **Moves add to tracking; they don't replace it.** A short move (nudge, pan,
+  search step, tile-to-tile step) is extra rate on both axes for T seconds, in the
+  ratio Δaz : Δalt. Both motors start and stop together, the path is straight on
+  the sky (cross-coupled), and tracking resumes the instant the extra rate ends.
+  Long slews still use the firmware goto, and tracking resumes after them. Today's
+  gotos run azimuth to the end, then altitude: an L-shaped path.
+- The 0.05°/s cap on tracking rates in the session rises to cover rate moves (about
+  1–2°/s; the protocol allows about 4.5°/s). Encoder reads close the loop, with a
+  small correction at the end of a move.
+
+### Follow mode, nudges, Stop and Undo
+
+- **Follow** (the default): plain tracking, no correction toward a stored aim.
+  Wherever a nudge leaves the scope, it stays, as with the hand controller.
+- **Nudges come from the hand controller or the app.** A keypad move is the motor
+  controller's fixed rate. A fixed rate 0 (a key release) does not cancel the
+  variable rate (docs/observations.md, O1), so tracking should carry on after a
+  nudge. What a *nonzero* fixed rate does while a variable rate runs (adds to it,
+  overrides it, or is ignored) has not been observed. The hand controller's own
+  tracking and nudges suggest it works, but the simulated hand controller assumes
+  it is ignored. This is the first bench test.
+- **The app sees every nudge.** A nudge begins when the encoders leave the tracking
+  path, and ends when they've been back on it for about 0.5 s. Its start is pushed
+  onto an undo stack.
+- **App nudges:** ¼ frame per press, or ⅟₁₂ frame with Fine, with press-and-hold to
+  keep moving. Before Orient Camera the buttons work in mount axes; after it, in
+  the camera frame (▲ moves the image up). The app ends its own nudges, checks on
+  the encoders that the motor stopped, and sends the stop again if not.
+- **Stop** ends a nudge, from either source: fixed rate 0 on both axes, never
+  `T 00`, so tracking keeps running. Nothing is stopped automatically: the
+  operator may make large moves on purpose, for example to adjust the spotting
+  scope. Whether our fixed rate 0 also ends a hand-controller runaway is a bench
+  test.
+- **Undo** returns to the position before the last nudge *relative to the Moon* (a
+  goto to that sky offset at the current time, not the raw encoder position, which
+  the Moon has left) and resumes tracking. It can be pressed repeatedly. A runaway
+  and the operator's opposite-key correction usually take two Undos.
+- **Lock** is used inside Orient Camera, Orient Moon, Calibrate and capture. It
+  corrects drift toward a stored aim. A nudge moves the aim instead of being
+  fought.
+
+### The flow
+
+A strip along the top of the window shows the steps and where the session is in
+them. Steps can be repeated; Track/Stop Tracking, Stop, Undo, the nudge buttons and
+Calibrate are available throughout.
+
+1. **Connect.**
+2. **Track.**
+3. **Find:** the search, as continuous sweeps (below). Landing on the disk ties the
+   encoders to the sky, so there is no separate Here step.
+4. **Camera settings and coarse focus.** The app frames the bright limb about 25%
+   from one edge of the frame, with the rest filled with Moon features, so the
+   overall look can be judged. **Auto-set** sets exposure and gain from that
+   frame: the brightest lit area just below clipping (well under 0.1% of pixels
+   saturated), with the shortest exposure that allows it, to freeze the seeing,
+   and gain making up the rest. The operator can override either. Today both are
+   manual. Coarse focus is done when the Detail readout turns green.
+5. **Orient Camera:** tracking pauses and the Moon drifts through the field for
+   about 6 s, giving the scale and the camera's angle (amendment 6). One small
+   automatic nudge then settles mirroring. Undo returns to the Moon position
+   before the drift and resumes tracking. The nudge buttons switch to the camera
+   frame.
+6. **Orient Moon:** Find centre, extended to rotation. The Moon's rotation on the
+   sky comes from the ephemeris (the position angle of its axis plus the
+   parallactic angle), and the bright limb's direction comes from the phase. So
+   this measures the centre and *checks* the rotation and mirroring against the
+   prediction, flagging a disagreement. The phase (lit fraction, bright limb,
+   terminator ellipse) is a prior for the survey fit.
+7. **Fine focus:** **Go to Terminator** moves to where the terminator crosses the
+   axis through the bright limb, R·cos(phase angle) from the centre on the dark
+   side. **Go to [crater]** chooses from a small catalog (about 30 prominent
+   craters, with lunar coordinates) one about 5–15° inside the terminator on the
+   lit side, where the shadows are long. That needs the Moon's physical ephemeris
+   (libration and the Sun's position over the Moon, Meeus ch. 53). **Go to Limb**
+   (about one frame inside the bright limb) is for checking exposure.
+8. **Recheck:** this is a Celestron SCT, which focuses by moving the main mirror.
+   That changes the focal length (the scale) and shifts the image sideways. After
+   fine focus, a short drift re-measures the scale and a quick survey re-measures
+   the centre. Rotation is unaffected. Finishing the focus by turning the knob the
+   same way keeps the mirror's shift consistent.
+9. **Plan:** shaped by the phase, not symmetric.
+10. **Start:** unidirectional rows (below). Afterwards, back to Follow.
+
+### Orientation at full Moon
+
+Near full there is no terminator, and the bright limb's direction is undefined.
+
+- **The camera's orientation doesn't need the Moon's features:** Orient Camera gets
+  it from the drift and the mirror nudge, at any phase. The Moon's rotation on the
+  sky comes from the ephemeris (the position angle of its axis plus the
+  parallactic angle). Together they predict the Moon's rotation in the image.
+- **The check uses an albedo map:** the same LRO albedo map is rendered as the Moon
+  looks tonight: libration, rotation, phase (simple lighting). The survey frames,
+  or a live frame, are correlated against it. Maria against highlands contrast
+  most at full Moon, so this check is strongest just when the terminator isn't
+  there.
+- **The same rendering serves every phase:** it gives the centre and rotation from
+  the features, improves Orient Moon's fit near the limb, and places Go to
+  [crater] targets.
+
+### Readouts on the preview
+
+- **Light:** is the Moon in the frame? This is the search's detector (below).
+- **Detail:** "can orient from here". It measures how much the band-passed frame
+  gives the frame matching to lock onto, the same quality the drift and
+  calibration need.
+- **Sharpness:** a focus number that rises as focus improves, for coarse and fine
+  focus.
+
+### Search by continuous sweeps
+
+- Each raster row is one azimuth rate move with the camera streaming, on top of
+  tracking, so the pattern travels with the Moon. Azimuth spans are scaled by
+  1/cos(altitude), so the pattern is even on the sky.
+- The Moon (31′, plus glow) is far larger than the field (about 6′ × 3.4′), so
+  rows can be about 0.4° apart. At 1°/s with a 2 ms exposure, the blur is about
+  7″, and at 30 frames per second the disk spans more than a dozen frames. A ±2°
+  area takes about a minute.
+- Each frame gets a timestamp, and the encoder position at that moment is
+  interpolated. On a sighting, the mount slows, comes back to that spot and
+  converges onto the disk.
+- **One detector, day and night:** each frame is compared with the sky level the
+  sweep has seen so far, and checked for texture or a sharp limb edge. Over a
+  dark sky that's a large jump in brightness. In daylight, near the Sun, the sky
+  can be almost as bright as the Moon, but it is smooth and changes slowly. With
+  this detector, Test mode no longer needs auto-detect turned off. Today it is
+  off there, and on at night: on 2026-11-19 it reported "target in view" after
+  16–53 stops.
+
+### Capture in one direction
+
+- Every row is captured moving the way the Moon drifts in azimuth, and rows follow
+  in the direction it drifts in altitude. Tile-to-tile moves add rate in the
+  direction tracking already turns each motor, so no motor reverses within a row:
+  no backlash at all, not just a consistent finish.
+- The only reversal is the flyback to the start of the next row. It ends with an
+  approach in the tracking direction before that row's first tile.
+- Today's capture is serpentine. Each goto already finishes in the Moon's drift
+  direction (overshooting and coming back when needed), but the motors reverse
+  every row.
+
+### Calibration that keeps improving
+
+- **Calibrate** stays as a button. It goes to a high-Detail spot (near the
+  terminator, inside the lit side, no sky in the frame; not flat maria or the
+  limb) and repeats the drift and the tracked moves.
+- Every app nudge is also a known move with a measured image shift. Such a
+  measurement updates the map only when the frame match is strong and it agrees
+  with the current map within a tolerance. The map updates gradually, as a
+  running fit, and is never replaced by one measurement. Rejected measurements
+  are logged. Every map is logged, so a bad one can be reverted.
+- The same measurements give the backlash on each axis.
+
+### Time budget
+
+Each step has a designed duration. The app logs each step's start, end, estimate
+and actual time, and the difference, in `records.ndjson`, with a summary at the end
+of the session. The estimates assume the 2026-11-19 search area (±2.8° in azimuth,
+±1.7° in altitude) and the Moon at about 50° altitude.
+
+| Step | Estimate | Basis |
+|---|---|---|
+| Connect | 10 s | |
+| Track | 1 s | |
+| Find | 50 s typical, 100 s worst, plus 10 s to converge | 9 rows 0.4° apart, 8.7° of azimuth travel each at 1°/s, 2 s per turnaround. On 2026-11-19 stop-and-shoot searches took 30 s to 2 min each, and several per attempt. |
+| Camera settings | 10 s auto-set | plus coarse focus by hand: 2–3 min |
+| Orient Camera | 20 s | 6 s drift, the mirror nudge, Undo |
+| Orient Moon | 60 s | to be measured |
+| Fine focus | 5 s per goto | plus focusing by hand: 2–5 min |
+| Recheck | 30 s | |
+| Plan | 1 s | |
+| Start | about 5 s per tile plus 5 s per row | a 53-tile, 8-row plan in about 5 min. On 2026-11-19 a 53-tile run took 11 min 14 s (12.7 s per tile, 3 s of it video), because of sequential gotos, approach legs, touch-ups and settling. |
+
+Apart from focusing by hand, a session from Connect to a finished mosaic should
+take about 8–9 minutes.
+
+- **During capture:** a time-remaining readout, from the tiles and rows left at the
+  measured rate so far (the estimate until the first row is done).
+- **When capture finishes:** the window switches to the mosaic preview.
+
+### Future: autofocus
+
+A focus motor may be added. Autofocus would be a step after Orient Moon: go to a
+terminator crater, then sweep the focuser through focus while logging the
+Sharpness readout. Fit the curve's peak, and finish the approach in a fixed
+direction (the SCT's mirror). Recheck runs after it as it does after manual focus.
+The same routine could coarse-focus first from the Detail readout. To do: choose
+the focuser and its protocol (Celestron's own focuser sits on the AUX bus), and
+give the simulator a focuser.
+
+### Simulator
+
+The simulated camera is the key to testing every step before the next clear night.
+It could well be more code than the app.
+
+- **Three modes:**
+  - **All simulated:** the simulated mount and the simulated camera, for headless
+    test runs.
+  - **Real mount, simulated camera:** the camera is "pointed" by the real mount's
+    encoders, with the Moon moving across the sky per the ephemeris and a random
+    offset between the encoders and the sky. This tests real tracking, hand
+    controller nudges, app nudges, Stop, Undo, sweeps and capture moves together,
+    in daylight or cloud. It moves the real mount, so it is attended, like any
+    session.
+  - **All real.**
+- **Scenes from real images:** our mosaics (at the native 0.28″/px), DWARF stacks,
+  other DWARF images, and downloaded images. Some downloaded images have more
+  detail than ours, and can be scaled down to 0.28″/px as references. DWARF images
+  have less detail than our final images, but probably enough to tell coarse focus
+  from fine. The test set is chosen especially to cover **many phases**, plus
+  daytime Moons. Each scene is prepared once: the disk's centre and
+  radius are fitted (as in the 2026-11-19 overlay analysis), and the bright limb's
+  direction, the lunar north and the time taken (if known) are recorded. Scenes
+  live in the private data folder, never in this repo. Downloaded images keep a
+  note of their source and licence. A scene enlarged beyond its own resolution has
+  no fine detail, so fine-focus tests use our mosaics or detailed downloads.
+- **Rendered scenes:** a global albedo map and elevation model of the Moon (NASA's
+  LRO mosaics, as in NASA's "CGI Moon Kit"), rendered for a chosen time. The
+  libration, the rotation on the sky and the Sun's direction come from the
+  ephemeris. This gives any phase, at any resolution, with shadows from the
+  terrain, and the ground truth is exact. Real images keep the real optics and
+  seeing; rendered scenes cover every phase and geometry.
+- **Wide sky view (testing):** a second window showing the search area, the true
+  Moon (in the simulator) or the predicted Moon (on the real sky, once Find has
+  tied the encoders to it), and the camera's footprint and its path. During a
+  search, the camera's sweep across the area is visible.
+- **Phase:** a scene's own phase is fixed. Either pick a scene near the
+  ephemeris's phase, or turn the scene so its bright limb matches the ephemeris,
+  or deliberately mismatch them to test Orient Moon's disagreement check.
+- **Randomized scenarios, from a seed:** the Moon's rotation and mirroring in the
+  camera, the starting point (somewhere in the search area but not in view), the
+  initial focus and exposure, the seeing, and clouds. The seed is logged, so a
+  failure can be replayed exactly.
+- **The camera model, in order:**
+  1. Sample the scene at the pointing, scale, rotation and mirroring, with motion
+     blur during the exposure.
+  2. Defocus (a disk-shaped blur that grows with the focus error), plus seeing (a
+     blur that changes frame to frame, with image motion, so that selecting the
+     best frames does something).
+  3. SCT focus effects: the scale changes and the image shifts sideways as the
+     focus moves.
+  4. Sky: night, with a glow around the Moon, or a daylight sky gradient; and
+     clouds as moving attenuation.
+  5. Exposure and gain into noise, then 8 bits with clipping: under- and
+     over-exposure are tested this way.
+  6. The sensor's fixed pattern and hot pixels. The fixed pattern misled the frame
+     matching on 2026-11-19.
+- **Manual focus controls (simulated):** a focus knob in the app, coarse and fine,
+  standing in for the SCT's knob. Its position sets the defocus, the scale change
+  and the mirror shift, with the mirror's lag and jump when the knob reverses
+  direction (mirror flop). Its true best focus is random per scenario. The same
+  interface serves a future motor focuser, so autofocus can be developed against
+  the simulator.
+- **Optics are configurable:** focal length, Barlow or reducer, with or without the
+  star diagonal (mirroring), and the camera's sensor (pixel size, width and height,
+  frame rate, bit depth). So another camera with a wider field, or the scope
+  without its diagonal, is simulated by choosing a different setup.
+- **A simulator window:** its own controls, separate from the app's, for the
+  things the simulator stands in for: the focus knob, the optics and camera
+  setup, the scene and phase, seeing, clouds and sky, the seed, and fault
+  injection (a stuck keypad move, a dropped link). It also has the wide sky view,
+  with the true Moon and the camera's footprint. The app's own buttons (Track,
+  nudges, Stop, Undo, Orient Camera, and so on) are tested against it.
+- **Real time:** streamed frames at the camera's real frame rate (30 fps or more),
+  timestamped, for sweeps. Today's fake camera takes seconds per frame. The new
+  one warps a prepared, multi-resolution scene on the GPU (Core Image or Metal)
+  instead of drawing craters per pixel.
+- **Ground truth:** the simulator knows the true centre, rotation, scale, focus and
+  exposure. A scenario runner drives the whole flow and scores each step (centre,
+  rotation and scale errors, exposure, the share of the disk the mosaic covers),
+  along with its time against the budget.
+
+### Still open
+
+- **Altitude near the meridian:** the Moon's altitude rate passes through zero and
+  changes sign there. And the tube's weight may load the altitude gears one way
+  whatever the motion. Check both in the traces.
+- **Interruptions:** what happens to a capture or a sweep interrupted by a fault,
+  a nudge or a Stop.
+- **The simulator:** which pieces to build first.
+- **Build order:** the simulated camera first: it needs no telescope. Then a
+  bench test of the keypad behaviour, then Track-first in the app (Track, Follow,
+  nudges, Stop, Undo, the progress strip, timing), then the sweep search, Orient
+  Camera and Orient Moon, then camera settings and focus, then capture in one
+  direction.
+- **A keypad press while our variable rate runs:** whether it adds to the rate,
+  overrides it or is ignored (above). The simulated hand controller needs keypad
+  moves and runaways once this is known.
