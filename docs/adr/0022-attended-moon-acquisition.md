@@ -712,3 +712,44 @@ It could well be more code than the app.
 - **A keypad press while our variable rate runs:** whether it adds to the rate,
   overrides it or is ignored (above). The simulated hand controller needs keypad
   moves and runaways once this is known.
+
+### Built so far (2026-11-20)
+
+Built and tested on the simulator; not yet tried on the telescope unless noted.
+
+- Track, Follow, nudges, Stop nudge and Undo; the flow strip; the time budget
+  and the run record (`run-record.json`: each step's time, idle time, tracking
+  time, nudges, undos, each capture's recording and other time).
+- The sweep search, Orient Camera (drift fitted over 12 frames, then the mirror
+  nudge), Orient Moon, Recheck.
+- **Sun avoidance** on the pointing: every app move along its path, the whole
+  search area, nudges and Undo, only while the Sun is above −2°, with a
+  confirmed override for this session only; a warning for hand-controller
+  moves that come too close.
+- **Camera settings:** Auto-set (the 99.9th percentile just below clipping,
+  shortest exposure, gain to 300 first) and Go to Limb (the bright limb a
+  quarter of the frame from an edge). Coarse focus stays by hand.
+- **Fine focus helpers:** Go to Terminator and Go to [crater] (35 catalogue
+  craters with libration and the axis's position angle, Meeus ch. 53; the one
+  with the Sun 5–15° up).
+- **Plan shaped by the phase:** a tile is sunlit if any part of it, or a tenth of
+  a frame around it, is lit; Start shoots the sunlit tiles, Earthshine the
+  dark ones, and with no earthshine seen the dark tiles leave the plan. The
+  terminator and dark side are drawn on the tile grid, the sky view and the
+  search map.
+- **Capture in one direction:** every row runs the same way.
+- **Soft tiles** are judged against their neighbours in the strips they share,
+  so smooth content is no longer flagged.
+- **Simulator:** fault injection (runaway, stall, goto overshoot or short;
+  dropped frames, a stalled camera), an atmosphere (tip-tilt that wanders,
+  shimmer), scenes turned by lunar north when the sidecar gives it.
+- **Test runner:** `swift run -c release MoonMosaicRehearse [seed] [count]`
+  plays Find, Here, Orient Camera, Orient Moon, Plan and a few tiles for each
+  seeded scenario and writes a JSON report. Its first runs found the sweep
+  asking for more than 2°/s on azimuth high up, and a 5% scale error in Orient
+  Camera from seeing at the drift's ends; both fixed.
+- `scripts/scene-metadata.py` prepares the owner's images as CC0 scenes.
+
+Still to do: the rotation check in Orient Moon (against the ephemeris),
+Auto-set choosing the frame rate, the albedo-map check at full Moon, and the
+bench test of keypad presses during a variable rate.
