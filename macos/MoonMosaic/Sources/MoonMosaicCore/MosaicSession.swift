@@ -324,7 +324,8 @@ public final class MosaicSession: @unchecked Sendable {
             cancelled)
     }
 
-    /// Walks a serpentine raster from the current position (ADR 0022), as
+    /// Walks a serpentine raster out from the current position (ADR 0022):
+    /// the current row first, then rows alternately above and below, as
     /// capture stops `captureStepDeg` apart along each row. (A continuous row
     /// sweep is a later optimisation; these stops drive and test the same
     /// coverage.) Otherwise like `searchSpiral`.
@@ -340,11 +341,17 @@ public final class MosaicSession: @unchecked Sendable {
         let raster = RasterSearch(
             halfWidthDeg: halfWidthDeg, halfHeightDeg: halfHeightDeg, rowSpacingDeg: rowSpacingDeg)
         var offsets: [(Double, Double)] = []
+        func seen(_ o: (Double, Double)) -> Bool {
+            offsets.contains { abs($0.0 - o.0) < 1e-9 && abs($0.1 - o.1) < 1e-9 }
+        }
         for row in raster.rows {
             let span = row.toAzDeg - row.fromAzDeg
             let n = max(1, Int((abs(span) / captureStepDeg).rounded(.up)))
             for k in 0...n {
-                offsets.append((row.fromAzDeg + span * Double(k) / Double(n), row.altDeg))
+                // A row starts where the last ended, and the start's second
+                // half-row starts at the start: shoot each place once.
+                let o = (row.fromAzDeg + span * Double(k) / Double(n), row.altDeg)
+                if !seen(o) { offsets.append(o) }
             }
         }
         return try await walk(offsets, referenceAltitudeDeg, converge, found, cancelled)

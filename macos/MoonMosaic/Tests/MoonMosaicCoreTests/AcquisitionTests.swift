@@ -93,32 +93,38 @@ private func blur(_ f: Frame, radius: Int) -> Frame {
 
 // MARK: - RasterSearch
 
-@Test func theRasterCoversTheBoxInAlternatingRows() {
+@Test func theRasterCoversTheBoxFromTheStartOutward() {
     let r = RasterSearch(halfWidthDeg: 1.0, halfHeightDeg: 0.6, rowSpacingDeg: 0.2)
-    #expect(r.rows.count >= 2)
 
-    // Rows span the full height, centred on the start, spaced no more than asked.
-    #expect(abs(r.rows.first!.altDeg + 0.6) < 1e-9)
-    #expect(abs(r.rows.last!.altDeg - 0.6) < 1e-9)
-    for i in 1..<r.rows.count {
-        let d = r.rows[i].altDeg - r.rows[i - 1].altDeg
-        #expect(d > 0 && d <= 0.2 + 1e-9)
-    }
+    // The start's row comes first, as two half-rows both leaving the start.
+    #expect(r.rows[0] == RasterSearch.Row(altDeg: 0, fromAzDeg: 0, toAzDeg: -1.0))
+    #expect(r.rows[1] == RasterSearch.Row(altDeg: 0, fromAzDeg: 0, toAzDeg: 1.0))
 
-    // Each row sweeps the full width, and the path is serpentine: a row
-    // starts where the previous one ended (no wasted return travel).
-    for (i, row) in r.rows.enumerated() {
-        #expect(abs(abs(row.fromAzDeg) - 1.0) < 1e-9 && abs(abs(row.toAzDeg) - 1.0) < 1e-9)
-        #expect(row.fromAzDeg != row.toAzDeg)
-        if i > 0 { #expect(abs(row.fromAzDeg - r.rows[i - 1].toAzDeg) < 1e-9) }
+    // Then rows alternate up and down, each one further out: 0, +1, −1, +2, …
+    let alts = r.rows.dropFirst().map(\.altDeg)
+    #expect(alts.count == 7)
+    let expected = [0.0, 0.2, -0.2, 0.4, -0.4, 0.6, -0.6]
+    for (a, e) in zip(alts, expected) { #expect(abs(a - e) < 1e-9, "\(alts)") }
+
+    // Rows span the full height, spaced no more than asked.
+    let sorted = Set(alts.map { ($0 * 1e6).rounded() }).sorted()
+    #expect(abs(sorted.first! / 1e6 + 0.6) < 1e-9 && abs(sorted.last! / 1e6 - 0.6) < 1e-9)
+    for i in 1..<sorted.count { #expect((sorted[i] - sorted[i - 1]) / 1e6 <= 0.2 + 1e-9) }
+
+    // After the start's row every row sweeps the full width and starts where
+    // the previous one ended (no return pass).
+    for i in 2..<r.rows.count {
+        let row = r.rows[i]
+        #expect(abs(abs(row.fromAzDeg) - 1.0) < 1e-9 && abs(row.toAzDeg + row.fromAzDeg) < 1e-9)
+        #expect(abs(row.fromAzDeg - r.rows[i - 1].toAzDeg) < 1e-9)
     }
 }
 
-@Test func aShortRegionIsASingleRow() {
+@Test func aShortRegionIsASingleRowThroughTheStart() {
     let r = RasterSearch(halfWidthDeg: 1.5, halfHeightDeg: 0.05, rowSpacingDeg: 0.2)
-    #expect(r.rows.count == 1)
-    #expect(r.rows[0].altDeg == 0)
-    #expect(r.rows[0].fromAzDeg == -1.5 && r.rows[0].toAzDeg == 1.5)
+    #expect(r.rows.allSatisfy { $0.altDeg == 0 })
+    #expect(r.rows.map(\.fromAzDeg) == [0, 0])
+    #expect(r.rows.map(\.toAzDeg) == [-1.5, 1.5])
 }
 
 // MARK: - Blob

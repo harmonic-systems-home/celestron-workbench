@@ -80,7 +80,8 @@ In order, each step usable before the next exists:
    (simple, robust); auto-detect later.
    - **Spiral** (`SpiralSearch`): an expanding square of small, self-terminating
      gotos — step-and-shoot. Best for a fine search over a small area.
-   - **Raster** (`RasterSearch`): a serpentine of rows **swept** at a moderate
+   - **Raster** (`RasterSearch`): a serpentine of rows, run from the start's row
+     outward (Amendment 3), **swept** at a moderate
      rate, grabbing frames as fast as the camera allows — fewer, longer moves
      cover a wide area quickly. Best when the uncertainty is large; it avoids a
      spiral's many short gotos.
@@ -206,3 +207,23 @@ was saved `lit: true`), and the plan was centred on Here.
 
 All of this stays within the attended minimal motion profile: short,
 self-terminating gotos with the operator at the mount.
+
+## Amendment 3 — the raster searches from the start outward (2026-11-18)
+
+The raster began at the box's bottom corner (−W, −H) and worked up row by row, so
+it searched the least likely place first: the Moon is almost always at or near
+where the spotting scope left the mount. Its first move was also its longest.
+
+- **Rows run from the start outward**: the start's row, then one row up, one
+  down, two up, two down, and so on. There is always a row through the start.
+- **The start's row begins at the start.** The first frame is taken before any
+  move. The row sweeps out to −W, jumps back (half a row, the only ground crossed
+  twice), and sweeps out to +W. Each later row begins at the end where the last
+  one finished, so rows still alternate direction with no return pass. Each place
+  is shot once.
+- The row-to-row altitude jumps grow (1, 2, 3, … spacings). That costs a little
+  altitude travel on a full, fruitless search. In the common case the search ends
+  in the first two or three rows: in the simulator, a target one row above the
+  start is found in 10 stops instead of 33.
+
+The spiral already started at the current position, so it is unchanged.

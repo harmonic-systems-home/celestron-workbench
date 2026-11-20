@@ -10,9 +10,13 @@ import Foundation
 /// by about `rowSpacingDeg`. Set the spacing below the target's *detectable*
 /// width, which can be **wider than the camera's field** — the Moon's glow
 /// shows in frame before its disk does — so no gap between rows can hide it.
-/// Rows alternate direction, so the drive goes to the first row's near end,
-/// sweeps to the far end, steps up one row, sweeps back, and so on — no wasted
-/// return travel.
+/// The Moon is almost always at or near where the search starts, so the rows
+/// run **from the start outward**: the start's own row first, then one row up,
+/// one down, two up, two down, and so on. There is always a row through the
+/// start. That row begins *at* the start, sweeps out to one end, then jumps
+/// back across to sweep the other half (that one jump, half a row, is the only
+/// ground crossed twice). Every later row begins at the end where the
+/// previous one finished, so rows alternate direction with no return pass.
 ///
 /// Offsets are from where the search started, in mount-axis degrees.
 public struct RasterSearch: Sendable, Equatable {
@@ -35,6 +39,8 @@ public struct RasterSearch: Sendable, Equatable {
     /// The requested row spacing; the actual spacing is this or a little less,
     /// so the rows span the full height evenly.
     public let rowSpacingDeg: Double
+    /// The ordered rows, nearest the start first. The start's row comes as
+    /// two half-rows, both beginning at the start (azimuth 0).
     public let rows: [Row]
 
     /// `halfWidthDeg`/`halfHeightDeg`: half the azimuth/altitude extent to
@@ -48,25 +54,30 @@ public struct RasterSearch: Sendable, Equatable {
         self.halfHeightDeg = halfHeightDeg
         self.rowSpacingDeg = rowSpacingDeg
 
-        let count: Int
-        let spacing: Double
+        // Rows at k·spacing for k = 0, +1, −1, +2, −2, …, ±n: an odd count,
+        // centred on the start, spaced no more than asked and spanning the
+        // full height.
+        let n: Int
         if halfHeightDeg <= 1e-9 || 2 * halfHeightDeg <= rowSpacingDeg {
-            count = 1
-            spacing = 0
+            n = 0
         } else {
-            count = Int((2 * halfHeightDeg / rowSpacingDeg).rounded(.up)) + 1
-            spacing = 2 * halfHeightDeg / Double(count - 1)
+            n = Int((halfHeightDeg / rowSpacingDeg - 1e-9).rounded(.up))
         }
+        let spacing = n == 0 ? 0 : halfHeightDeg / Double(n)
+        var order = [0]
+        for k in stride(from: 1, through: n, by: 1) { order += [k, -k] }
 
-        var rows: [Row] = []
-        for i in 0..<count {
-            let alt = count == 1 ? 0 : -halfHeightDeg + Double(i) * spacing
-            let leftToRight = i % 2 == 0
-            rows.append(
-                Row(
-                    altDeg: alt,
-                    fromAzDeg: leftToRight ? -halfWidthDeg : halfWidthDeg,
-                    toAzDeg: leftToRight ? halfWidthDeg : -halfWidthDeg))
+        // The start's row, in two halves: out to −W from the start, then
+        // (one jump back) out to +W. Later rows run from the end the
+        // previous row finished at.
+        var rows = [
+            Row(altDeg: 0, fromAzDeg: 0, toAzDeg: -halfWidthDeg),
+            Row(altDeg: 0, fromAzDeg: 0, toAzDeg: halfWidthDeg),
+        ]
+        if halfWidthDeg <= 1e-9 { rows = [Row(altDeg: 0, fromAzDeg: 0, toAzDeg: 0)] }
+        for k in order.dropFirst() {
+            let end = rows.last!.toAzDeg
+            rows.append(Row(altDeg: Double(k) * spacing, fromAzDeg: end, toAzDeg: -end))
         }
         self.rows = rows
     }

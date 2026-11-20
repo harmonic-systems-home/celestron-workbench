@@ -107,6 +107,40 @@ func aRasterSearchFindsABrightTargetOnTheSimulator() async throws {
     #expect(abs(wrap180(at[0] - targetAz)) < 0.12, "az \(at[0]) vs \(targetAz)")
 }
 
+/// The raster searches from the start outward (track 2, 2b): a target one row
+/// above the start is found on the second row swept, not after a trip to the
+/// far edge and back up through the box.
+@Test(.timeLimit(.minutes(3)))
+func theRasterSearchesOutwardFromTheStart() async throws {
+    let camera = FakeCamera(
+        width: 320, height: 240, scale: 1.0, rotationDeg: 0, moonRadiusArcsec: 200)
+    let (mount, session) = try await simulatedSession(camera)
+    let start = try #require(try mount.status().positionsDeg)
+    let found: @Sendable (Blob.Found?) -> Bool = {
+        ($0?.peak ?? 0) >= 120 && ($0?.brightFraction ?? 0) > 0.15
+    }
+
+    // A target at the start is found at the very first stop, with no move.
+    camera.provider = aimAt(mount, targetAz: start[0], targetAlt: start[1])
+    let here = try await session.searchRaster(
+        halfWidthDeg: 0.3, halfHeightDeg: 0.3, rowSpacingDeg: 0.1, captureStepDeg: 0.1,
+        found: found)
+    #expect(here.found && here.stops == 1, "stops \(here.stops)")
+
+    // One row up: the start's row is 7 stops (0, three out to −W, three out
+    // to +W), then the row above. The old bottom-up order took 30+.
+    let targetAz = start[0] + 0.1
+    let targetAlt = start[1] + 0.1
+    camera.provider = aimAt(mount, targetAz: targetAz, targetAlt: targetAlt)
+    let outcome = try await session.searchRaster(
+        halfWidthDeg: 0.3, halfHeightDeg: 0.3, rowSpacingDeg: 0.1, captureStepDeg: 0.1,
+        found: found)
+    #expect(outcome.found)
+    #expect(outcome.stops <= 14, "stops \(outcome.stops)")
+    let at = try #require(outcome.atAzAltDeg)
+    #expect(abs(at[1] - targetAlt) < 0.06, "alt \(at[1]) vs \(targetAlt)")
+}
+
 /// The app's simulate dry-run (ADR 0022): with the large simulate camera and
 /// the default search params, an off-centre Moon-sized target — anchored where
 /// the app puts it (start + 0.4°, 0.25°) — is still hunted down, so the no-scope

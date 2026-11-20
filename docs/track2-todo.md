@@ -29,6 +29,8 @@ operator-present, under the minimal motion profile.
      planning as a self-check.
 
 2b. **Search from the current row outward, not from the far edge.**
+   **Status: implemented 2026-11-18, ADR 0022 amendment 3. Simulator-tested; awaiting a
+   night on the real mount.** (The spiral already started at the current position.)
    - Why: the raster/survey search currently drives to the far edge of the scan
      range and works up/across — it searches the *least likely* location first. The
      Moon is almost always at or near the current pointing.
