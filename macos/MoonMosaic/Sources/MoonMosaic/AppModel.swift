@@ -116,6 +116,20 @@ final class AppModel: ObservableObject {
     @Published private(set) var searchProgress: SearchProgress?
     /// The mount's axis positions (degrees), as last read.
     @Published private(set) var positionDeg: [Double]?
+    /// The mount's tracking rates while it tracks (deg/s), else nil.
+    @Published private(set) var mountTrackingRates: [Double]?
+
+    /// What the mount is doing about the sky, for the status line:
+    /// tracking, drifting (tracking paused on purpose), moving, or not.
+    var trackingStatus: (symbol: String, text: String, kind: Int) {
+        if mountState == "Moving" || mountState == "Stopping" { return ("arrow.up.and.down.and.arrow.left.and.right", "Moving", 2) }
+        if let r = mountTrackingRates {
+            let rate = hypot(r[0], r[1]) * 3600
+            return ("scope", following ? String(format: "Tracking, following (%.0f″/s)", rate) : String(format: "Tracking (%.0f″/s)", rate), 0)
+        }
+        if busy == "Orienting camera" { return ("wind", "Drifting: tracking paused to measure", 1) }
+        return ("pause.circle", "Not tracking", 3)
+    }
     /// The frame's middle at full resolution, its sharpness (averaged over
     /// the last few frames), and the best seen since the last reset.
     @Published private(set) var focusImage: CGImage?
@@ -1085,7 +1099,7 @@ final class AppModel: ObservableObject {
     }
 
     func calibrate() {
-        perform("Calibrating", step: .orientCamera, resumeHold: true) { try await $0.calibrate() }
+        perform("Orienting camera", step: .orientCamera) { try await $0.orientCamera() }
     }
 
     func findCentre() {
@@ -1283,6 +1297,7 @@ final class AppModel: ObservableObject {
             mountState = s.state
             altitude = s.altitudeDeg
             positionDeg = s.positionsDeg
+            mountTrackingRates = s.tracking
             undoDepth = session?.follow.undoDepth ?? 0
             if let b = s.battery { checkBattery(b) }
             latchedReason = s.state == "FaultLatched" ? (s.lastFault?.detail ?? "a fault") : nil

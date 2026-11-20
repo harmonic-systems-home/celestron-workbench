@@ -116,7 +116,7 @@ public final class MosaicSession: @unchecked Sendable {
     public func panSky(for pixel: PixelOffset) -> SkyOffset { sky(for: pixel, searchOrientation) }
     public private(set) var settings: MosaicSettings
     public private(set) var here: Here?
-    public private(set) var calibration: CameraCalibration?
+    public internal(set) var calibration: CameraCalibration?
     /// The survey's fit, once the centre has been found.
     public private(set) var centreFit: MoonCentre.Fit?
     /// The survey's sunlit cells, relative to the Moon's centre.
@@ -1134,7 +1134,7 @@ public final class MosaicSession: @unchecked Sendable {
     }
 
     /// Saves frames as 8-bit PGM under `diagnostics/sub`. Never fails a step.
-    private func keep(_ frames: [(String, Frame)], in sub: String) {
+    func keep(_ frames: [(String, Frame)], in sub: String) {
         guard let diagnostics else { return }
         let dir = diagnostics.appendingPathComponent(sub)
         do {
@@ -1159,7 +1159,7 @@ public final class MosaicSession: @unchecked Sendable {
     }
 
     /// Appends one JSON line to `diagnostics/sub/records.ndjson`.
-    private func note(_ sub: String, _ record: [String: Any]) {
+    func note(_ sub: String, _ record: [String: Any]) {
         guard let diagnostics else { return }
         let dir = diagnostics.appendingPathComponent(sub)
         let url = dir.appendingPathComponent("records.ndjson")

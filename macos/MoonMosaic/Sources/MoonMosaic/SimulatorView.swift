@@ -122,6 +122,9 @@ struct SimulatorView: View {
                 Slider(value: $sim.glowLevel, in: 0...0.2, step: 0.01) {
                     Text(String(format: "Glow %.2f", sim.glowLevel))
                 }
+                Slider(value: $sim.shakeArcsec, in: 0...60, step: 5) {
+                    Text(String(format: "Shake after moves %.0f″", sim.shakeArcsec))
+                }
             }
         }
         .formStyle(.grouped)

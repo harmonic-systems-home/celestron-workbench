@@ -164,6 +164,12 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 10) {
             VStack(alignment: .leading, spacing: 3) {
                 Text(model.mountState).font(.system(size: 22, weight: .semibold, design: .rounded))
+                if model.connected {
+                    let t = model.trackingStatus
+                    Label(t.text, systemImage: t.symbol)
+                        .font(.system(size: 15, weight: .semibold, design: .rounded))
+                        .foregroundStyle([Color.green, Color.orange, Color.blue, palette.dim][t.kind])
+                }
                 if let alt = model.altitude {
                     Text(String(format: "Tube altitude %.2f°", alt)).foregroundStyle(palette.dim)
                 }
@@ -226,7 +232,7 @@ struct ContentView: View {
                 }
                 Text("Find sets Here by itself; press Here after centring by hand. Lock holds a fixed aim.")
                     .font(.system(size: 12, design: .rounded)).foregroundStyle(palette.dim)
-                button("Orient camera", enabled: model.hereSet && model.busy == nil) {
+                button("Orient camera", enabled: model.connected && model.busy == nil) {
                     model.calibrate()
                 }
                 button(
@@ -267,8 +273,7 @@ struct ContentView: View {
     /// (ADR 0022). Click a spot in the camera view to recentre there.
     private var searchControls: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Toggle(isOn: $model.testMode) {
-                Picker("Sky", selection: $model.searchSky) {
+            Picker("Sky", selection: $model.searchSky) {
                 Text("Auto").tag("auto")
                 Text("Clear night").tag(Blob.Sky.clearNight.rawValue)
                 Text("Cloudy night").tag(Blob.Sky.cloudyNight.rawValue)
@@ -283,7 +288,8 @@ struct ContentView: View {
                     .font(.system(size: 13, design: .rounded))
             }
             .disabled(model.searching)
-            Text("Test mode (drainpipe) — no tracking")
+            Toggle(isOn: $model.testMode) {
+                Text("Test mode (drainpipe) — no tracking")
                     .font(.system(size: 13, design: .rounded))
             }
             .toggleStyle(.switch)
@@ -342,7 +348,7 @@ struct ContentView: View {
                 .buttonStyle(BigButton(palette: palette))
                 .frame(minHeight: 40)
                 .disabled(!(on && model.hereSet)).opacity(on && model.hereSet ? 1 : 0.35)
-            Toggle("Fine", isOn: $fineP).toggleStyle(.checkbox)
+            Toggle("Fine", isOn: $fineP).toggleStyle(.checkbox).fixedSize()
         }
     }
 

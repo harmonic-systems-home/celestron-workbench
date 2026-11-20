@@ -21,6 +21,12 @@ public final class SimCamera: Camera, @unchecked Sendable {
         public var glowArcsec: Double = 300
         /// Light let through (1 clear; thin cloud 0.3–0.8).
         public var transmission: Double = 1
+        /// Shake after a move: the tube rings at `shakeHz`, dying away over
+        /// `shakeSeconds`, starting at up to `shakeArcsec` (bigger after a
+        /// faster move) along the move's direction. 0 for none.
+        public var shakeArcsec: Double = 20
+        public var shakeHz: Double = 2
+        public var shakeSeconds: Double = 0.8
         public init() {}
     }
 
@@ -36,6 +42,11 @@ public final class SimCamera: Camera, @unchecked Sendable {
     private var nextFrame = Date.distantPast
     private var frameCount: UInt64 = 0
     private var lastPointing: (time: Date, x: Double, y: Double)?
+    /// The last move's end, for the shake: when, how hard, which way.
+    private var moving = false
+    private var peakSpeed = 0.0
+    private var moveDirection = (x: 0.0, y: 0.0)
+    private var shakeStart: (time: Date, amplitude: Double, x: Double, y: Double)?
     private var fixedPattern: [Float] = []
     private var hot: [Int] = []
     private let seed: UInt64
@@ -165,7 +176,7 @@ public final class SimCamera: Camera, @unchecked Sendable {
         // Seeing: this frame's blur and its tip-tilt.
         let seeing = c.seeingArcsec * (0.75 + 0.5 * rng.uniform())
         let jitter = (0.3 * c.seeingArcsec * rng.gaussian(), 0.3 * c.seeingArcsec * rng.gaussian())
-        let p = (x: p0.x - focus.shift.x + jitter.0, y: p0.y - focus.shift.y + jitter.1)
+        var p = (x: p0.x - focus.shift.x + jitter.0, y: p0.y - focus.shift.y + jitter.1)
         // Motion over the exposure, from the last frame's pointing.
         var velocity = (x: 0.0, y: 0.0)
         lock.withLock {
@@ -175,7 +186,33 @@ public final class SimCamera: Camera, @unchecked Sendable {
             }
             lastPointing = (taken, p0.x, p0.y)
             history.append(p)
+            // A move ends when the pointing slows below 20″/s after going
+            // faster than 40″/s; the shake starts then.
+            let speed = hypot(velocity.x, velocity.y)
+            if speed > 40 {
+                if !moving { peakSpeed = 0 }
+                moving = true
+                if speed > peakSpeed {
+                    peakSpeed = speed
+                    moveDirection = (velocity.x / speed, velocity.y / speed)
+                }
+            } else if moving, speed < 20 {
+                moving = false
+                let a = min(c.shakeArcsec, c.shakeArcsec * peakSpeed / 1800)
+                if a > 0 { shakeStart = (taken, a, moveDirection.x, moveDirection.y) }
+            }
         }
+        // The ringing, added to where the image falls.
+        var shake = (x: 0.0, y: 0.0)
+        if let s = lock.withLock({ shakeStart }), c.shakeSeconds > 0 {
+            let dt = taken.timeIntervalSince(s.time)
+            if dt < 5 * c.shakeSeconds {
+                let amp = s.amplitude * exp(-dt / c.shakeSeconds) * cos(2 * .pi * c.shakeHz * dt)
+                shake = (amp * s.x, amp * s.y)
+            }
+        }
+        p = (x: p.x + shake.x, y: p.y + shake.y)
+        let pFinal = p
         let (w, h) = (o.sensor.width, o.sensor.height)
         let scale = o.arcsecPerPixel / focus.scale
         let exposureS = Double(exposure) / 1e6
@@ -223,8 +260,8 @@ public final class SimCamera: Camera, @unchecked Sendable {
                             // Taps spread the pointing along the motion.
                             let f = taps == 1 ? 0 : (Double(tap) / Double(taps - 1) - 0.5) * exposureS
                             let u0 = -Double(w) / 2
-                            var qx = p.x + vel.x * f + qxu * u0 + qxv * v
-                            var qy = p.y + vel.y * f + qyu * u0 + qyv * v
+                            var qx = pFinal.x + vel.x * f + qxu * u0 + qxv * v
+                            var qy = pFinal.y + vel.y * f + qyu * u0 + qyv * v
                             var (sx, sy) = toScene(qx, qy)
                             for x in 0..<w {
                                 // Bilinear sample of the scene (0 off its edge).

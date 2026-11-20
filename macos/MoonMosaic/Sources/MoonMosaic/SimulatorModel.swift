@@ -54,6 +54,7 @@ final class SimulatorModel: ObservableObject {
     @Published var skyLevel: Double = 0 { didSet { applyConditions() } }
     @Published var transmission: Double = 1 { didSet { applyConditions() } }
     @Published var glowLevel: Double = 0.02 { didSet { applyConditions() } }
+    @Published var shakeArcsec: Double = 20 { didSet { applyConditions() } }
     @Published var seed: UInt64 = 1
     /// Where the Moon starts, from the mount's position at connect (degrees
     /// of azimuth and altitude axis).
@@ -230,6 +231,7 @@ final class SimulatorModel: ObservableObject {
         c.skyLevel = skyLevel
         c.transmission = transmission
         c.glowLevel = glowLevel
+        c.shakeArcsec = shakeArcsec
         camera?.conditions = c
     }
 
