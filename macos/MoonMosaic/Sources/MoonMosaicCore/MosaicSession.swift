@@ -62,6 +62,8 @@ public enum MosaicEvent: Sendable {
     case tile(Int, TileState)
     /// Where a search is in its pattern, for the search map.
     case search(SearchProgress)
+    /// What the running step is doing now (nil when done), for the status.
+    case detail(String?)
 }
 
 /// A search's pattern and how far it has got (degrees from where it started,
@@ -81,6 +83,8 @@ public struct SearchProgress: Sendable {
     /// The pattern moves with the Moon: positions are drawn relative to it.
     public let followsMoon: Bool
     public let finished: Bool
+    /// A caption in place of "Stop n of m" (the sweep's rows).
+    public var caption: String? = nil
 }
 
 public struct MosaicError: Error, CustomStringConvertible {
@@ -855,7 +859,11 @@ public final class MosaicSession: @unchecked Sendable {
     /// further than `surveyReach` Moon radii from Here.
     @discardableResult
     public func findCentre() async throws -> MoonCentre.Fit {
-        guard let calibration, let here else { throw MosaicError(description: "Calibrate first.") }
+        guard calibration != nil else { throw MosaicError(description: "Orient the camera first.") }
+        // The Moon is in view (Orient Camera needed it): tie the encoders to
+        // the sky here if nothing has yet (centred by hand, say).
+        if here == nil { try await markHere() }
+        guard let calibration, let here else { throw MosaicError(description: "Orient the camera first.") }
         let radius = here.moon.diameterDeg / 2 * 3600
         let reach = settings.surveyReach * radius
         // Frames 1.4 frames apart over a circle of `reach`: the fit needs
@@ -976,7 +984,7 @@ public final class MosaicSession: @unchecked Sendable {
     /// `allowWithoutCentre`: the app asks the operator first.
     @discardableResult
     public func makePlan(allowWithoutCentre: Bool = false) throws -> MosaicPlan {
-        guard let calibration, let here else { throw MosaicError(description: "Calibrate first.") }
+        guard let calibration, let here else { throw MosaicError(description: "Orient the camera and the Moon first.") }
         guard centreFit != nil || allowWithoutCentre else {
             throw MosaicError(
                 description:

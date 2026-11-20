@@ -28,7 +28,7 @@ extension MosaicSession {
         let oa = offset(of: a.1, at: a.0)
         let ob = offset(of: b.1, at: b.0)
         let alt = Self.moonAxes(at: b.0, settings.site).alt
-        return SkyOffset(x: wrap180(ob.az - oa.az) * cos(alt * .pi / 180) * 3600, y: (ob.alt - oa.alt) * 3600)
+        return SkyOffset(x: wrap180(ob.az - oa.az) * cos(alt * .pi / 180) * 3600, y: wrap180(ob.alt - oa.alt) * 3600)
     }
 
     @discardableResult
@@ -83,6 +83,11 @@ extension MosaicSession {
             let t0 = Date()
             let step = settings.driftSeconds / Double(settings.driftFrames)
             for n in 0...settings.driftFrames {
+                onEvent(
+                    .detail(
+                        String(
+                            format: "Drifting (tracking paused): frame %d of %d, %.0f s left", n + 1,
+                            settings.driftFrames + 1, Double(settings.driftFrames - n) * step)))
                 let wait = t0.addingTimeInterval(Double(n) * step).timeIntervalSinceNow
                 if wait > 0 { try await Task.sleep(for: .seconds(wait)) }
                 let f = try await grabFrame()
@@ -108,6 +113,7 @@ extension MosaicSession {
                 }
             }
             // 2. Back, tracking.
+            onEvent(.detail("Back to where it was, tracking again"))
             try await back(to: home)
             guard used >= 2, hypot(dPx.x, dPx.y) > 10 else {
                 why = "the drift couldn't be followed (\(used) of \(settings.driftFrames) steps matched)"
@@ -134,6 +140,7 @@ extension MosaicSession {
             let mirrored = candidates.first { $0.mirrored } ?? candidates[1]
 
             // 3. One nudge across the drift, about an eighth of the frame.
+            onEvent(.detail("One nudge across the drift, to tell mirrored from direct"))
             let size = 0.12 * short * scale
             let n = hypot(dSky.x, dSky.y)
             let across = SkyOffset(x: -dSky.y / n * size, y: dSky.x / n * size)
@@ -151,7 +158,9 @@ extension MosaicSession {
             let expected = hypot(nSky.x, nSky.y) / scale
             let shift = Registration.shift(from: f0, to: f1, minShift: max(6, 0.25 * expected))
             // 4. Back again.
+            onEvent(.detail("Back again"))
             try await back(to: home)
+            onEvent(.detail(nil))
 
             func error(_ m: CameraCalibration) -> Double {
                 let q = m.image(for: nSky)

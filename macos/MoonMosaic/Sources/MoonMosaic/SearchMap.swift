@@ -110,9 +110,9 @@ struct SearchMap: View {
                     Path(CGRect(x: c.x - w / 2, y: c.y - h / 2, width: w, height: h)), with: .color(.red),
                     lineWidth: 1.5)
             }
-            let label = progress.finished
+            let label = progress.caption ?? (progress.finished
                 ? "Search finished: \(progress.visited.count) of \(progress.pattern.count) stops"
-                : "Stop \(progress.visited.count) of \(progress.pattern.count)"
+                : "Stop \(progress.visited.count) of \(progress.pattern.count)")
             ctx.draw(
                 Text(label).font(.system(size: 11)).foregroundColor(.white), at: CGPoint(x: 6, y: 4),
                 anchor: .topLeading)

@@ -19,7 +19,7 @@ struct SimulatorView: View {
                     .background(Color.black)
                     .clipShape(RoundedRectangle(cornerRadius: 6))
                 Text(
-                    "Moon-centred: x along azimuth, y along altitude. The rectangle is the search area around where the mount started; the box is the camera's frame; the line is its path."
+                    "The sky as seen by eye: x along azimuth, y up. The rectangle is the search area, the box the camera's frame (its top edge orange), the line its path. With a star diagonal the camera's image is mirrored left to right against this view, as through the eyepiece."
                 )
                 .font(.caption).foregroundStyle(.secondary)
             }

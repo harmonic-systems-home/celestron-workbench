@@ -114,6 +114,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var frameStats: FrameStats?
     /// The running (or last) search's pattern and progress, for its map.
     @Published private(set) var searchProgress: SearchProgress?
+    /// What the running step is doing right now (its phase), if it says.
+    @Published private(set) var stepDetail: String?
     /// The mount's axis positions (degrees), as last read.
     @Published private(set) var positionDeg: [Double]?
     /// A long goto in progress: done fraction, seconds left, size, axis.
@@ -129,7 +131,7 @@ final class AppModel: ObservableObject {
             let rate = hypot(r[0], r[1]) * 3600
             return ("scope", following ? String(format: "Tracking, following (%.0f″/s)", rate) : String(format: "Tracking (%.0f″/s)", rate), 0)
         }
-        if busy == "Orienting camera" { return ("wind", "Drifting: tracking paused to measure", 1) }
+        if busy == "Orienting the camera" { return ("wind", "Drifting: tracking paused to measure", 1) }
         return ("pause.circle", "Not tracking", 3)
     }
     /// The frame's middle at full resolution, its sharpness (averaged over
@@ -438,6 +440,7 @@ final class AppModel: ObservableObject {
         searchStop.value = true
         searching = false
         searchTask = nil
+        stepDetail = nil
         stopHold()
         stopLive()
         try? mount?.stop()
@@ -539,7 +542,13 @@ final class AppModel: ObservableObject {
         }
         let truth = simulator.truth
         let provider: @Sendable () -> (x: Double, y: Double) = { [weak mount] in
-            guard let p = try? mount?.status().positionsDeg else { return (1e6, 1e6) }
+            guard let st = try? mount?.status(), var p = st.positionsDeg else { return (1e6, 1e6) }
+            // The camera sees where the mount is now, not where it was at the
+            // last read: carry a tracking mount forward by the read's age (a
+            // sweep at 1.3°/s moves 0.3° between reads).
+            if let r = st.tracking, let age = st.positionsAgeMs, r.count == 2 {
+                p = [p[0] + r[0] * Double(age) / 1000, p[1] + r[1] * Double(age) / 1000]
+            }
             var targetAz = anchorAz
             var targetAlt = anchorAlt
             let altForCos: Double
@@ -618,6 +627,7 @@ final class AppModel: ObservableObject {
             await MainActor.run {
                 guard let self else { return }
                 self.busy = nil
+                self.stepDetail = nil
                 self.finishAt = nil
                 self.sync()
                 if ok && ((resumeHold && wasHolding) || holdAfter) && !self.holding {
@@ -1072,7 +1082,7 @@ final class AppModel: ObservableObject {
     }
 
     func calibrate() {
-        perform("Orienting camera", step: .orientCamera) { try await $0.orientCamera() }
+        perform("Orienting the camera", step: .orientCamera) { try await $0.orientCamera() }
     }
 
     func findCentre() {
@@ -1250,6 +1260,7 @@ final class AppModel: ObservableObject {
             }
             if case .failed(let why) = state { say("Tile \(id) failed: \(why)") }
         case .search(let p): searchProgress = p
+        case .detail(let d): stepDetail = d
         }
     }
 

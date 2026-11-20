@@ -68,7 +68,8 @@ extension MosaicSession {
 
     func offset(of p: [Double], at time: Date) -> FollowState.Offset {
         let m = Self.moonAxes(at: time, settings.site)
-        return FollowState.Offset(az: wrap180(p[0] - m.az), alt: p[1] - m.alt)
+        // Both wrapped: before Here the altitude encoder can read near 360.
+        return FollowState.Offset(az: wrap180(p[0] - m.az), alt: wrap180(p[1] - m.alt))
     }
 
     // MARK: Requests (from the app, while the follow loop runs)
@@ -218,7 +219,17 @@ extension MosaicSession {
     /// searching.
     func rateMove(to target: (az: Double, alt: Double), speedDegS: Double = 1.5) async throws {
         if (try? mount.status().state) == "Armed" { endStep() }
-        let p = try await freshPosition()
+        // Where the mount is now: the last read carried forward at the
+        // tracking rates by its age. Right after a sweep the last read can
+        // be a quarter second old at 1.4°/s (2026-11-20: a column started
+        // 0.6° off). A moment first for the mount to come back to the
+        // Moon's rate.
+        try await Task.sleep(for: .milliseconds(250))
+        var p = try await freshPosition()
+        if let st = try? mount.status(), let q = st.positionsDeg, let age = st.positionsAgeMs {
+            let r = st.tracking ?? [0, 0]
+            p = [q[0] + r[0] * Double(age) / 1000, q[1] + r[1] * Double(age) / 1000]
+        }
         let alt = Self.moonAxes(at: clock(), settings.site).alt
         let dAz = wrap180(target.az - p[0])
         let dAlt = target.alt - p[1]

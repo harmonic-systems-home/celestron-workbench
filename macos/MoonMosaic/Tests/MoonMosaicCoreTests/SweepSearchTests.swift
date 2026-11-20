@@ -6,7 +6,7 @@ import Testing
 /// The sweep search (ADR 0022 amendment 7) on the simulated mount and
 /// camera: rows as single moves with the video watched, the Moon out of view
 /// at the start, found and stepped onto, riding on the Moon's motion.
-@Test(.timeLimit(.minutes(3)))
+@Test(.timeLimit(.minutes(1)))
 func sweepSearchFindsTheMoonFromStreamingVideo() async throws {
     let site = Site(latitudeDeg: 40, longitudeDeg: -100)
     var t = Date(timeIntervalSince1970: 1_793_491_200)
@@ -35,7 +35,8 @@ func sweepSearchFindsTheMoonFromStreamingVideo() async throws {
     let p0 = try await session.freshPosition()
     let o0 = session.offset(of: p0, at: clock())
     camera.provider = { [weak session] in
-        guard let session, let p = try? session.mount.status().positionsDeg else { return (1e6, 1e6) }
+        guard let session, let st = try? session.mount.status(), var p = st.positionsDeg else { return (1e6, 1e6) }
+        if let r = st.tracking, let age = st.positionsAgeMs { p = [p[0] + r[0] * Double(age) / 1000, p[1] + r[1] * Double(age) / 1000] }
         let o = session.offset(of: p, at: clock())
         let alt = Ephemeris.moon(at: clock(), from: site).horizontal.altDeg
         return (
@@ -46,11 +47,12 @@ func sweepSearchFindsTheMoonFromStreamingVideo() async throws {
     let outcome = try await session.searchSweep(
         halfWidthDeg: 2, halfHeightDeg: 1.2, converge: MosaicSession.Converge(),
         found: { Blob.looksLikeMoon($0) })
+    let ended = camera.pointing
     try? mount.stopTracking()
     let took = Date().timeIntervalSince(t0)
     print("SWEEP took \(Int(took)) s, \(outcome.stops) rows, converged \(outcome.converged)")
     #expect(outcome.found)
     #expect(outcome.converged)
-    let p = camera.pointing
-    #expect(hypot(p.x, p.y) < 1100, "ended \(p) from the Moon's centre")
+    let p = ended
+    #expect(hypot(p.x, p.y) < 600, "ended \(p) from the Moon's centre")
 }

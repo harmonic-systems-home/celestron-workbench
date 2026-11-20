@@ -192,6 +192,10 @@ struct ContentView: View {
                 }
                 Text(model.busy.map { "\($0)…" } ?? "Ready").foregroundStyle(
                     model.busy == nil ? palette.dim : palette.bright)
+                if let d = model.stepDetail {
+                    Text(d).font(.system(size: 14, weight: .semibold, design: .rounded))
+                        .foregroundStyle(palette.bright)
+                }
                 if let finish = model.finishAt {
                     Text(progress(finish: finish)).foregroundStyle(palette.text)
                 }
@@ -249,7 +253,7 @@ struct ContentView: View {
                 }
                 Text("Find sets Here by itself; press Here after centring by hand. Lock holds a fixed aim.")
                     .font(.system(size: 12, design: .rounded)).foregroundStyle(palette.dim)
-                button("Orient camera", enabled: model.connected && model.busy == nil) {
+                button("Orient Camera", enabled: model.connected && model.busy == nil) {
                     model.calibrate()
                 }
                 button(

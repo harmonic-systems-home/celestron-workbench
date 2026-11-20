@@ -38,7 +38,8 @@ func orientCameraFindsScaleTurnAndMirroring(turn: Double, diagonal: Bool) async 
     let p0 = try await session.freshPosition()
     let o0 = session.offset(of: p0, at: clock())
     camera.provider = { [weak session] in
-        guard let session, let p = try? session.mount.status().positionsDeg else { return (0, 0) }
+        guard let session, let st = try? session.mount.status(), var p = st.positionsDeg else { return (0, 0) }
+        if let r = st.tracking, let age = st.positionsAgeMs { p = [p[0] + r[0] * Double(age) / 1000, p[1] + r[1] * Double(age) / 1000] }
         let o = session.offset(of: p, at: clock())
         let alt = Ephemeris.moon(at: clock(), from: site).horizontal.altDeg
         return (

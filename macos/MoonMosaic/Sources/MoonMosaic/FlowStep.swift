@@ -13,7 +13,7 @@ enum FlowStep: Int, CaseIterable, Identifiable, Comparable {
         case .track: "Track"
         case .find: "Find"
         case .cameraSettings: "Camera & coarse focus"
-        case .orientCamera: "Orient camera"
+        case .orientCamera: "Orient Camera"
         case .orientMoon: "Orient Moon"
         case .fineFocus: "Fine focus"
         case .recheck: "Recheck"
