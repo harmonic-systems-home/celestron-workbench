@@ -224,10 +224,16 @@ public final class SimCamera: Camera, @unchecked Sendable {
         lock.withLock {
             if let last = lastPointing {
                 let dt = taken.timeIntervalSince(last.time)
-                if dt > 0.001, dt < 1 { velocity = ((p0.x - last.x) / dt, (p0.y - last.y) / dt) }
+                // Only from a frame just before: with frames far apart (a
+                // survey's, after a hop) the hop happened between them, not
+                // during this exposure (2026-11-20, the test runner: survey
+                // frames smeared by their own hop).
+                let close = max(0.1, 3 * Double(exposure) / 1e6)
+                if dt > 0.001, dt < close { velocity = ((p0.x - last.x) / dt, (p0.y - last.y) / dt) }
             }
             lastPointing = (taken, p0.x, p0.y)
             history.append(p)
+            if history.count > 4000 { history.removeFirst(2000) }
             // A move ends when the pointing slows below 20″/s after going
             // faster than 40″/s; the shake starts then.
             let speed = hypot(velocity.x, velocity.y)

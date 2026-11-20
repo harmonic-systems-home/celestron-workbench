@@ -165,3 +165,22 @@ func theSurveyRecentresHereOnACrescent() async throws {
         hypot(mid.x - sunward.pointing.x, mid.y - sunward.pointing.y) < 0.1 * 360 + 30,
         "at \(mid), planned \(sunward.pointing)")
 }
+
+/// With the phase known, the fit matches the sunlit shape, so the Moon's
+/// glow outside the limb (bright at the survey's long exposure) can't pass
+/// for Moon.
+@Test(arguments: [53.0, 90.0, 120.0])
+func theLitShapeFitIgnoresTheGlow(e: Double) throws {
+    let truth = SkyOffset(x: -420, y: 160)
+    let r = 930.0
+    let glowing = survey(centre: truth, e: e, shine: 0).map { s -> MoonCentre.Sample in
+        let d = hypot(s.sky.x - truth.x, s.sky.y - truth.y)
+        return d > r ? MoonCentre.Sample(sky: s.sky, mean: s.mean + 60 * exp(-(d - r) / 300)) : s
+    }
+    let phase = Ephemeris.Phase(
+        illuminatedFraction: (1 - cos(e * .pi / 180)) / 2, phaseAngleDeg: 180 - e, brightLimb: (1, 0),
+        brightLimbFromZenithDeg: 90)
+    let fit = try #require(MoonCentre.fit(glowing, radiusArcsec: r, searchArcsec: 1.1 * r, phase: phase))
+    #expect(hypot(fit.centre.x - truth.x, fit.centre.y - truth.y) < 25, "e \(e): found \(fit.centre)")
+    #expect(fit.agreement > 0.9, "e \(e): \(fit.agreement)")
+}

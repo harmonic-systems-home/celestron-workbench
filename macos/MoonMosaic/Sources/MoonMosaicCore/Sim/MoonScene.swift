@@ -135,7 +135,11 @@ public final class MoonScene: @unchecked Sendable {
         fake.elongationDeg = 180 - phaseAngleDeg
         try? fake.configure(exposureUs: 2000, gain: 100)
         let f = try! fake.frame(timeoutMs: 0)!
-        let pixels = f.pixels.map { Float($0) / 200 }
+        // The fake camera adds a sky of 6 counts, off the disk and on its
+        // dark side: taken out, or the survey's exposure (500× the video)
+        // makes the scene's black square blaze (2026-11-20, the test runner:
+        // the whole square saturated and the centre fit failed).
+        let pixels = f.pixels.map { Float(max(0, Int($0) - 6)) / 200 }
         return MoonScene(
             name: "synthetic-\(Int(phaseAngleDeg))", width: size, height: size, pixels: pixels,
             centre: (Double(size) / 2 + 0.5, Double(size) / 2 + 0.5), radius: radiusArcsec / scale)

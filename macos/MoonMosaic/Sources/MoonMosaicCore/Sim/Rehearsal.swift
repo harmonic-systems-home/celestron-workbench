@@ -174,6 +174,9 @@ public enum Rehearsal {
             guard
                 await step("Orient Moon", limit: 400, {
                     let fit = try await session.findCentre()
+                    if let off = session.checkRotation(), off > 30 {
+                        throw MosaicError(description: String(format: "rotation check %.0f° off", off))
+                    }
                     let p = camera.pointing
                     guard hypot(p.x, p.y) < 120 else {
                         throw MosaicError(description: String(format: "centred %.0f″ off", hypot(p.x, p.y)))

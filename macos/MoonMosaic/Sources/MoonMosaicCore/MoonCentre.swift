@@ -107,7 +107,96 @@ public enum MoonCentre {
     /// The circle of `radiusArcsec` that best fits the cells, its centre
     /// searched within `searchArcsec` of Here's centre. Nil when the survey
     /// has no lit cells or no sky.
+    ///
+    /// With `phase` (and away from full), the fit matches the sunlit cells
+    /// to the sunlit shape the ephemeris predicts (bright limb and
+    /// terminator) instead: the Moon's glow outside the limb, bright at the
+    /// survey's long exposure, then can't pass for Moon (2026-11-20, the test
+    /// runner: glow cells pulled the circle outward and failed the fit).
     public static func fit(
+        _ samples: [Sample], radiusArcsec r: Double, searchArcsec: Double, phase: Ephemeris.Phase? = nil
+    ) -> Fit? {
+        if let phase, phase.phaseAngleDeg > 15, phase.phaseAngleDeg < 165 {
+            return fitLitShape(samples, radiusArcsec: r, searchArcsec: searchArcsec, phase: phase)
+        }
+        return fitDisk(samples, radiusArcsec: r, searchArcsec: searchArcsec)
+    }
+
+    static func fitLitShape(
+        _ samples: [Sample], radiusArcsec r: Double, searchArcsec: Double, phase: Ephemeris.Phase
+    ) -> Fit? {
+        let lv = levels(samples)
+        let pts = samples.map { (x: $0.sky.x, y: $0.sky.y, moon: $0.mean >= lv.moon, lit: $0.mean >= lv.lit) }
+        let litCount = pts.filter(\.lit).count
+        let moonCount = pts.filter(\.moon).count
+        guard litCount > 0, pts.count - litCount > 0 else { return nil }
+        let (lx, ly) = phase.brightLimb
+        let c = cos(phase.phaseAngleDeg * .pi / 180)
+        let edge = 15 / r
+        /// +1 predicted lit, −1 predicted dark, 0 too near an edge to say.
+        func predicted(_ x: Double, _ y: Double) -> Int {
+            let (u, v) = (x / r, y / r)
+            let d = (u * u + v * v).squareRoot()
+            if abs(d - 1) < edge { return 0 }
+            if d > 1 { return -1 }
+            let a = u * lx + v * ly
+            let b = -u * ly + v * lx
+            let t = -c * max(0, 1 - b * b).squareRoot()
+            if abs(a - t) < 2 * edge { return 0 }
+            return a > t ? 1 : -1
+        }
+        func score(_ cx: Double, _ cy: Double) -> Double {
+            var s = 0.0
+            for p in pts {
+                switch (predicted(p.x - cx, p.y - cy), p.lit) {
+                case (1, true): s += 1
+                case (1, false): s -= 1
+                case (-1, true): s -= 2
+                case (-1, false): s += 0.3
+                default: break
+                }
+            }
+            return s
+        }
+        var best = (x: 0.0, y: 0.0, s: -Double.infinity)
+        for step in [30.0, 6.0, 1.5] {
+            let around = best.s.isFinite ? (best.x, best.y) : (0.0, 0.0)
+            let reach = best.s.isFinite ? step * 6 : searchArcsec
+            let n = Int((reach / step).rounded(.up))
+            for i in -n...n {
+                for j in -n...n {
+                    let cx = around.0 + Double(i) * step
+                    let cy = around.1 + Double(j) * step
+                    guard cx * cx + cy * cy <= searchArcsec * searchArcsec else { continue }
+                    let s = score(cx, cy)
+                    if s > best.s { best = (cx, cy, s) }
+                }
+            }
+        }
+        // Agreement: of the cells predicted lit or seen lit, the share that
+        // match. Earthshine: dark-side cells mostly above the sky.
+        var (agree, counted, darkInside, earthshineInside) = (0, 0, 0, 0)
+        for p in pts {
+            let q = predicted(p.x - best.x, p.y - best.y)
+            if q == 0 { continue }
+            if q == 1 || p.lit {
+                counted += 1
+                if (q == 1) == p.lit { agree += 1 }
+            }
+            let inside = hypot(p.x - best.x, p.y - best.y) < r - 15
+            if q == -1, inside, !p.lit {
+                if p.moon { earthshineInside += 1 } else { darkInside += 1 }
+            }
+        }
+        return Fit(
+            centre: SkyOffset(x: best.x, y: best.y),
+            agreement: counted > 0 ? Double(agree) / Double(counted) : 0,
+            moonCells: moonCount, litCells: litCount, skyCells: pts.count - moonCount,
+            earthshine: earthshineInside > darkInside, levels: lv)
+    }
+
+    /// The whole disk's circle (full Moon, or no phase given).
+    static func fitDisk(
         _ samples: [Sample], radiusArcsec r: Double, searchArcsec: Double
     ) -> Fit? {
         let lv = levels(samples)

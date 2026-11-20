@@ -199,12 +199,25 @@ extension MosaicSession {
                 let cs = column.filter(\.found)
                 print("DBG column found \(cs.count)/\(column.count) y \(cs.first?.y ?? .nan)…\(cs.last?.y ?? .nan) x \(column.first?.x ?? .nan); centre (\(centre.x), \(centre.y))")
             }
-            try await goto([centre.x, centre.y])
-            try trackMoon()
-            try await Task.sleep(for: .milliseconds(Int(max(300, settings.settleSeconds * 1000))))
-            let now = try await grabFrame()
-            let seen = Blob.find(now, thresholdFraction: 0.3)
-            guard found(seen), let seen else {
+            // To the middle; if the Moon isn't in view there (a move's
+            // error, or the middle fell on the dark side), to the brightest
+            // place either sweep saw (2026-11-20, the test runner: a few
+            // percent of searches were lost going back).
+            var seen: Blob.Found?
+            let brightest = (row + column).filter(\.found).max { $0.share < $1.share }
+            for (k, aim) in [centre, brightest].compactMap({ $0 }).enumerated() {
+                try await goto([aim.x, aim.y])
+                try trackMoon()
+                try await Task.sleep(for: .milliseconds(Int(max(300, settings.settleSeconds * 1000))))
+                let now = try await grabFrame()
+                let b = Blob.find(now, thresholdFraction: 0.3)
+                if found(b) {
+                    seen = b
+                    break
+                }
+                if k == 0 { onEvent(.message("Sweep: not in view at the middle; going to the brightest place seen.")) }
+            }
+            guard let seen else {
                 onEvent(.message("Sweep: lost it going back; carrying on with the search."))
                 continue
             }

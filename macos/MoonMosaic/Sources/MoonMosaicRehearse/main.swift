@@ -4,7 +4,7 @@ import MoonMosaicCore
 // The test runner (ADR 0022 amendment 7): the flow on the simulated mount and
 // camera for many seeded scenarios, one after another, with a JSON record.
 //
-//   swift run -c release MoonMosaicRehearse [first-seed] [count] [--tiles N] [--speed K] [--out file.json] [--verbose]
+//   swift run -c release MoonMosaicRehearse [first-seed] [count] [--tiles N] [--speed K] [--out file.json] [--keep dir] [--verbose]
 setvbuf(stdout, nil, _IOLBF, 0)
 let args = Array(CommandLine.arguments.dropFirst())
 let numbers = args.prefix { !$0.hasPrefix("--") }.compactMap { UInt64($0) }
@@ -17,6 +17,8 @@ let tiles = option("--tiles").flatMap(Int.init) ?? 2
 let speed = option("--speed").flatMap(Double.init) ?? 5
 let verbose = args.contains("--verbose")
 let out = option("--out").map { URL(fileURLWithPath: $0) }
+// Keep each scenario's frames and notes (survey, orient) under this folder.
+let keep = option("--keep").map { URL(fileURLWithPath: $0) }
 
 struct Report: Codable {
     let started: Date
@@ -34,7 +36,9 @@ for seed in first..<(first + UInt64(count)) {
         String(
             format: "seed %llu: camera %.0f°%@, Moon %.2f°, %.2f° off, seeing %.1f″", seed, s.cameraRotationDeg,
             s.diagonal ? " (diagonal)" : "", s.moonOffsetAz, s.moonOffsetAlt, s.seeingArcsec))
-    let r = await Rehearsal.run(s, speed: speed, tiles: tiles, log: { if verbose { print("    \($0)") } })
+    let dir = keep?.appendingPathComponent("seed-\(seed)")
+    if let dir { try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true) }
+    let r = await Rehearsal.run(s, speed: speed, tiles: tiles, folder: dir, log: { if verbose { print("    \($0)") } })
     for step in r.steps {
         print(String(format: "  %@ %-14@ %6.1f s  %@", step.ok ? "ok  " : "FAIL", step.name, step.seconds, step.note ?? ""))
     }

@@ -64,15 +64,19 @@ extension MosaicSession {
             }
             endStep()
             try trackMoon()
-            // Let the tube stop ringing after the goto.
-            try await Task.sleep(for: .milliseconds(max(500, Int(settings.settleSeconds * 2000))))
+            // Let the tube stop ringing after the goto. Not shortened when
+            // rehearsing faster: the ringing is the tube's, not the mount's
+            // (2026-11-20, the test runner: ringing left in the drift's first
+            // frames gave a 4% scale error).
+            try await Task.sleep(for: .milliseconds(max(1500, Int(settings.settleSeconds * 2000))))
         }
 
         var why = ""
         for attempt in 1...3 {
-            // Held on the Moon, wherever it is now.
+            // Held on the Moon, wherever it is now, and still (the last move
+            // may have just ended).
             try trackMoon()
-            try await Task.sleep(for: .milliseconds(600))
+            try await Task.sleep(for: .milliseconds(1500))
             let start = try await reading()
             let home = offset(of: start.1, at: start.0)
 

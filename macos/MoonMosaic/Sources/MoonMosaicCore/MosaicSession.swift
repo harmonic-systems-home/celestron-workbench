@@ -19,7 +19,7 @@ public struct MosaicSettings: Sendable {
     /// Calibration's drift: how long the Moon drifts untracked, and how many
     /// frame-to-frame steps it's measured in.
     public var driftSeconds: Double = 6
-    public var driftFrames: Int = 12
+    public var driftFrames: Int = 30
     /// How long each calibration move's extra tracking rate runs.
     public var calibrationMoveSeconds: Double = 4
     /// The Moon must be at least this far from the Sun.
@@ -470,7 +470,9 @@ public final class MosaicSession: @unchecked Sendable {
         let ma = Ephemeris.moon(at: a.0, from: settings.site).horizontal
         let mb = Ephemeris.moon(at: b.0, from: settings.site).horizontal
         let dAz = wrap180(b.1[0] - a.1[0]) - wrap180(mb.azDeg - ma.azDeg)
-        let dAlt = (b.1[1] - a.1[1]) - (mb.altDeg - ma.altDeg)
+        // Wrapped: the altitude encoder can read near 360 (2026-11-20, the
+        // test runner: survey frames crossing 0 were placed 360° away).
+        let dAlt = wrap180(b.1[1] - a.1[1]) - (mb.altDeg - ma.altDeg)
         return SkyOffset(x: dAz * cos(mb.altDeg * .pi / 180) * 3600, y: dAlt * 3600)
     }
 
@@ -923,18 +925,17 @@ public final class MosaicSession: @unchecked Sendable {
             // One goto, no touch-ups: where it really pointed is read below.
             onEvent(.detail("Survey frame \(i + 1) of \(stops.count)"))
             try await rateMove(to: try target(stop, at: clock()), speedDegS: 1.5)
-            // Let the tube stop ringing, then a frame and where it was.
+            let moved = Date()
+            // Let the tube stop ringing, then a read made since the move
+            // ended, then a frame, and where it was: the read carried to the
+            // frame's moment at the tracking rates.
             try await Task.sleep(for: .milliseconds(Int(max(300, settings.settleSeconds * 700))))
+            let read = try await readAfter(moved)
             let frame = try await grabFrame()
-            var t = clock()
-            var p = try await freshPosition()
-            if let st = try? mount.status(), let q = st.positionsDeg, let age = st.positionsAgeMs {
-                // The read carried to the frame's moment at the tracking rates.
-                let r = st.tracking ?? [0, 0]
-                let ahead = frame.time.timeIntervalSinceNow + Double(age) / 1000
-                p = [q[0] + r[0] * ahead, q[1] + r[1] * ahead]
-                t = clock().addingTimeInterval(frame.time.timeIntervalSinceNow)
-            }
+            let r = (try? mount.status().tracking) ?? nil ?? [0, 0]
+            let ahead = frame.time.timeIntervalSince(read.wall)
+            let p = [read.p[0] + r[0] * ahead, read.p[1] + r[1] * ahead]
+            let t = clock().addingTimeInterval(frame.time.timeIntervalSinceNow)
             // Where the camera really pointed, from the mount's own position.
             let pointing = relativeMove(from: origin, to: (t, p))
             keep([("\(surveyStamp)-\(String(format: "%02d", i))", frame)], in: "survey")
@@ -943,6 +944,8 @@ public final class MosaicSession: @unchecked Sendable {
                 [
                     "time": surveyStamp, "stop": i, "planned": [stop.x, stop.y],
                     "pointing": [pointing.x, pointing.y], "position": p,
+                    // Simulating: where the camera really pointed (from the Moon's centre).
+                    "simTruth": (camera as? SimCamera)?.history.last.map { [$0.x, $0.y] } ?? NSNull(),
                     "exposureUs": settings.surveyExposureUs, "gain": settings.surveyGain,
                 ])
             samples += MoonCentre.samples(
@@ -950,7 +953,23 @@ public final class MosaicSession: @unchecked Sendable {
                 cellPixels: Int((25 / calibration.arcsecPerPixel).rounded()))
             if (i + 1) % 10 == 0 { onEvent(.message("Survey: \(i + 1) of \(stops.count).")) }
         }
-        let fitted = MoonCentre.fit(samples, radiusArcsec: radius, searchArcsec: 1.1 * radius)
+        // The sunlit shape from the ephemeris first (glow-proof); the plain
+        // disk if that doesn't fit (the phase not as predicted: a test
+        // target, or the camera's turn wrong).
+        var fitted = MoonCentre.fit(
+            samples, radiusArcsec: radius, searchArcsec: 1.1 * radius,
+            phase: Ephemeris.phase(at: clock(), from: settings.site))
+        if (fitted?.agreement ?? 0) < 0.85,
+            let disk = MoonCentre.fit(samples, radiusArcsec: radius, searchArcsec: 1.1 * radius),
+            disk.agreement > (fitted?.agreement ?? 0)
+        {
+            onEvent(
+                .message(
+                    String(
+                        format: "Survey: the sunlit shape fitted %.0f%% of cells, the plain disk %.0f%%; using the disk.",
+                        (fitted?.agreement ?? 0) * 100, disk.agreement * 100)))
+            fitted = disk
+        }
         // The analysis, for later review: every cell and the fit's answer.
         let phaseNow = Ephemeris.phase(at: clock(), from: settings.site)
         var summary: [String: Any] = [
@@ -998,6 +1017,7 @@ public final class MosaicSession: @unchecked Sendable {
         }
         centreFit = fit
         plan = nil
+        checkRotation()
         // The aim was relative to the old Here; start again from the centre.
         aimOffset = SkyOffset(x: 0, y: 0)
         // The altitude reference was set off-centre at Here: set it again,
@@ -1018,6 +1038,31 @@ public final class MosaicSession: @unchecked Sendable {
                     fit.agreement * 100,
                     fit.earthshine ? "earthshine seen" : "no earthshine above the sky")))
         return fit
+    }
+
+    /// Orient Moon's rotation check (amendment 7): the survey's sunlit cells
+    /// lie toward the bright limb the ephemeris predicts, if the camera's
+    /// turn and mirroring are right. Away from full only (the lit part's
+    /// centroid is then well off the centre). Returns the disagreement.
+    @discardableResult
+    func checkRotation() -> Double? {
+        let phase = Ephemeris.phase(at: clock(), from: settings.site)
+        guard phase.phaseAngleDeg > 35, litSky.count >= 4 else { return nil }
+        let cx = litSky.map(\.x).reduce(0, +) / Double(litSky.count)
+        let cy = litSky.map(\.y).reduce(0, +) / Double(litSky.count)
+        guard hypot(cx, cy) > 1 else { return nil }
+        let seen = atan2(cx, cy) * 180 / .pi
+        let predicted = atan2(phase.brightLimb.x, phase.brightLimb.y) * 180 / .pi
+        let off = abs(wrap180(seen - predicted))
+        onEvent(
+            .message(
+                off < 30
+                    ? String(format: "Rotation check: the lit side is where the ephemeris puts it (%.0f° off).", off)
+                    : String(
+                        format:
+                            "Rotation check FAILED: the lit side is %.0f° from where the ephemeris puts it. Orient Camera again (mirroring or the turn is wrong).",
+                        off)))
+        return off
     }
 
     // MARK: Plan and run
@@ -1287,7 +1332,7 @@ public final class MosaicSession: @unchecked Sendable {
             let c = try target(sky, at: now)
             let limit = 0.002
             rate.az += max(-limit, min(limit, wrap180(c.az - p[0]) / 20))
-            rate.alt += max(-limit, min(limit, (c.alt - p[1]) / 20))
+            rate.alt += max(-limit, min(limit, wrap180(c.alt - p[1]) / 20))
         }
         try mount.track(azDegS: rate.az, altDegS: rate.alt)
     }
@@ -1340,7 +1385,7 @@ public final class MosaicSession: @unchecked Sendable {
             let alt = here?.moon.horizontal.altDeg ?? 45
             let error = SkyOffset(
                 x: wrap180(check.az - p[0]) * cos(alt * .pi / 180) * 3600,
-                y: (check.alt - p[1]) * 3600)
+                y: wrap180(check.alt - p[1]) * 3600)
             if hypot(error.x, error.y) <= tolerance { return }
             aim = try target(sky, at: clock().addingTimeInterval(settle + ahead + 1))
             try await goTo(az: aim.az, alt: aim.alt)
@@ -1468,6 +1513,23 @@ public final class MosaicSession: @unchecked Sendable {
             if let f = try camera.frame(timeoutMs: 1_000) { return f }
         }
         throw MosaicError(description: "No frames from the camera.")
+    }
+
+    /// A position read made after `moment` (wall clock), and when it was
+    /// made: a read from before a move ended, carried forward at the
+    /// tracking rate, misplaces the end of the move (2026-11-20, the test
+    /// runner: survey frames placed up to 200″ off). Up to `limit` seconds;
+    /// then the latest read.
+    func readAfter(_ moment: Date, limit: Double = 3) async throws -> (wall: Date, p: [Double]) {
+        let deadline = Date().addingTimeInterval(limit)
+        while true {
+            let st = try mount.status()
+            if let p = st.positionsDeg, let age = st.positionsAgeMs {
+                let made = Date().addingTimeInterval(-Double(age) / 1000)
+                if made >= moment || Date() > deadline { return (made, p) }
+            }
+            try await Task.sleep(for: .milliseconds(40))
+        }
     }
 
     func freshPosition() async throws -> [Double] {
