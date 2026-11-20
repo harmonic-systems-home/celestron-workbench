@@ -100,6 +100,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var preview: MosaicPreview?
     @Published private(set) var previewImage: CGImage?
     @Published private(set) var liveImage: CGImage?
+    /// The live frame's brightness: peak, mean, clipped, lit, Moon in view.
+    @Published private(set) var frameStats: FrameStats?
     /// The running (or last) search's pattern and progress, for its map.
     @Published private(set) var searchProgress: SearchProgress?
     /// The mount's axis positions (degrees), as last read.
@@ -457,8 +459,10 @@ final class AppModel: ObservableObject {
                 if let frame = recent == true ? camera.latest : try? camera.frame(timeoutMs: 500) {
                     let image = Imaging.image(fromFrame: frame)
                     let focus = Imaging.image(crop: Focus.crop(frame), binned: color)
+                    let stats = FrameStats(frame)
                     await MainActor.run {
                         guard let self else { return }
+                        self.frameStats = stats
                         // Score, shake-gate and record this frame (ADR 0022).
                         let sample = self.focusAid.add(frame)
                         self.liveImage = image
@@ -759,10 +763,7 @@ final class AppModel: ObservableObject {
         if test {
             found = { _ in false }
         } else {
-            // 2026-11-20 (simulator, a real gibbous image): frames near the
-            // terminator peak at only ~100 with 5–15% lit and were missed at
-            // 120 / 10%. Hot pixels alone give a peak of ~70 with nothing lit.
-            found = { ($0?.peak ?? 0) >= 60 && ($0?.brightFraction ?? 0) >= 0.05 }
+            found = { Blob.looksLikeMoon($0) }
         }
         // Automatic acquisition then steps onto the disk (track 2, 2c): the
         // first frame that passes is often only glow or a sliver of limb.

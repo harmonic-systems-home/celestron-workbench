@@ -80,3 +80,48 @@ public enum Blob {
         )
     }
 }
+
+extension Blob {
+    /// The search's test for "the Moon is in view" (night): a clear peak and
+    /// enough of the frame lit, counting pixels above 30% of the peak.
+    /// 2026-11-20 (simulator, a real gibbous image): frames near the
+    /// terminator peak at only ~100 with 5–15% lit; hot pixels alone give a
+    /// peak of ~70 with nothing lit.
+    public static func looksLikeMoon(_ b: Found?) -> Bool {
+        (b?.peak ?? 0) >= 60 && (b?.brightFraction ?? 0) >= 0.05
+    }
+}
+
+/// Brightness numbers for the live view (ADR 0022 amendment 7's Light
+/// readout): what the search's detector sees, and how the exposure sits.
+public struct FrameStats: Sendable, Equatable {
+    public let peak: Int
+    public let mean: Double
+    /// Share of pixels at 255 (clipped), and lit by the detector's rule.
+    public let clipped: Double
+    public let lit: Double
+    public let moonInView: Bool
+    /// 64-bin histogram, each bin's share of the pixels.
+    public let histogram: [Double]
+
+    public init(_ f: Frame) {
+        var hist = [Int](repeating: 0, count: 64)
+        var sum = 0
+        var top: UInt8 = 0
+        var full = 0
+        for p in f.pixels {
+            hist[Int(p) >> 2] += 1
+            sum += Int(p)
+            if p > top { top = p }
+            if p == 255 { full += 1 }
+        }
+        let n = Double(max(f.pixels.count, 1))
+        let blob = Blob.find(f, thresholdFraction: 0.3)
+        peak = Int(top)
+        mean = Double(sum) / n
+        clipped = Double(full) / n
+        lit = blob?.brightFraction ?? 0
+        moonInView = Blob.looksLikeMoon(blob)
+        histogram = hist.map { Double($0) / n }
+    }
+}

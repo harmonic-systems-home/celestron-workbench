@@ -81,6 +81,41 @@ struct ContentView: View {
         }
     }
 
+    /// The live frame's brightness (ADR 0022 amendment 7's Light readout):
+    /// what the search's detector sees, and where the exposure sits.
+    private func brightnessPanel(_ st: FrameStats) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Circle().fill(st.moonInView ? Color.green : Color.gray).frame(width: 10, height: 10)
+                Text(st.moonInView ? "Moon in view" : "No Moon").font(.system(size: 12, weight: .semibold))
+            }
+            Canvas { ctx, size in
+                let top = max(st.histogram.dropFirst().max() ?? 0.01, 0.001)
+                let w = size.width / Double(st.histogram.count)
+                for (i, v) in st.histogram.enumerated() {
+                    // Log-ish height so small lit areas show beside the dark sky.
+                    let h = min(1, sqrt(v / top)) * size.height
+                    ctx.fill(
+                        Path(CGRect(x: Double(i) * w, y: size.height - h, width: max(w - 0.5, 0.5), height: h)),
+                        with: .color(i == 63 && v > 0 ? .red : .white.opacity(0.8)))
+                }
+            }
+            .frame(width: 150, height: 50)
+            .background(Color.black.opacity(0.6))
+            Group {
+                Text("Peak \(st.peak)  mean \(String(format: "%.0f", st.mean))")
+                Text(String(format: "Lit %.0f%%  clipped %.2f%%", st.lit * 100, st.clipped * 100))
+                Text("Moon: peak ≥ 60, lit ≥ 5%").foregroundStyle(.gray)
+            }
+            .font(.system(size: 11, design: .monospaced))
+        }
+        .foregroundStyle(.white)
+        .padding(8)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.black.opacity(0.55)))
+        .padding(12)
+        .allowsHitTesting(false)
+    }
+
     /// The guided flow (ADR 0022 amendment 7): done, running and to come.
     /// Steps done by hand are marked by clicking them.
     private var flowStrip: some View {
@@ -353,6 +388,9 @@ struct ContentView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .overlay(alignment: .topTrailing) {
+                if panel == .camera, let st = model.frameStats { brightnessPanel(st) }
+            }
             .overlay {
                 if panel == .camera, model.connected, let img = model.liveImage {
                     clickToRecentre(img)
