@@ -747,9 +747,16 @@ Built and tested on the simulator; not yet tried on the telescope unless noted.
   plays Find, Here, Orient Camera, Orient Moon, Plan and a few tiles for each
   seeded scenario and writes a JSON report. Its first runs found the sweep
   asking for more than 2°/s on azimuth high up, and a 5% scale error in Orient
-  Camera from seeing at the drift's ends; both fixed.
+  Camera from seeing at the drift's ends; both fixed. Later runs found and
+  fixed: altitude differences not wrapped near 360° (survey frames placed
+  360° away), survey frames placed from a position read made during the hop
+  (up to 200″ off), the Moon's glow passing for Moon in the centre fit (now
+  fitted to the predicted sunlit shape), drift pairs too close together and
+  ringing in the drift's first frames, and three simulator faults. On
+  2026-11-20 it passed 11 of 12 scenarios: centre within 27″, scale within
+  2% in 11 (one 3.3% low, still a small bias to look into).
 - `scripts/scene-metadata.py` prepares the owner's images as CC0 scenes.
 
-Still to do: the rotation check in Orient Moon (against the ephemeris),
-Auto-set choosing the frame rate, the albedo-map check at full Moon, and the
+Orient Moon now also checks the rotation against the ephemeris's bright limb.
+Still to do: Auto-set choosing the frame rate, the albedo-map check at full Moon, and the
 bench test of keypad presses during a variable rate.
