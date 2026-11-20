@@ -50,6 +50,13 @@ final class SimulatorModel: ObservableObject {
     @Published private(set) var library: [URL] = []
     @Published var libraryScene: URL? { didSet { if sceneChoice == .library, oldValue != libraryScene { applyScene() } } }
     @Published private(set) var loadingScene = false
+    /// The chosen library scene's time and place, which set the simulated
+    /// sky at the next Connect: the ephemeris then matches the image.
+    var sceneMoment: (time: Date, site: Site?)? {
+        guard let url = libraryScene, let info = MoonScene.Info.sidecar(for: url), let t = info.taken else { return nil }
+        let site = info.latitude.flatMap { lat in info.longitude.map { Site(latitudeDeg: lat, longitudeDeg: $0) } }
+        return (t, site)
+    }
     @Published var seeingArcsec: Double = 2.5 { didSet { applyConditions() } }
     @Published var skyLevel: Double = 0 { didSet { applyConditions() } }
     @Published var transmission: Double = 1 { didSet { applyConditions() } }
@@ -91,7 +98,11 @@ final class SimulatorModel: ObservableObject {
     private var clock: @Sendable () -> Date = { Date() }
     private var timer: Timer?
 
+    /// When the session's clock started (to know a scene's moment is this one).
+    private var sessionStart = Date.distantPast
+
     func attach(_ camera: SimCamera, site: Site, clock: @escaping @Sendable () -> Date, reachDeg: Double) {
+        if !attached { sessionStart = clock() }
         let first = !attached || self.camera !== camera
         self.camera = camera
         self.site = site
@@ -103,10 +114,12 @@ final class SimulatorModel: ObservableObject {
         applyConditions()
         if first {
             refreshLibrary()
-            if let best = nearestPhase() {
+            // Keep a scene chosen before Connect (it set the clock); else the
+            // one nearest tonight's phase.
+            if libraryScene == nil, let best = nearestPhase() {
                 libraryScene = best
-                sceneChoice = .library
             }
+            if libraryScene != nil { sceneChoice = .library }
             applyScene()
             trail = []
             let p = camera.pointing
@@ -161,8 +174,13 @@ final class SimulatorModel: ObservableObject {
             let files = try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)
         else { library = []; return }
         let kinds = ["jpg", "jpeg", "png", "tif", "tiff", "heic"]
-        library = files.filter { kinds.contains($0.pathExtension.lowercased()) }
-            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+        // The folder and one level of subfolders (own images, downloads…).
+        var all = files
+        for sub in files where (try? sub.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true {
+            all += (try? FileManager.default.contentsOfDirectory(at: sub, includingPropertiesForKeys: nil)) ?? []
+        }
+        library = all.filter { kinds.contains($0.pathExtension.lowercased()) }
+            .sorted { $0.lastPathComponent.lowercased() < $1.lastPathComponent.lowercased() }
     }
 
     /// The library image whose phase (from its sidecar's time) is nearest
@@ -263,7 +281,15 @@ final class SimulatorModel: ObservableObject {
                     switch result {
                     case .success(let scene):
                         camera?.scene = scene
-                        camera?.alignBrightLimb(toDeg: limb)
+                        // A level frame at the session's own moment is the sky
+                        // as it was: no turn. Otherwise turn it so its bright
+                        // limb points where the ephemeris says.
+                        let sameMoment = scene.info.taken.map { abs($0.timeIntervalSince(self.sessionStart)) < 600 } ?? false
+                        if scene.info.level == true, sameMoment {
+                            camera?.sceneRotationDeg = 0
+                        } else {
+                            camera?.alignBrightLimb(toDeg: limb)
+                        }
                         self.brightLimbDeg = limb
                         let across = scene.radius > 0 ? (camera?.moonRadiusArcsec ?? 930) / scene.radius : 0
                         self.sceneNote = String(
@@ -277,7 +303,7 @@ final class SimulatorModel: ObservableObject {
             }
             return
         }
-        // The scene's bright limb where the ephemeris puts it tonight.
+        // The scene's bright limb where the ephemeris puts it now.
         camera.alignBrightLimb(toDeg: phase.brightLimbFromZenithDeg)
         brightLimbDeg = phase.brightLimbFromZenithDeg
     }

@@ -29,11 +29,26 @@ public final class MoonScene: @unchecked Sendable {
         public var taken: Date?
         /// Lunar north, degrees clockwise from the image's up.
         public var northDeg: Double?
+        /// Taken with the frame level (up is the zenith), as the DWARF does:
+        /// with `taken`, the image is the sky at that moment and needs no turn.
+        public var level: Bool?
+        /// Where it was taken, if known (private data only; scenes in the
+        /// repo carry whole degrees). Without it, the app's own site is used.
+        public var latitude: Double?
+        public var longitude: Double?
         public init(source: String? = nil, licence: String? = nil, taken: Date? = nil, northDeg: Double? = nil) {
             self.source = source
             self.licence = licence
             self.taken = taken
             self.northDeg = northDeg
+        }
+
+        /// Reads `<image>.json` beside an image, if there is one.
+        public static func sidecar(for url: URL) -> Info? {
+            guard let data = try? Data(contentsOf: url.appendingPathExtension("json")) else { return nil }
+            let d = JSONDecoder()
+            d.dateDecodingStrategy = .iso8601
+            return try? d.decode(Info.self, from: data)
         }
     }
 
@@ -94,13 +109,7 @@ public final class MoonScene: @unchecked Sendable {
         var pixels = grey.map { pow(Float($0) / 65535, 2.2) }
         let top = Self.percentile(pixels, 0.999)
         if top > 0 { pixels = pixels.map { min($0 / top, 1.5) } }
-        var info = Info()
-        let side = url.appendingPathExtension("json")
-        if let data = try? Data(contentsOf: side) {
-            let d = JSONDecoder()
-            d.dateDecodingStrategy = .iso8601
-            info = (try? d.decode(Info.self, from: data)) ?? Info()
-        }
+        let info = Info.sidecar(for: url) ?? Info()
         self.init(
             name: url.deletingPathExtension().lastPathComponent, width: w, height: h,
             pixels: pixels, info: info)

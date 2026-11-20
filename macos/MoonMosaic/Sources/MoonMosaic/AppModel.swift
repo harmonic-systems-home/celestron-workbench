@@ -387,7 +387,17 @@ final class AppModel: ObservableObject {
         settings.surveyGain = surveyGain
         // Rehearsing: the clock runs from the next time the Moon is high here.
         let realTime: @Sendable () -> Date = { Date() }
-        let clock = simulate ? Self.rehearsalClock(site: site) : realTime
+        // Rehearsing: from the chosen scene's moment if it has one (the sky
+        // then matches the image), else the next time the Moon is high here.
+        let moment = simulate ? simulator.sceneMoment : nil
+        let simSite = moment?.site ?? site
+        let clock =
+            simulate
+            ? (moment.map { m in Self.clock(from: m.time) } ?? Self.rehearsalClock(site: site)) : realTime
+        if let moment, simulate {
+            say("Rehearsing at the scene's moment: \(moment.time.formatted(date: .abbreviated, time: .shortened))\(moment.site == nil ? " from this site" : "").")
+        }
+        _ = simSite
         let session = MosaicSession(
             mount: mount, camera: camera, settings: settings, clock: clock,
             onEvent: { [weak self] event in
@@ -420,6 +430,12 @@ final class AppModel: ObservableObject {
             say("Hand controller time: \(s.time); site: \(s.location).")
         }
         startLive()
+    }
+
+    /// A clock running from `start`.
+    static func clock(from start: Date) -> @Sendable () -> Date {
+        let started = Date()
+        return { start.addingTimeInterval(Date().timeIntervalSince(started)) }
     }
 
     static func rehearsalClock(site: Site) -> @Sendable () -> Date {
