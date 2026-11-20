@@ -100,6 +100,12 @@ extension MosaicSession {
             var dPx = PixelOffset(x: 0, y: 0)
             var used = 0
             var records: [[String: Any]] = []
+            // Each frame's place along the drift (sky and image, summed from
+            // the start), for a straight-line fit: every frame's seeing
+            // jitter then counts a little, rather than the two ends' a lot
+            // (2026-11-20, the test runner: 5% scale and 2° turn errors).
+            var track: [(sky: SkyOffset, px: PixelOffset)] = [(SkyOffset(x: 0, y: 0), PixelOffset(x: 0, y: 0))]
+            var chained = true
             for (a, b) in zip(drift, drift.dropFirst()) {
                 let sky = skyChange(from: a.1, to: b.1)
                 let expected = hypot(sky.x, sky.y) / guess
@@ -110,7 +116,25 @@ extension MosaicSession {
                     dSky = SkyOffset(x: dSky.x + sky.x, y: dSky.y + sky.y)
                     dPx = PixelOffset(x: dPx.x + r.dx, y: dPx.y + r.dy)
                     used += 1
+                    if chained { track.append((dSky, dPx)) }
+                } else {
+                    chained = false
                 }
+            }
+            if chained, track.count >= 4 {
+                // Pixels per unit of sky along the drift, fitted.
+                let n = hypot(dSky.x, dSky.y)
+                let u = track.map { ($0.sky.x * dSky.x + $0.sky.y * dSky.y) / max(n, 1e-9) }
+                let mu = u.reduce(0, +) / Double(u.count)
+                let mx = track.map(\.px.x).reduce(0, +) / Double(track.count)
+                let my = track.map(\.px.y).reduce(0, +) / Double(track.count)
+                var (suu, sux, suy) = (0.0, 0.0, 0.0)
+                for (k, t) in track.enumerated() {
+                    suu += (u[k] - mu) * (u[k] - mu)
+                    sux += (u[k] - mu) * (t.px.x - mx)
+                    suy += (u[k] - mu) * (t.px.y - my)
+                }
+                if suu > 0 { dPx = PixelOffset(x: sux / suu * n, y: suy / suu * n) }
             }
             // 2. Back, tracking.
             onEvent(.detail("Back to where it was, tracking again"))

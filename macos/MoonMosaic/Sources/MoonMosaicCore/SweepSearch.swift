@@ -111,7 +111,13 @@ extension MosaicSession {
             }
             let dAz = b[0] - a[0]
             let dAlt = b[1] - a[1]
-            let duration = max(0.3, hypot(dAz * cosAlt, dAlt) / speed)
+            // Within the session's 2°/s on each axis: high up, azimuth runs
+            // faster than the sky by 1/cos(altitude) (2026-11-20, the test
+            // runner: refused above 60°).
+            let moonNow = moonRate(at: clock())
+            let duration = max(
+                0.3, hypot(dAz * cosAlt, dAlt) / speed, abs(dAz) / (1.9 - abs(moonNow.az)),
+                abs(dAlt) / (1.9 - abs(moonNow.alt)))
             let (rAz, rAlt) = (dAz / duration, dAlt / duration)
             let r = moonRate(at: clock())
             try mount.track(azDegS: r.az + rAz, altDegS: r.alt + rAlt)

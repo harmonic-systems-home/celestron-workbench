@@ -13,6 +13,7 @@ let package = Package(
         .library(name: "MoonMosaicCore", targets: ["MoonMosaicCore"]),
         .executable(name: "MoonMosaic", targets: ["MoonMosaic"]),
         .executable(name: "MoonMosaicSynth", targets: ["MoonMosaicSynth"]),
+        .executable(name: "MoonMosaicRehearse", targets: ["MoonMosaicRehearse"]),
     ],
     targets: [
         // The Rust adapter's C interface (rust/crates/mount-ffi).
@@ -31,6 +32,8 @@ let package = Package(
         .executableTarget(name: "MoonMosaic", dependencies: ["MoonMosaicCore"]),
         // A synthetic session for testing scripts/moon-process.sh.
         .executableTarget(name: "MoonMosaicSynth", dependencies: ["MoonMosaicCore"]),
+        // The test runner: the flow on the simulator for many seeded scenarios.
+        .executableTarget(name: "MoonMosaicRehearse", dependencies: ["MoonMosaicCore"]),
         .testTarget(name: "MoonMosaicCoreTests", dependencies: ["MoonMosaicCore"]),
     ]
 )
