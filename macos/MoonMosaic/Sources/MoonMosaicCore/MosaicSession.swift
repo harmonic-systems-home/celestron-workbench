@@ -300,6 +300,10 @@ public final class MosaicSession: @unchecked Sendable {
         /// from the sighting.
         public var maxSteps: Int = 12
         public var maxStepFrames: Double = 1.0
+        /// Each step moves at least this much of the short side. Near the
+        /// limb the lit centroid sits close to the centre, so a step to it
+        /// alone was too small to gain anything (2026-11-19: stuck at 62%).
+        public var minStepFrames: Double = 0.25
         public var maxTravelDeg: Double = 1.0
 
         public init() {}
@@ -434,6 +438,7 @@ public final class MosaicSession: @unchecked Sendable {
         let (w, h) = (Double(camera.info.width), Double(camera.info.height))
         let short = min(w, h)
         let maxStepPx = c.maxStepFrames * short
+        let minStepPx = c.minStepFrames * short
         func distance(_ b: Blob.Found) -> Double { hypot(b.offsetFromCentre.x, b.offsetFromCentre.y) }
         func onDisk(_ b: Blob.Found) -> Bool {
             b.brightFraction >= c.onDiskFraction
@@ -446,14 +451,18 @@ public final class MosaicSession: @unchecked Sendable {
         var steps = 0
         var orientation = calibration == nil ? searchOrientation : .asGuessed
         var failures = 0
+        // A calibration fixes the orientation, so trying the flips is
+        // pointless: give up after two steps that lose ground.
+        let maxFailures = calibration == nil ? SearchOrientation.allCases.count : 2
         while !onDisk(blob) {
-            if cancelled() || steps >= c.maxSteps || failures >= SearchOrientation.allCases.count {
+            if cancelled() || steps >= c.maxSteps || failures >= maxFailures {
                 break
             }
             // Move the centroid to the centre, at most one step's worth.
             var px = blob.offsetFromCentre
             let len = hypot(px.x, px.y)
             if len > maxStepPx { px = PixelOffset(x: px.x * maxStepPx / len, y: px.y * maxStepPx / len) }
+            if len > 0, len < minStepPx { px = PixelOffset(x: px.x * minStepPx / len, y: px.y * minStepPx / len) }
             let before = try await freshPosition()
             let m = MosaicPlanner.axes(for: sky(for: px, orientation), altitudeDeg: alt(before))
             let target = (az: before[0] + m.azDeg, alt: before[1] + m.altDeg)
@@ -482,8 +491,12 @@ public final class MosaicSession: @unchecked Sendable {
             try await searchGoTo(az: before[0], alt: before[1])
             steps += 1
             if let again = lit(try await grabFrame()) { blob = again }
-            orientation = orientation.next
-            onEvent(.message("Converge: that step lost ground; trying the image \(orientation.label)."))
+            if calibration == nil {
+                orientation = orientation.next
+                onEvent(.message("Converge: that step lost ground; trying the image \(orientation.label)."))
+            } else {
+                onEvent(.message("Converge: that step lost ground."))
+            }
         }
         let converged = onDisk(blob)
         if converged, calibration == nil { searchOrientation = orientation }
@@ -640,11 +653,11 @@ public final class MosaicSession: @unchecked Sendable {
             .message(
                 lit == plan.tiles.count
                     ? "Plan: \(plan.tiles.count) tiles."
-                    : "Plan: \(lit) lit tiles, and \(plan.tiles.count - lit) dark ones for earthshine."))
+                    : "Plan: \(plan.tiles.count) tiles (\(lit) seen lit in the survey); Start shoots them all."))
         return plan
     }
 
-    /// Captures `tiles` (all not yet done, by default) into `folder`, one SER
+    /// Captures `tiles` (every tile not yet done, lit or dark, by default) into `folder`, one SER
     /// each. `shouldContinue` is checked between tiles (pause, stop).
     public func run(
         tiles: [Int]? = nil, into folder: URL, shouldContinue: @Sendable () -> Bool = { true }
@@ -663,9 +676,12 @@ public final class MosaicSession: @unchecked Sendable {
             }
             loggedPlanIn = folder
         }
+        // Every planned tile overlaps the disk, so the main pass shoots them
+        // all. The survey's lit/dark marks are too sparse to skip on: on
+        // 2026-11-19 they left interior tiles near the terminator unshot.
         let ids =
             tiles
-            ?? plan.tiles.filter(\.lit).map(\.id).filter {
+            ?? plan.tiles.map(\.id).filter {
                 if case .done = states[$0] { return false } else { return true }
             }
         for id in ids {

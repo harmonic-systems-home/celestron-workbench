@@ -467,19 +467,25 @@ final class AppModel: ObservableObject {
     // MARK: - Steps
 
     /// Runs an operation off the main thread; the live view carries on.
+    /// With `resumeHold`, a Hold that was on before the step comes back on
+    /// after it succeeds, so the Moon isn't left to drift out of the frame.
     private func perform(
-        _ name: String, _ body: @escaping @Sendable (MosaicSession) async throws -> Void
+        _ name: String, resumeHold: Bool = false,
+        _ body: @escaping @Sendable (MosaicSession) async throws -> Void
     ) {
         guard let session, busy == nil else { return }
         busy = name
         // A step takes over the mount: Hold ends, after its move in progress.
         let hold = holdTask
+        let wasHolding = holding
         stopHold()
         Task.detached { [weak self] in
             await hold?.value
+            var ok = true
             do {
                 try await body(session)
             } catch {
+                ok = false
                 await MainActor.run { self?.say("\(name) failed: \(error)") }
             }
             await MainActor.run {
@@ -487,6 +493,7 @@ final class AppModel: ObservableObject {
                 self.busy = nil
                 self.finishAt = nil
                 self.sync()
+                if ok && resumeHold && wasHolding { self.toggleHold() }
             }
         }
     }
@@ -781,15 +788,15 @@ final class AppModel: ObservableObject {
     }
 
     func here() {
-        perform("Here") { try await $0.markHere() }
+        perform("Here", resumeHold: true) { try await $0.markHere() }
     }
 
     func calibrate() {
-        perform("Calibrating") { try await $0.calibrate() }
+        perform("Calibrating", resumeHold: true) { try await $0.calibrate() }
     }
 
     func findCentre() {
-        perform("Finding the centre") { try await $0.findCentre() }
+        perform("Finding the centre", resumeHold: true) { try await $0.findCentre() }
     }
 
     private func applySurvey() {
