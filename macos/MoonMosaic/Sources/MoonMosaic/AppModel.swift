@@ -73,6 +73,28 @@ final class AppModel: ObservableObject {
         }
     }
     @Published var testAltitudeDeg: Double { didSet { save() } }
+    /// Sun avoidance (ADR 0022 amendment 7): the scope keeps at least this
+    /// far from the Sun while it is up.
+    @Published var sunMinSeparationDeg: Double {
+        didSet {
+            save()
+            session?.setSunLimit(sunMinSeparationDeg)
+        }
+    }
+    /// The sunrise/sunset override, for this run of the app only (never
+    /// saved): a lower separation, 0 for off, nil for none.
+    @Published var sunOverrideDeg: Double? {
+        didSet {
+            session?.sun.overrideDeg = sunOverrideDeg
+            guard sunOverrideDeg != oldValue else { return }
+            say(
+                sunOverrideDeg.map {
+                    $0 == 0
+                        ? "Sun avoidance OFF for this session (override). It comes back when the app restarts."
+                        : String(format: "Sun avoidance lowered to %.0f° for this session (override).", $0)
+                } ?? String(format: "Sun avoidance back to %.0f°.", sunMinSeparationDeg))
+        }
+    }
     /// The sky the search looks against ("auto": day while the Sun is up,
     /// else a clear night); each has its own trigger (Blob.Sky).
     @Published var searchSky: String { didSet { save() } }
@@ -254,6 +276,8 @@ final class AppModel: ObservableObject {
         testMode = d["testMode"] as? Bool ?? false
         testAltitudeDeg = d["testAltitudeDeg"] as? Double ?? 10
         searchSky = d["searchSky"] as? String ?? "auto"
+        sunMinSeparationDeg = d["sunMinSeparationDeg"] as? Double ?? 40
+        sunOverrideDeg = nil
         save()
         updatePalette()
         simulator.onSkyChanged = { [weak self] in self?.reinstallSimulatedSky() }
@@ -271,6 +295,7 @@ final class AppModel: ObservableObject {
             "simulate": simulate, "simulatedCamera": simulatedCamera, "setHandController": setHandController, "paletteMode": paletteMode, "folder": folder.path,
             "searchPattern": searchPattern.rawValue, "searchStepDeg": searchStepDeg,
             "searchReachDeg": searchReachDeg, "testMode": testMode, "testAltitudeDeg": testAltitudeDeg, "searchSky": searchSky,
+            "sunMinSeparationDeg": sunMinSeparationDeg,
         ]
         do {
             try FileManager.default.createDirectory(
@@ -404,6 +429,7 @@ final class AppModel: ObservableObject {
         settings.gain = gain
         settings.surveyExposureUs = Int(surveyExposureMs * 1000)
         settings.surveyGain = surveyGain
+        settings.minSunSeparationDeg = sunMinSeparationDeg
         // Rehearsing: the clock runs from the next time the Moon is high here.
         let realTime: @Sendable () -> Date = { Date() }
         // Rehearsing: from the chosen scene's moment if it has one (the sky
@@ -429,6 +455,7 @@ final class AppModel: ObservableObject {
             camera.camera is SimCamera || mount.opened.simulated ? "setup-\(stamp)-simulated" : "setup-\(stamp)")
         try? FileManager.default.createDirectory(at: setup, withIntermediateDirectories: true)
         session.diagnostics = setup
+        session.sun.overrideDeg = sunOverrideDeg
         setupFolder = setup
         let simCam = camera.camera as? SimCamera
         runRecord = RunRecord(

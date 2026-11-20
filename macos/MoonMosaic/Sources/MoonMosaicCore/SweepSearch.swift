@@ -78,6 +78,11 @@ extension MosaicSession {
             try await Task.sleep(for: .milliseconds(Int(max(200, settings.settleSeconds * 600))))
         }
 
+        // The whole search area first (Sun avoidance), row by row.
+        do {
+            let t = clock()
+            try checkSun(path: [[p0[0], p0[1]]] + pattern.map { let a = axes($0, at: t); return [a.az, a.alt] }, what: "the search area")
+        }
         onEvent(
             .message(
                 String(
@@ -99,6 +104,11 @@ extension MosaicSession {
             _ a: [Double], _ b: [Double], speed: Double, stop: (Sample, [Sample]) -> Bool
         ) async throws -> [Sample] {
             try await goto(a)
+            do {
+                let t = clock()
+                let (pa, pb) = (axes(a, at: t), axes(b, at: t))
+                try checkSun(from: [pa.az, pa.alt], to: [pb.az, pb.alt], what: "the sweep")
+            }
             let dAz = b[0] - a[0]
             let dAlt = b[1] - a[1]
             let duration = max(0.3, hypot(dAz * cosAlt, dAlt) / speed)
@@ -192,6 +202,7 @@ extension MosaicSession {
                 onEvent(.message("Sweep: lost it going back; carrying on with the search."))
                 continue
             }
+            if let p = try? await freshPosition() { markOnMoon(p, at: clock()) }
             // Before Orient camera nothing knows which way the image turns, so
             // stepping further would only be guessing (2026-11-20: 13 guessed
             // steps, then lost). In view, near the disk's middle, is enough.

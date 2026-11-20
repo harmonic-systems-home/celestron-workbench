@@ -115,6 +115,8 @@ public final class MosaicSession: @unchecked Sendable {
     public let motion = MotionInfo()
     /// Whether camera frames are being saved, and what for.
     public let saving = SavingInfo()
+    /// Sun avoidance: where the scope was last on the Moon, and the override.
+    public let sun = SunGuard()
     /// Searches move their pattern with the Moon (off for a fixed test
     /// target such as the drainpipe).
     public var searchFollowsMoon = false
@@ -179,6 +181,9 @@ public final class MosaicSession: @unchecked Sendable {
     }
     private var baseSettle: Double?
 
+    /// Sun avoidance's minimum separation (degrees).
+    public func setSunLimit(_ deg: Double) { settings.minSunSeparationDeg = deg }
+
     public func setCamera(exposureUs: Int, gain: Int) {
         settings.exposureUs = exposureUs
         settings.gain = gain
@@ -201,11 +206,12 @@ public final class MosaicSession: @unchecked Sendable {
         let sun = Ephemeris.sun(at: now)
         let (moonEq, _) = Ephemeris.moon(at: now)
         let separation = Ephemeris.separationDeg(sun, moonEq)
-        guard separation >= settings.minSunSeparationDeg else {
+        // Only while the Sun is up (amendment 7): a crescent in twilight is fine.
+        if let limit = sunLimit(at: now), separation < limit {
             throw MosaicError(
                 description: String(
-                    format: "The Moon is %.0f° from the Sun: too close (at least %.0f°).",
-                    separation, settings.minSunSeparationDeg))
+                    format: "The Moon is %.0f° from the Sun, which is up: too close (at least %.0f°).",
+                    separation, limit))
         }
         let moon = Ephemeris.moon(at: now, from: settings.site)
         guard moon.horizontal.altDeg > 5 else {
@@ -229,6 +235,7 @@ public final class MosaicSession: @unchecked Sendable {
             throw MosaicError(description: "No position read from the mount: is it answering?")
         }
         try mount.setAltitudeReference(moon.horizontal.altDeg)
+        markOnMoon(p, at: now)
         here = Here(time: now, azimuthDeg: p[0], altitudeDeg: p[1], moon: moon)
         centreFit = nil
         litSky = []
@@ -1374,6 +1381,9 @@ public final class MosaicSession: @unchecked Sendable {
             let delta = wrap180(target - position[axis == .azimuth ? 0 : 1])
             if abs(delta) < 0.000_05 { return }
             let index = axis == .azimuth ? 0 : 1
+            var end = position
+            end[index] = position[index] + delta
+            try checkSun(from: position, to: end, what: "the \(axis) goto")
             motion.set(axis: index, from: position[index], to: position[index] + delta)
             defer { motion.clear() }
             do {

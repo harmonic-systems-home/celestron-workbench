@@ -94,6 +94,9 @@ extension MosaicSession {
         var rateSet = Date()
         // The tracking path: where the encoders should be, from a reference.
         var ref = (time: clock(), p: try await freshPosition())
+        // Track starts with the scope on the Moon (the spotting scope on it).
+        if sun.onMoon == nil { markOnMoon(ref.p, at: ref.time) }
+        var lastSunCheck = Date.distantPast
         var lastOnPath = offset(of: ref.p, at: ref.time)
         var offPathSince: Date?
         var settledSince: Date?
@@ -139,6 +142,14 @@ extension MosaicSession {
                     // quarter frame takes half a second.
                     let distance = hypot(axes.azDeg * cos(alt * .pi / 180), axes.altDeg)
                     let seconds = max(0.5, distance / 0.1)
+                    if let p = try? mount.status().positionsDeg {
+                        do {
+                            try checkSun(from: p, to: [p[0] + axes.azDeg, p[1] + axes.altDeg], what: "the nudge")
+                        } catch {
+                            onEvent(.message("\(error)"))
+                            continue
+                        }
+                    }
                     try mount.track(
                         azDegS: rate.az + axes.azDeg / seconds, altDegS: rate.alt + axes.altDeg / seconds)
                     nudgeEnds = clock().addingTimeInterval(seconds)
@@ -175,6 +186,10 @@ extension MosaicSession {
                 try await resetPath()
             }
             // Watch for motion the app didn't command (the hand controller).
+            if let p = try? mount.status().positionsDeg, Date().timeIntervalSince(lastSunCheck) > 1 {
+                lastSunCheck = Date()
+                watchSun(p)
+            }
             if nudgeEnds == nil, let p = try mount.status().positionsDeg {
                 let t = clock()
                 let skyAlt = Self.moonAxes(at: t, settings.site).alt
@@ -236,6 +251,7 @@ extension MosaicSession {
         let sky = hypot(dAz * cos(alt * .pi / 180), dAlt)
         let r = moonRate(at: clock())
         guard sky > 1.0 / 3600 else { return }
+        try checkSun(from: p, to: [p[0] + dAz, p[1] + dAlt], what: "the move")
         // Within the session's 2°/s on each axis (azimuth runs faster than
         // the sky by 1/cos(altitude)).
         var seconds = max(0.3, sky / speedDegS)
@@ -250,6 +266,9 @@ extension MosaicSession {
     private func undo(to back: FollowState.Offset) async throws {
         let lead = 3.0
         let m = Self.moonAxes(at: clock().addingTimeInterval(lead), settings.site)
+        if let p = try? mount.status().positionsDeg {
+            try checkSun(path: [p, [m.az + back.az, p[1]], [m.az + back.az, m.alt + back.alt]], what: "Undo")
+        }
         try await armForStep()
         defer { endStep() }
         for (axis, target) in [

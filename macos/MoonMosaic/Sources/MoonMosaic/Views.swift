@@ -708,9 +708,44 @@ struct SettingsView: View {
     @Environment(\.openWindow) private var openWindow
     let palette: Palette
     @Environment(\.dismiss) private var dismiss
+    /// An override waiting for the operator's confirmation.
+    @State private var pendingOverride: Double?
 
     var body: some View {
         Form {
+            Section("Sun avoidance (while the Sun is up)") {
+                Stepper(
+                    "Keep at least \(Int(model.sunMinSeparationDeg))° from the Sun",
+                    value: $model.sunMinSeparationDeg, in: 10...90, step: 5)
+                Picker(
+                    "Sunrise/sunset override (this session only)",
+                    selection: Binding(
+                        get: { model.sunOverrideDeg ?? -1 },
+                        set: { v in
+                            let new: Double? = v < 0 ? nil : v
+                            if new == nil { model.sunOverrideDeg = nil } else { pendingOverride = new }
+                        })
+                ) {
+                    Text("None").tag(-1.0)
+                    Text("Lower to 20°").tag(20.0)
+                    Text("Lower to 10°").tag(10.0)
+                    Text("Off").tag(0.0)
+                }
+                Text("Every move the app makes, and the whole search area, keep this far from the Sun while it is up (above −2°); after sunset the check is off by itself. Hand-controller moves can't be refused: the app warns. Cover the spotting scope in daylight.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            .confirmationDialog(
+                "Override Sun avoidance for this session?",
+                isPresented: Binding(get: { pendingOverride != nil }, set: { if !$0 { pendingOverride = nil } })
+            ) {
+                Button(pendingOverride.map { $0 == 0 ? "Turn it off" : "Lower it to \(Int($0))°" } ?? "Override", role: .destructive) {
+                    if let v = pendingOverride { model.sunOverrideDeg = v }
+                    pendingOverride = nil
+                }
+                Button("Cancel", role: .cancel) { pendingOverride = nil }
+            } message: {
+                Text("The scope could point closer to the Sun. Never look through the eyepiece or the spotting scope near the Sun. This lasts until the app quits.")
+            }
             Section("Site (stays on this Mac)") {
                 TextField("Latitude (north +)", value: $model.latitude, format: .number)
                 TextField("Longitude (east +)", value: $model.longitude, format: .number)
