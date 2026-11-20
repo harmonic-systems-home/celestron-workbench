@@ -198,6 +198,41 @@ public enum Ephemeris {
         }
     }
 
+    /// The position angle of the Moon's axis (lunar north), degrees from
+    /// celestial north through east, and the optical libration's latitude
+    /// (Meeus, *Astronomical Algorithms*, ch. 53, without nutation and the
+    /// physical libration: good to about 0.1°).
+    public static func moonAxis(at date: Date) -> (positionAngleDeg: Double, librationLatDeg: Double) {
+        let d = day(julianDay(date))
+        let (lon, lat, _) = moonEcliptic(d)
+        let node = deg2rad(normalize(125.1228 - 0.0529538083 * d))
+        let i = deg2rad(1.54242)
+        let e = deg2rad(obliquityDeg(d))
+        let (l, b) = (deg2rad(lon), deg2rad(lat))
+        let w = l - node
+        let bLib = asin(-sin(w) * cos(b) * sin(i) - sin(b) * cos(i))
+        let x = sin(i) * sin(node)
+        let y = sin(i) * cos(node) * cos(e) - cos(i) * sin(e)
+        let omega = atan2(x, y)
+        let ra = deg2rad(equatorial(lonDeg: lon, latDeg: lat, obliquityDeg: obliquityDeg(d)).raDeg)
+        let p = asin(min(1, max(-1, (x * x + y * y).squareRoot() * cos(ra - omega) / cos(bLib))))
+        return (rad2deg(p), rad2deg(bLib))
+    }
+
+    /// Where lunar north points in the sky frame, as an angle from the
+    /// zenith positive toward increasing azimuth (the same convention as
+    /// `Phase.brightLimbFromZenithDeg`): the axis's position angle turned by
+    /// the parallactic angle.
+    public static func moonNorthFromZenithDeg(at date: Date, from site: Site) -> Double {
+        let (moonEq, _) = moon(at: date)
+        let lst = gmstDeg(julianDay(date)) + site.longitudeDeg
+        let h = deg2rad(lst - moonEq.raDeg)
+        let phi = deg2rad(site.latitudeDeg)
+        let dd = deg2rad(moonEq.decDeg)
+        let q = rad2deg(atan2(sin(h), tan(phi) * cos(dd) - sin(dd) * cos(h)))
+        return normalize(q - moonAxis(at: date).positionAngleDeg)
+    }
+
     /// The sunlit part's outline, in the sky frame in units of the Moon's
     /// radius (+x toward increasing azimuth, +y up): the bright limb's half
     /// circle, then back along the terminator's half ellipse.

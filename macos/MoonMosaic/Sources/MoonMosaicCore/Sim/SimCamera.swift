@@ -128,6 +128,16 @@ public final class SimCamera: Camera, @unchecked Sendable {
     /// Turns the scene so its bright limb points where the ephemeris says
     /// (degrees clockwise from the zenith). Scenes without a measurable limb
     /// (near full) are left as they are.
+    /// Turns the scene so its lunar north (the sidecar's `northDeg`) points
+    /// where the ephemeris puts it (`Ephemeris.moonNorthFromZenithDeg`):
+    /// exact at any phase, full Moon included. False without `northDeg`.
+    @discardableResult
+    public func alignNorth(toDeg north: Double) -> Bool {
+        guard let own = scene.info.northDeg else { return false }
+        sceneRotationDeg = north - own
+        return true
+    }
+
     public func alignBrightLimb(toDeg limb: Double) {
         guard let own = scene.brightLimbDeg else { return }
         sceneRotationDeg = limb - own

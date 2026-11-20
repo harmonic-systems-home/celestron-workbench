@@ -327,6 +327,7 @@ final class SimulatorModel: ObservableObject {
             loadingScene = true
             sceneNote = "Loading \(url.lastPathComponent)…"
             let limb = phase.brightLimbFromZenithDeg
+            let north = Ephemeris.moonNorthFromZenithDeg(at: now, from: site)
             Task.detached { [weak self, weak camera] in
                 let result = Result { try MoonScene(contentsOf: url) }
                 await MainActor.run {
@@ -341,7 +342,7 @@ final class SimulatorModel: ObservableObject {
                         let sameMoment = scene.info.taken.map { abs($0.timeIntervalSince(self.sessionStart)) < 600 } ?? false
                         if scene.info.level == true, sameMoment {
                             camera?.sceneRotationDeg = 0
-                        } else {
+                        } else if camera?.alignNorth(toDeg: north) != true {
                             camera?.alignBrightLimb(toDeg: limb)
                         }
                         self.brightLimbDeg = limb
@@ -385,19 +386,6 @@ final class SimulatorModel: ObservableObject {
             let s = camera.sky(u: u, v: v, pointing: p)
             return CGPoint(x: s.x, y: s.y)
         }
-    }
-}
-
-/// A seeded generator for repeatable scenarios.
-struct SeededGenerator: RandomNumberGenerator {
-    private var state: UInt64
-    init(_ seed: UInt64) { state = seed &+ 0x9E37_79B9_7F4A_7C15 }
-    mutating func next() -> UInt64 {
-        state &+= 0x9E37_79B9_7F4A_7C15
-        var z = state
-        z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9
-        z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
-        return z ^ (z >> 31)
     }
 }
 

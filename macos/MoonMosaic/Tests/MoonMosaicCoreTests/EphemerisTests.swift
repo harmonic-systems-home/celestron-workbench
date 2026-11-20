@@ -106,3 +106,11 @@ private func near(_ a: Double, _ b: Double, _ tolerance: Double) -> Bool {
         #expect(!p.isLit(term.x - 0.03 * lx, term.y - 0.03 * ly), "day \(days)")
     }
 }
+
+/// Meeus example 53.a: 1992 April 12, 0h TD, P = 15.08°, b = 4.19°.
+@Test func theMoonsAxisMatchesMeeus() {
+    let t = Date(timeIntervalSince1970: 703_036_800 - 59)  // 0h TD ≈ 23:59:01 UT
+    let a = Ephemeris.moonAxis(at: t)
+    #expect(abs(a.positionAngleDeg - 15.08) < 0.3, "P \(a.positionAngleDeg)")
+    #expect(abs(a.librationLatDeg - 4.19) < 0.2, "b \(a.librationLatDeg)")
+}
