@@ -160,6 +160,11 @@ public final class MoonScene: @unchecked Sendable {
 
     // MARK: - Preparation
 
+    /// Lit means brighter than this fraction of the brightest (0.1% top)
+    /// pixels, in linear light: maria are dark (a third or less of the
+    /// brightest craters), so the threshold sits well below them, above the sky.
+    static let litThreshold: Float = 0.05
+
     static func halve(_ l: Level) -> Level {
         let (w, h) = (l.width / 2, l.height / 2)
         var out = [Float](repeating: 0, count: w * h)
@@ -201,7 +206,7 @@ public final class MoonScene: @unchecked Sendable {
             small = halve(small)
             factor *= 2
         }
-        let thr = 0.25 * percentile(small.pixels, 0.999)
+        let thr = litThreshold * percentile(small.pixels, 0.999)
         var sx = 0.0, sy = 0.0, n = 0.0
         for y in 0..<small.height {
             for x in 0..<small.width where small.pixels[y * small.width + x] > thr {
@@ -286,7 +291,7 @@ public final class MoonScene: @unchecked Sendable {
             factor *= 2
         }
         let (cx, cy, r) = (centre.x / factor, centre.y / factor, radius / factor)
-        let thr = 0.25 * percentile(small.pixels, 0.999)
+        let thr = litThreshold * percentile(small.pixels, 0.999)
         var sx = 0.0, sy = 0.0, lit = 0.0, all = 0.0
         for y in 0..<small.height {
             for x in 0..<small.width {

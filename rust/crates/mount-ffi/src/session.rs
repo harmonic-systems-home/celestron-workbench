@@ -401,6 +401,11 @@ pub enum Request {
     },
     /// End tracking: tracking off (`T 00`) and fixed rate 0 on both axes.
     StopTracking,
+    /// Simulated mount only: gotos this many times faster than the default
+    /// simulated speeds, to rehearse faster.
+    SimSpeed {
+        factor: f64,
+    },
     /// A goto relative to the axis's last read position.
     Goto {
         axis: Axis,
@@ -431,6 +436,17 @@ impl Inner {
             Request::StopTracking => {
                 self.end_tracking(now);
                 return Ok(json!({ "ok": true }));
+            }
+            Request::SimSpeed { factor } => {
+                let Some(sim) = &self.sim else {
+                    return Err("not a simulated mount".into());
+                };
+                let k = factor.clamp(0.1, 50.0);
+                let d = SimFaults::default();
+                sim.lock()
+                    .expect("sim mount")
+                    .set_goto_speeds(d.goto_slow_deg_s * k, d.goto_fast_deg_s * k);
+                return Ok(json!({ "ok": true, "factor": k }));
             }
             Request::Disarm => self.controller.disarm(now),
             Request::Reset => self.controller.reset(now),

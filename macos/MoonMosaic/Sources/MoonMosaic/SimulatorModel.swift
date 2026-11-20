@@ -29,6 +29,7 @@ final class SimulatorModel: ObservableObject {
     }
 
     enum SceneChoice: String, CaseIterable, Identifiable {
+        case library = "Scene library"
         case tonight = "Synthetic, tonight's phase"
         case phase = "Synthetic, chosen phase"
         case file = "Image file"
@@ -42,6 +43,13 @@ final class SimulatorModel: ObservableObject {
     @Published var phaseAngleDeg: Double = 60
     @Published private(set) var sceneFile: URL?
     @Published private(set) var sceneNote = ""
+    /// A folder of scene images (with optional `<image>.json` sidecars),
+    /// kept in the private data folder: chosen once, remembered here.
+    @Published private(set) var libraryFolder: URL? =
+        UserDefaults.standard.string(forKey: "simSceneLibrary").map { URL(fileURLWithPath: $0) }
+    @Published private(set) var library: [URL] = []
+    @Published var libraryScene: URL? { didSet { if sceneChoice == .library, oldValue != libraryScene { applyScene() } } }
+    @Published private(set) var loadingScene = false
     @Published var seeingArcsec: Double = 2.5 { didSet { applyConditions() } }
     @Published var skyLevel: Double = 0 { didSet { applyConditions() } }
     @Published var transmission: Double = 1 { didSet { applyConditions() } }
@@ -62,6 +70,18 @@ final class SimulatorModel: ObservableObject {
     @Published private(set) var moonRadiusArcsec: Double = 930
     @Published private(set) var brightLimbDeg: Double?
 
+    /// The mount's axes and the true Moon's, in the same moment (degrees),
+    /// written by the sky provider each frame: the search map draws both
+    /// from one reading, so the Moon doesn't jitter against the frame.
+    let truth = SimTruth()
+    @Published private(set) var mountAxesDeg: [Double]?
+    @Published private(set) var moonAxesDeg: [Double]?
+
+    /// Rehearsal speed: the simulated mount's gotos and the settling waits
+    /// (simulated mount only; the real mount moves at its own speed).
+    @Published var speed: Double = 1 { didSet { onSpeedChanged?(speed) } }
+    var onSpeedChanged: ((Double) -> Void)?
+
     /// Called when the Moon's starting point changes, to re-aim the sky.
     var onSkyChanged: (() -> Void)?
 
@@ -81,6 +101,11 @@ final class SimulatorModel: ObservableObject {
         applyOptics()
         applyConditions()
         if first {
+            refreshLibrary()
+            if let best = nearestPhase() {
+                libraryScene = best
+                sceneChoice = .library
+            }
             applyScene()
             trail = []
             let p = camera.pointing
@@ -115,6 +140,44 @@ final class SimulatorModel: ObservableObject {
         sceneFile = url
         sceneChoice = .file
         applyScene()
+    }
+
+    func chooseLibraryFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.message = "A folder of Moon images for the simulator"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        libraryFolder = url
+        UserDefaults.standard.set(url.path, forKey: "simSceneLibrary")
+        refreshLibrary()
+        libraryScene = nearestPhase() ?? library.first
+        sceneChoice = .library
+    }
+
+    private func refreshLibrary() {
+        guard let folder = libraryFolder,
+            let files = try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)
+        else { library = []; return }
+        let kinds = ["jpg", "jpeg", "png", "tif", "tiff", "heic"]
+        library = files.filter { kinds.contains($0.pathExtension.lowercased()) }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+    }
+
+    /// The library image whose phase (from its sidecar's time) is nearest
+    /// tonight's.
+    private func nearestPhase() -> URL? {
+        let tonight = Ephemeris.phase(at: clock(), from: site).illuminatedFraction
+        let d = JSONDecoder()
+        d.dateDecodingStrategy = .iso8601
+        func fraction(_ url: URL) -> Double? {
+            guard let data = try? Data(contentsOf: url.appendingPathExtension("json")),
+                let info = try? d.decode(MoonScene.Info.self, from: data), let t = info.taken
+            else { return nil }
+            return Ephemeris.phase(at: t, from: site).illuminatedFraction
+        }
+        return library.compactMap { u in fraction(u).map { (u, abs($0 - tonight)) } }
+            .min { $0.1 < $1.1 }?.0
     }
 
     func applyPhase() {
@@ -181,22 +244,36 @@ final class SimulatorModel: ObservableObject {
         case .phase:
             camera.scene = MoonScene.synthetic(size: 1024, phaseAngleDeg: phaseAngleDeg, brightLimbDeg: 0)
             sceneNote = String(format: "Synthetic, %.0f%% lit", (1 + cos(phaseAngleDeg * .pi / 180)) * 50)
-        case .file:
-            guard let url = sceneFile else {
-                sceneNote = "Choose an image file."
+        case .file, .library:
+            guard let url = sceneChoice == .file ? sceneFile : libraryScene else {
+                sceneNote = sceneChoice == .file ? "Choose an image file." : "Choose a scene folder."
                 return
             }
-            do {
-                let scene = try MoonScene(contentsOf: url)
-                camera.scene = scene
-                sceneNote = String(
-                    format: "%@: %d×%d, disk %.0f px across, %.0f%% lit%@", scene.name, scene.width,
-                    scene.height, 2 * scene.radius, scene.litFraction * 100,
-                    scene.brightLimbDeg == nil ? " (no bright limb: not turned)" : "")
-            } catch {
-                sceneNote = "\(error)"
-                return
+            // Large images take a few seconds: load off the main thread.
+            loadingScene = true
+            sceneNote = "Loading \(url.lastPathComponent)…"
+            let limb = phase.brightLimbFromZenithDeg
+            Task.detached { [weak self, weak camera] in
+                let result = Result { try MoonScene(contentsOf: url) }
+                await MainActor.run {
+                    guard let self else { return }
+                    self.loadingScene = false
+                    switch result {
+                    case .success(let scene):
+                        camera?.scene = scene
+                        camera?.alignBrightLimb(toDeg: limb)
+                        self.brightLimbDeg = limb
+                        let across = scene.radius > 0 ? (camera?.moonRadiusArcsec ?? 930) / scene.radius : 0
+                        self.sceneNote = String(
+                            format: "%@: %d×%d, %.2f″ per image pixel, %.0f%% lit%@", scene.name, scene.width,
+                            scene.height, across, scene.litFraction * 100,
+                            scene.brightLimbDeg == nil ? " (no bright limb: not turned)" : "")
+                    case .failure(let error):
+                        self.sceneNote = "\(error)"
+                    }
+                }
             }
+            return
         }
         // The scene's bright limb where the ephemeris puts it tonight.
         camera.alignBrightLimb(toDeg: phase.brightLimbFromZenithDeg)
@@ -205,6 +282,10 @@ final class SimulatorModel: ObservableObject {
 
     private func tick() {
         guard let camera else { return }
+        if let t = truth.latest {
+            mountAxesDeg = t.mount
+            moonAxesDeg = t.moon
+        }
         let p = camera.pointing
         guard abs(p.x) < 1e5, abs(p.y) < 1e5 else { return }
         let point = CGPoint(x: p.x, y: p.y)
@@ -234,4 +315,12 @@ struct SeededGenerator: RandomNumberGenerator {
         z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
         return z ^ (z >> 31)
     }
+}
+
+/// The simulated sky's latest truth, shared with the camera's thread.
+final class SimTruth: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: (mount: [Double], moon: [Double])?
+    var latest: (mount: [Double], moon: [Double])? { lock.withLock { value } }
+    func set(mount: [Double], moon: [Double]) { lock.withLock { value = (mount, moon) } }
 }

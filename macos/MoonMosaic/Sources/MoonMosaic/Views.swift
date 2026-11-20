@@ -45,7 +45,16 @@ struct ContentView: View {
                 VStack(spacing: 12) {
                     imagePanel
                     HStack(alignment: .top, spacing: 12) {
-                        TileGrid(model: model, palette: palette).frame(width: 340, height: 220)
+                        // The plan's area shows the search while one runs, or
+                        // until there is a plan.
+                        Group {
+                            if let progress = model.searchProgress, model.searching || model.plan == nil {
+                                SearchMap(model: model, sim: model.simulator, progress: progress)
+                            } else {
+                                TileGrid(model: model, palette: palette)
+                            }
+                        }
+                        .frame(width: 340, height: 220)
                         logPanel
                     }
                     .frame(height: 220)

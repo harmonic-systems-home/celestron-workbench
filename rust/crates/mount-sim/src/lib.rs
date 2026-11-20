@@ -156,6 +156,13 @@ impl SimMount {
     }
 
     /// Advances the physics by `dt_ns` ending at `now`.
+    /// Sets the goto speeds (deg/s), to run rehearsals faster than the real
+    /// mount.
+    pub fn set_goto_speeds(&mut self, slow_deg_s: f64, fast_deg_s: f64) {
+        self.faults.goto_slow_deg_s = slow_deg_s;
+        self.faults.goto_fast_deg_s = fast_deg_s;
+    }
+
     pub fn step(&mut self, now: Nanos, dt_ns: Nanos) {
         if !self.connected && !self.faults.keep_moving_when_disconnected {
             for axis in &mut self.axes {

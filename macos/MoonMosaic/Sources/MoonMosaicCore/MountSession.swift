@@ -141,6 +141,11 @@ public final class MountSession: @unchecked Sendable {
 
     public func stopTracking() throws { try command(["op": "stop_tracking"]) }
 
+    /// Simulated mount only: gotos `factor` times the simulated speed.
+    public func setSimSpeed(_ factor: Double) throws {
+        try command(["op": "sim_speed", "factor": factor])
+    }
+
     /// Ties the altitude encoder to the sky: the tube's true altitude now.
     public func setAltitudeReference(_ altitudeDeg: Double) throws {
         try command(["op": "reference", "altitude_deg": altitudeDeg])

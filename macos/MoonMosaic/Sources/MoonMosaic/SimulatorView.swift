@@ -48,6 +48,17 @@ struct SimulatorView: View {
                         sim.moonOffsetDeg.alt)
                 ).font(.caption)
             }
+            Section("Speed") {
+                Slider(value: $sim.speed, in: 1...10, step: 1) {
+                    Text("Moves \(Int(sim.speed))× faster")
+                }
+                .disabled(!model.simulate)
+                Text(
+                    model.simulate
+                        ? "The simulated mount's gotos and the settling waits. The Moon still moves at its real rate."
+                        : "Only with the simulated mount: the real mount moves at its own speed."
+                ).font(.caption).foregroundStyle(.secondary)
+            }
             Section("Optics") {
                 Picker("Setup", selection: $sim.preset) {
                     ForEach(SimulatorModel.OpticsPreset.allCases) { Text($0.rawValue).tag($0) }
@@ -86,7 +97,16 @@ struct SimulatorView: View {
                         if !editing { sim.applyPhase() }
                     }
                 }
-                Button("Choose an image…") { sim.chooseSceneFile() }
+                if sim.sceneChoice == .library {
+                    Picker("Image", selection: $sim.libraryScene) {
+                        ForEach(sim.library, id: \.self) { Text($0.lastPathComponent).tag(Optional($0)) }
+                    }
+                }
+                HStack {
+                    Button("Scene folder…") { sim.chooseLibraryFolder() }
+                    Button("One image…") { sim.chooseSceneFile() }
+                    if sim.loadingScene { ProgressView().controlSize(.small) }
+                }
                 Text(sim.sceneNote).font(.caption)
             }
             Section("Sky and air") {

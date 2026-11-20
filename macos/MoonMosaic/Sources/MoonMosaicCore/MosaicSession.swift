@@ -60,6 +60,24 @@ public enum TileState: Sendable, Equatable {
 public enum MosaicEvent: Sendable {
     case message(String)
     case tile(Int, TileState)
+    /// Where a search is in its pattern, for the search map.
+    case search(SearchProgress)
+}
+
+/// A search's pattern and how far it has got (degrees from where it started,
+/// azimuth and altitude axes).
+public struct SearchProgress: Sendable {
+    public let pattern: [[Double]]
+    /// Stops visited so far, with how bright each frame was (0–1).
+    public let visited: [[Double]]
+    public let brightness: [Double]
+    /// The frame's size on the sky, degrees (width, height), and the
+    /// altitude, to draw it.
+    public let fieldDeg: [Double]
+    public let altitudeDeg: Double
+    /// Where the search started (azimuth, altitude axis degrees).
+    public let start: [Double]
+    public let finished: Bool
 }
 
 public struct MosaicError: Error, CustomStringConvertible {
@@ -117,6 +135,8 @@ public final class MosaicSession: @unchecked Sendable {
         .positive, .positive
     )
     private let clock: @Sendable () -> Date
+    /// The session's time (the rehearsal clock when simulating).
+    public var now: Date { clock() }
     private let onEvent: @Sendable (MosaicEvent) -> Void
 
     public init(
@@ -135,6 +155,14 @@ public final class MosaicSession: @unchecked Sendable {
 
     /// New exposure and gain, for the next step (they're set on the camera
     /// as each step starts).
+    /// Rehearsing faster: waits meant for the real mount's settling are
+    /// shortened by `factor` (the simulated mount's gotos speed up to match).
+    public func setTimeScale(_ factor: Double) {
+        if baseSettle == nil { baseSettle = settings.settleSeconds }
+        settings.settleSeconds = (baseSettle ?? settings.settleSeconds) / max(factor, 0.1)
+    }
+    private var baseSettle: Double?
+
     public func setCamera(exposureUs: Int, gain: Int) {
         settings.exposureUs = exposureUs
         settings.gain = gain
@@ -544,6 +572,21 @@ public final class MosaicSession: @unchecked Sendable {
         var stops = 0
         var history: [SearchStop] = []
         let searchStamp = Self.fileStamp(clock())
+        let pattern = offsets.map { [$0.0, $0.1] }
+        let field = [
+            Double(camera.info.width) * scaleGuess / 3600, Double(camera.info.height) * scaleGuess / 3600,
+        ]
+        var visited: [[Double]] = []
+        var brightness: [Double] = []
+        func progress(_ finished: Bool = false) {
+            onEvent(
+                .search(
+                    SearchProgress(
+                        pattern: pattern, visited: visited, brightness: brightness, fieldDeg: field,
+                        altitudeDeg: start[1], start: start, finished: finished)))
+        }
+        progress()
+        defer { progress(true) }
         for (dAz, dAlt) in offsets {
             if cancelled() { break }
             if sighted() {
@@ -564,6 +607,9 @@ public final class MosaicSession: @unchecked Sendable {
             // frame is lit".
             let blob = Blob.find(frame, thresholdFraction: 0.3)
             history.append(SearchStop(position: pos, blob: blob))
+            visited.append([wrap180(pos[0] - start[0]), pos[1] - start[1]])
+            brightness.append(blob.map { Double($0.peak) / 255 * min(1, $0.brightFraction * 3) } ?? 0)
+            progress()
             keep([("\(searchStamp)-stop\(String(format: "%03d", stops))", frame)], in: "search")
             note(
                 "search",

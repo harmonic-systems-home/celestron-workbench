@@ -100,6 +100,10 @@ final class AppModel: ObservableObject {
     @Published private(set) var preview: MosaicPreview?
     @Published private(set) var previewImage: CGImage?
     @Published private(set) var liveImage: CGImage?
+    /// The running (or last) search's pattern and progress, for its map.
+    @Published private(set) var searchProgress: SearchProgress?
+    /// The mount's axis positions (degrees), as last read.
+    @Published private(set) var positionDeg: [Double]?
     /// The frame's middle at full resolution, its sharpness (averaged over
     /// the last few frames), and the best seen since the last reset.
     @Published private(set) var focusImage: CGImage?
@@ -189,6 +193,7 @@ final class AppModel: ObservableObject {
         save()
         updatePalette()
         simulator.onSkyChanged = { [weak self] in self?.reinstallSimulatedSky() }
+        simulator.onSpeedChanged = { [weak self] k in self?.applySimSpeed(k) }
         pollTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.poll() }
         }
@@ -483,6 +488,7 @@ final class AppModel: ObservableObject {
             // Tonight's Moon size (the simulator window sets the scene).
             sim.moonRadiusArcsec = Ephemeris.moon(at: clock(), from: site).diameterDeg * 1800
         }
+        let truth = simulator.truth
         let provider: @Sendable () -> (x: Double, y: Double) = { [weak mount] in
             guard let p = try? mount?.status().positionsDeg else { return (1e6, 1e6) }
             var targetAz = anchorAz
@@ -498,6 +504,7 @@ final class AppModel: ObservableObject {
                 targetAlt += mNow.altDeg - m0.altDeg
                 altForCos = mNow.altDeg
             }
+            truth.set(mount: p, moon: [targetAz, targetAlt])
             let dAz = wrap180app(p[0] - targetAz) * cos(altForCos * .pi / 180) * 3600
             let dAlt = (p[1] - targetAlt) * 3600
             return (dAz, dAlt)
@@ -505,6 +512,18 @@ final class AppModel: ObservableObject {
         fake?.provider = provider
         sim?.provider = provider
         if let sim { simulator.attach(sim, site: site, clock: clock, reachDeg: searchReachDeg) }
+        if simulate, simulator.speed != 1 { applySimSpeed(simulator.speed) }
+    }
+
+    /// Rehearsal speed (simulated mount only).
+    func applySimSpeed(_ k: Double) {
+        guard simulate, let mount else { return }
+        do {
+            try mount.setSimSpeed(k)
+            session?.setTimeScale(k)
+        } catch {
+            say("Couldn't set the simulation speed: \(error)")
+        }
     }
 
     /// Re-aims the simulated Moon (after the simulator window changes it).
@@ -586,7 +605,7 @@ final class AppModel: ObservableObject {
             test
             ? testAltitudeDeg
             : Ephemeris.moon(
-                at: Date(), from: Site(latitudeDeg: latitude, longitudeDeg: longitude)
+                at: session.now, from: Site(latitudeDeg: latitude, longitudeDeg: longitude)
             ).horizontal.altDeg
         searchStop.value = false
         sawTarget.value = false
@@ -718,7 +737,7 @@ final class AppModel: ObservableObject {
             test
             ? testAltitudeDeg
             : Ephemeris.moon(
-                at: Date(), from: Site(latitudeDeg: latitude, longitudeDeg: longitude)
+                at: session.now, from: Site(latitudeDeg: latitude, longitudeDeg: longitude)
             ).horizontal.altDeg
         say("Recentring on the clicked point, then a finer search there.")
         recentring = true
@@ -1065,6 +1084,7 @@ final class AppModel: ObservableObject {
             default: break
             }
             if case .failed(let why) = state { say("Tile \(id) failed: \(why)") }
+        case .search(let p): searchProgress = p
         }
     }
 
@@ -1084,6 +1104,7 @@ final class AppModel: ObservableObject {
         if let s = try? mount.status() {
             mountState = s.state
             altitude = s.altitudeDeg
+            positionDeg = s.positionsDeg
             if let b = s.battery { checkBattery(b) }
             latchedReason = s.state == "FaultLatched" ? (s.lastFault?.detail ?? "a fault") : nil
             for m in s.messages { say(m) }
