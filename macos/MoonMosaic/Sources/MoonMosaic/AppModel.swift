@@ -548,6 +548,7 @@ final class AppModel: ObservableObject {
     }
 
     func disconnect() {
+        trackingWanted = false
         runRecord?.tracking(false)
         saveRunRecord()
         runRecord = nil
@@ -766,7 +767,9 @@ final class AppModel: ObservableObject {
                 if ok && ((resumeHold && wasHolding) || holdAfter) && !self.holding {
                     self.toggleHold()
                 }
-                if wasFollowing && !self.holding && !self.following { self.startFollow() }
+                if (wasFollowing || self.trackingWanted) && !self.holding && !self.following && self.connected {
+                    self.startFollow()
+                }
                 if let step {
                     if self.flowActive == step { self.flowActive = nil }
                     if ok { self.flowDone.insert(step) }
@@ -791,11 +794,19 @@ final class AppModel: ObservableObject {
     // MARK: - Follow (ADR 0022 amendment 7)
 
     /// Track / Stop Tracking.
+    /// Tracking is the baseline (amendment 7): once Track is pressed, every
+    /// step ends tracking the Moon again, until Stop Tracking. (2026-11-20:
+    /// after a stopped capture, Auto-set and Go to Limb left the mount
+    /// still and the Moon drifted out.)
+    private var trackingWanted = false
+
     func toggleTrack() {
         if following || followTask != nil {
+            trackingWanted = false
             stopFollow()
         } else {
             guard connected, busy == nil, !testMode else { return }
+            trackingWanted = true
             stopHold()
             let hold = holdTask
             Task { @MainActor [weak self] in
@@ -1109,7 +1120,16 @@ final class AppModel: ObservableObject {
 
     func toggleHold() {
         if holding {
+            let hold = holdTask
             stopHold()
+            // Unlocked: back to tracking if Track is on.
+            if trackingWanted {
+                Task { @MainActor [weak self] in
+                    await hold?.value
+                    guard let self, !self.holding, !self.following, self.busy == nil, self.connected else { return }
+                    self.startFollow()
+                }
+            }
             return
         }
         // A hold still finishing its last move can't be restarted yet.
