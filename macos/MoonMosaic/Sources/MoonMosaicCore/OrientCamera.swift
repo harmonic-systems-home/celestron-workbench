@@ -164,7 +164,11 @@ extension MosaicSession {
             onEvent(.detail("One nudge across the drift, to tell mirrored from direct"))
             let size = 0.12 * short * scale
             let n = hypot(dSky.x, dSky.y)
-            let across = SkyOffset(x: -dSky.y / n * size, y: dSky.x / n * size)
+            var across = SkyOffset(x: -dSky.y / n * size, y: dSky.x / n * size)
+            // The way that keeps azimuth turning the way it tracks: a
+            // reversal takes up the gears' backlash, which the motor
+            // encoders count but the tube doesn't follow.
+            if across.x * moonRate(at: clock()).az < 0 { across = SkyOffset(x: -across.x, y: -across.y) }
             let (f0, _) = (try await grabFrame(), ())
             let r0 = try await reading()
             let seconds = 2.0
@@ -175,7 +179,12 @@ extension MosaicSession {
             let r1 = try await reading()
             let f1 = try await grabFrame()
             keep([("\(stamp)-o\(attempt)-nudge-0", f0), ("\(stamp)-o\(attempt)-nudge-1", f1)], in: "orient")
-            let nSky = skyChange(from: r0, to: (clock().addingTimeInterval(f1.time.timeIntervalSinceNow), r1.1))
+            // The nudge as commanded, not as the encoders saw it: they sit on
+            // the motors, and the hand controller's anti-backlash turns them
+            // extra when an axis reverses (2026-11-20, first night: encoders
+            // 152″, image 40″, commanded 36″; Orient Camera failed 3 times).
+            let encoders = skyChange(from: r0, to: (clock().addingTimeInterval(f1.time.timeIntervalSinceNow), r1.1))
+            let nSky = across
             let expected = hypot(nSky.x, nSky.y) / scale
             let shift = Registration.shift(from: f0, to: f1, minShift: max(6, 0.25 * expected))
             // 4. Back again.
@@ -195,7 +204,7 @@ extension MosaicSession {
                 "orient",
                 [
                     "time": stamp, "attempt": attempt, "drift": records, "scale": scale,
-                    "nudge": ["sky": [nSky.x, nSky.y], "shift": [shift.dx, shift.dy, shift.peak]],
+                    "nudge": ["sky": [nSky.x, nSky.y], "encoders": [encoders.x, encoders.y], "shift": [shift.dx, shift.dy, shift.peak]],
                     "errorDirect": eD, "errorMirrored": eM, "guessArcsecPerPixel": guess,
                 ])
             let best = min(eD, eM)
