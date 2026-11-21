@@ -949,7 +949,10 @@ public final class MosaicSession: @unchecked Sendable {
         for (i, stop) in stops.enumerated() {
             // One goto, no touch-ups: where it really pointed is read below.
             onEvent(.detail("Survey frame \(i + 1) of \(stops.count)"))
-            try await rateMove(to: try target(stop, at: clock()), speedDegS: 1.5)
+            // No corrections: where it really pointed is read below, so
+            // a tenth of a degree off costs nothing (corrections made the
+            // survey 4 minutes on the first night, 2026-11-20).
+            try await rateMove(to: try target(stop, at: clock()), speedDegS: 1.5, toleranceDeg: 0.1)
             let moved = Date()
             // Let the tube stop ringing, then a read made since the move
             // ended, then a frame, and where it was: the read carried to the
