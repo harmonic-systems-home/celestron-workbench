@@ -826,6 +826,13 @@ struct SettingsView: View {
                 Stepper(
                     "Video per tile: \(String(format: "%.1f", model.videoSeconds)) s",
                     value: $model.videoSeconds, in: 1...10, step: 0.5)
+                Picker("Dark-side tiles", selection: $model.darkTilesMode) {
+                    Text("Only when earthshine shows").tag("auto")
+                    Text("Always: Start shoots them too").tag("include")
+                    Text("Never").tag("omit")
+                }
+                Text("Takes effect at the next Plan. By day earthshine never shows, so Auto leaves them out.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             Section("Session") {
                 Toggle("Rehearse with the simulated mount and camera", isOn: $model.simulate)

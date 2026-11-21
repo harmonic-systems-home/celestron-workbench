@@ -1,5 +1,9 @@
 import Foundation
 
+public enum DarkTiles: String, Sendable, CaseIterable {
+    case auto, include, omit
+}
+
 public struct MosaicSettings: Sendable {
     public var site: Site
     /// The telescope's focal length, for the first guess at the image scale.
@@ -35,6 +39,9 @@ public struct MosaicSettings: Sendable {
     public var surveyReach: Double = 1.5
     /// Survey frames' spacing, in frames.
     public var surveySpacing: Double = 1.4
+    /// The dark side's tiles: kept only when earthshine was seen (and never
+    /// by day), always kept and shot with the rest, or always left out.
+    public var darkTiles: DarkTiles = .auto
 
     public init(site: Site) {
         self.site = site
@@ -202,6 +209,9 @@ public final class MosaicSession: @unchecked Sendable {
             return PixelOffset(x: -p.x, y: -p.y)
         }
     }
+
+    /// What happens to the dark side's tiles (for the next Plan).
+    public func setDarkTiles(_ d: DarkTiles) { settings.darkTiles = d }
 
     /// Sun avoidance's minimum separation (degrees).
     public func setSunLimit(_ deg: Double) { settings.minSunSeparationDeg = deg }
@@ -1138,7 +1148,13 @@ public final class MosaicSession: @unchecked Sendable {
             // Earthshine never shows in daylight (the dark side is the
             // sky's own brightness, which can pass for it).
             let daylight = sunHorizontal(at: clock()).altDeg > SunGuard.upAltitudeDeg
-            if !fit.earthshine || daylight {
+            let drop: Bool
+            switch settings.darkTiles {
+            case .auto: drop = !fit.earthshine || daylight
+            case .include: drop = false
+            case .omit: drop = true
+            }
+            if drop {
                 let before = plan.tiles.count
                 plan = MosaicPlanner.withoutDark(plan)
                 dropped = before - plan.tiles.count
@@ -1152,7 +1168,9 @@ public final class MosaicSession: @unchecked Sendable {
             .message(
                 lit == plan.tiles.count
                     ? "Plan: \(plan.tiles.count) tiles\(dropped > 0 ? " (\(dropped) on the dark side left out: no earthshine seen)" : "")."
-                    : "Plan: \(plan.tiles.count) tiles, \(lit) sunlit; Start shoots those, and Earthshine the \(plan.tiles.count - lit) on the dark side."))
+                    : settings.darkTiles == .include
+                        ? "Plan: \(plan.tiles.count) tiles, \(lit) sunlit and \(plan.tiles.count - lit) on the dark side; Start shoots them all."
+                        : "Plan: \(plan.tiles.count) tiles, \(lit) sunlit; Start shoots those, and Earthshine the \(plan.tiles.count - lit) on the dark side."))
         return plan
     }
 
@@ -1189,7 +1207,7 @@ public final class MosaicSession: @unchecked Sendable {
         // Earthshine pass, at its own exposure.
         let ids =
             tiles
-            ?? plan.tiles.filter(\.lit).map(\.id).filter {
+            ?? plan.tiles.filter { $0.lit || settings.darkTiles == .include }.map(\.id).filter {
                 if case .done = states[$0] { return false } else { return true }
             }
         for id in ids {

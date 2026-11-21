@@ -73,6 +73,13 @@ final class AppModel: ObservableObject {
         }
     }
     @Published var testAltitudeDeg: Double { didSet { save() } }
+    /// The dark side's tiles (DarkTiles raw value): auto, include or omit.
+    @Published var darkTilesMode: String {
+        didSet {
+            save()
+            session?.setDarkTiles(DarkTiles(rawValue: darkTilesMode) ?? .auto)
+        }
+    }
     /// Sun avoidance (ADR 0022 amendment 7): the scope keeps at least this
     /// far from the Sun while it is up.
     @Published var sunMinSeparationDeg: Double {
@@ -283,6 +290,7 @@ final class AppModel: ObservableObject {
         testAltitudeDeg = d["testAltitudeDeg"] as? Double ?? 10
         searchSky = d["searchSky"] as? String ?? "auto"
         sunMinSeparationDeg = d["sunMinSeparationDeg"] as? Double ?? 40
+        darkTilesMode = d["darkTilesMode"] as? String ?? "auto"
         sunOverrideDeg = nil
         save()
         updatePalette()
@@ -302,7 +310,7 @@ final class AppModel: ObservableObject {
             "simulate": simulate, "simulatedCamera": simulatedCamera, "setHandController": setHandController, "paletteMode": paletteMode, "folder": folder.path,
             "searchPattern": searchPattern.rawValue, "searchStepDeg": searchStepDeg,
             "searchReachDeg": searchReachDeg, "testMode": testMode, "testAltitudeDeg": testAltitudeDeg, "searchSky": searchSky,
-            "sunMinSeparationDeg": sunMinSeparationDeg,
+            "sunMinSeparationDeg": sunMinSeparationDeg, "darkTilesMode": darkTilesMode,
         ]
         do {
             try FileManager.default.createDirectory(
@@ -437,6 +445,7 @@ final class AppModel: ObservableObject {
         settings.surveyExposureUs = Int(surveyExposureMs * 1000)
         settings.surveyGain = surveyGain
         settings.minSunSeparationDeg = sunMinSeparationDeg
+        settings.darkTiles = DarkTiles(rawValue: darkTilesMode) ?? .auto
         // Rehearsing: the clock runs from the next time the Moon is high here.
         let realTime: @Sendable () -> Date = { Date() }
         // Rehearsing: from the chosen scene's moment if it has one (the sky
