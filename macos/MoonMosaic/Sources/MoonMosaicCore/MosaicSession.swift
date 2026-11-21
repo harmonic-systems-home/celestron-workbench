@@ -124,6 +124,8 @@ public final class MosaicSession: @unchecked Sendable {
     public let saving = SavingInfo()
     /// Sun avoidance: where the scope was last on the Moon, and the override.
     public let sun = SunGuard()
+    /// The Moon model's measured drift (the mount not level, and so on).
+    public let drift = MoonModelDrift()
     /// When the last app move ended (wall clock), for waits on the tube's
     /// ringing.
     var lastMoveEnd = Date.distantPast
@@ -300,8 +302,10 @@ public final class MosaicSession: @unchecked Sendable {
             throw MosaicError(description: "Centre the Moon and press Here first.")
         }
         let moon = Ephemeris.moon(at: time, from: settings.site).horizontal
-        let dAz = wrap180(moon.azDeg - here.moon.horizontal.azDeg)
-        let dAlt = moon.altDeg - here.moon.horizontal.altDeg
+        // The measured drift since Here, too.
+        let (b, b0) = (drift.bias(at: time), drift.bias(at: here.time))
+        let dAz = wrap180(moon.azDeg - here.moon.horizontal.azDeg) + b.az - b0.az
+        let dAlt = moon.altDeg - here.moon.horizontal.altDeg + b.alt - b0.alt
         let offset = MosaicPlanner.axes(for: sky, altitudeDeg: moon.altDeg)
         return (
             Ephemeris.normalize(here.azimuthDeg + dAz + offset.azDeg),
@@ -485,10 +489,11 @@ public final class MosaicSession: @unchecked Sendable {
     public func relativeMove(from a: (Date, [Double]), to b: (Date, [Double])) -> SkyOffset {
         let ma = Ephemeris.moon(at: a.0, from: settings.site).horizontal
         let mb = Ephemeris.moon(at: b.0, from: settings.site).horizontal
-        let dAz = wrap180(b.1[0] - a.1[0]) - wrap180(mb.azDeg - ma.azDeg)
+        let (ba, bb) = (drift.bias(at: a.0), drift.bias(at: b.0))
+        let dAz = wrap180(b.1[0] - a.1[0]) - wrap180(mb.azDeg - ma.azDeg) - (bb.az - ba.az)
         // Wrapped: the altitude encoder can read near 360 (2026-11-20, the
         // test runner: survey frames crossing 0 were placed 360° away).
-        let dAlt = wrap180(b.1[1] - a.1[1]) - (mb.altDeg - ma.altDeg)
+        let dAlt = wrap180(b.1[1] - a.1[1]) - (mb.altDeg - ma.altDeg) - (bb.alt - ba.alt)
         return SkyOffset(x: dAz * cos(mb.altDeg * .pi / 180) * 3600, y: dAlt * 3600)
     }
 
@@ -633,10 +638,10 @@ public final class MosaicSession: @unchecked Sendable {
         // With the Moon: the pattern rides on its motion since the start, so
         // a rising Moon doesn't climb through the rows.
         let searchStart = clock()
-        let moonStart = Self.moonAxes(at: searchStart, settings.site)
+        let moonStart = modelMoon(at: searchStart)
         func drift(_ t: Date) -> (Double, Double) {
             guard searchFollowsMoon else { return (0, 0) }
-            let m = Self.moonAxes(at: t, settings.site)
+            let m = modelMoon(at: t)
             return (wrap180(m.az - moonStart.az), m.alt - moonStart.alt)
         }
         let field = [
@@ -908,6 +913,78 @@ public final class MosaicSession: @unchecked Sendable {
         if here == nil { try await markHere() }
         guard let calibration, let here else { throw MosaicError(description: "Orient the camera first.") }
         let radius = here.moon.diameterDeg / 2 * 3600
+        // The tracking's drift first, so everything after it (the probe, the
+        // plan, the capture) uses a Moon model that keeps up with the real
+        // Moon (2026-11-20, first night: 1–2″/s uncorrected).
+        do {
+            // Orient Camera measures it too; again only if that was a while ago.
+            if let t = drift.measured, clock().timeIntervalSince(t) < 300 {
+            } else {
+                try await measureDrift()
+            }
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            onEvent(.message("Tracking drift not measured (\(error)); carrying on without the correction."))
+        }
+        let fit: MoonCentre.Fit
+        var samples: [MoonCentre.Sample] = []
+        var method = "survey"
+        // The limb probe first: three short lines out across the sunlit
+        // limb and a circle through the sharp edges (2026-11-20, first
+        // night: the survey's fits, pulled by the glow beside the bright
+        // limb, put the centre 256″ off). The survey if the probe fails.
+        if let probed = try await probeLimbCentre(radius: radius) {
+            fit = probed
+            method = "limb"
+        } else {
+            (fit, samples) = try await surveyCentre(here: here, calibration: calibration, radius: radius)
+        }
+        // Here moves to the centre: the same moment, the axes shifted.
+        let shift = MosaicPlanner.axes(for: fit.centre, altitudeDeg: here.moon.horizontal.altDeg)
+        self.here = Here(
+            time: here.time, azimuthDeg: Ephemeris.normalize(here.azimuthDeg + shift.azDeg),
+            altitudeDeg: here.altitudeDeg + shift.altDeg, moon: here.moon)
+        litSky = samples.filter { $0.mean >= fit.levels.lit }.map {
+            SkyOffset(x: $0.sky.x - fit.centre.x, y: $0.sky.y - fit.centre.y)
+        }
+        surveyCells = samples.map {
+            (x: ($0.sky.x - fit.centre.x) / radius, y: ($0.sky.y - fit.centre.y) / radius, lit: $0.mean >= fit.levels.lit)
+        }
+        centreFit = fit
+        plan = nil
+        checkRotation()
+        // The aim was relative to the old Here; start again from the centre.
+        aimOffset = SkyOffset(x: 0, y: 0)
+        // The altitude reference was set off-centre at Here: set it again,
+        // from where the mount points now against where the centre is.
+        let now = clock()
+        let pos = try await freshPosition()
+        let centreNow = try target(SkyOffset(x: 0, y: 0), at: now)
+        let moonNow = Ephemeris.moon(at: now, from: settings.site).horizontal
+        try mount.setAltitudeReference(moonNow.altDeg + wrap180(pos[1] - centreNow.alt))
+        try await goToSky(SkyOffset(x: 0, y: 0))
+        if let p = try? await freshPosition() { markOnMoon(p, at: clock()) }
+        // Tracking on, unarmed (as the survey's own ending used to leave it).
+        endStep()
+        let rate = moonRate(at: clock())
+        try? mount.track(azDegS: rate.az, altDegS: rate.alt)
+        onEvent(
+            .message(
+                String(
+                    format:
+                        "Centre found %.0f″ from Here (%.0f″, %.0f″) by the %@; %.0f%% %@ agree%@.",
+                    hypot(fit.centre.x, fit.centre.y), fit.centre.x, fit.centre.y, method,
+                    fit.agreement * 100, method == "limb" ? "of edge points" : "of cells",
+                    method == "limb" ? "" : (fit.earthshine ? "; earthshine seen" : "; no earthshine above the sky"))))
+        return fit
+    }
+
+    /// The survey's centre (amendment 1): frames on a grid around Here, cut
+    /// into cells and fitted.
+    private func surveyCentre(
+        here: Here, calibration: CameraCalibration, radius: Double
+    ) async throws -> (MoonCentre.Fit, [MoonCentre.Sample]) {
         let reach = settings.surveyReach * radius
         // Frames 1.4 frames apart over a circle of `reach`: the fit needs
         // cells across the limb, not every part of the sky.
@@ -1035,40 +1112,7 @@ public final class MosaicSession: @unchecked Sendable {
                 description:
                     "Couldn't find the Moon's edge in the survey. Is Here on the lit Moon, and the survey exposure right (Settings)?")
         }
-        // Here moves to the centre: the same moment, the axes shifted.
-        let shift = MosaicPlanner.axes(for: fit.centre, altitudeDeg: here.moon.horizontal.altDeg)
-        self.here = Here(
-            time: here.time, azimuthDeg: Ephemeris.normalize(here.azimuthDeg + shift.azDeg),
-            altitudeDeg: here.altitudeDeg + shift.altDeg, moon: here.moon)
-        litSky = samples.filter { $0.mean >= fit.levels.lit }.map {
-            SkyOffset(x: $0.sky.x - fit.centre.x, y: $0.sky.y - fit.centre.y)
-        }
-        surveyCells = samples.map {
-            (x: ($0.sky.x - fit.centre.x) / radius, y: ($0.sky.y - fit.centre.y) / radius, lit: $0.mean >= fit.levels.lit)
-        }
-        centreFit = fit
-        plan = nil
-        checkRotation()
-        // The aim was relative to the old Here; start again from the centre.
-        aimOffset = SkyOffset(x: 0, y: 0)
-        // The altitude reference was set off-centre at Here: set it again,
-        // from where the mount points now against where the centre is.
-        let now = clock()
-        let pos = try await freshPosition()
-        let centreNow = try target(SkyOffset(x: 0, y: 0), at: now)
-        let moonNow = Ephemeris.moon(at: now, from: settings.site).horizontal
-        try mount.setAltitudeReference(moonNow.altDeg + wrap180(pos[1] - centreNow.alt))
-        try await goToSky(SkyOffset(x: 0, y: 0))
-        if let p = try? await freshPosition() { markOnMoon(p, at: clock()) }
-        onEvent(
-            .message(
-                String(
-                    format:
-                        "Centre found %.0f″ from Here (%.0f″, %.0f″); %.0f%% of cells agree; %@.",
-                    hypot(fit.centre.x, fit.centre.y), fit.centre.x, fit.centre.y,
-                    fit.agreement * 100,
-                    fit.earthshine ? "earthshine seen" : "no earthshine above the sky")))
-        return fit
+        return (fit, samples)
     }
 
     /// Orient Moon's rotation check (amendment 7): the sunlit shape the

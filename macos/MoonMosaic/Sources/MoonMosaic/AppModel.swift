@@ -691,8 +691,11 @@ final class AppModel: ObservableObject {
                 targetAlt += mNow.altDeg - m0.altDeg
                 altForCos = mNow.altDeg
             }
-            let dAz = wrap180app(p[0] - targetAz) * cos(altForCos * .pi / 180) * 3600
-            let dAlt = wrap180app(p[1] - targetAlt) * 3600
+            // The real Moon sliding against the ephemeris (the simulator's
+            // tracking drift), with the sky's clock.
+            let slid = truth.slidOffset(at: Date())
+            let dAz = wrap180app(p[0] - targetAz) * cos(altForCos * .pi / 180) * 3600 - slid.x
+            let dAlt = wrap180app(p[1] - targetAlt) * 3600 - slid.y
             truth.set(mount: p, moon: [targetAz, targetAlt], pointing: (dAz, dAlt))
             return (dAz, dAlt)
         }

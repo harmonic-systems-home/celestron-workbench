@@ -144,7 +144,8 @@ func theSurveyRecentresHereOnACrescent() async throws {
         hypot(fit.centre.x + hereOnMoon.x, fit.centre.y + hereOnMoon.y) < 30,
         "found \(fit.centre), truth \((-hereOnMoon.x, -hereOnMoon.y))")
     #expect(fit.earthshine)
-    #expect(try mount.status().state == "ConnectedReadOnly")
+    let st = try mount.status()
+    #expect(st.state == "ConnectedReadOnly", "state \(st.state), fault \(String(describing: st.lastFault))")
 
     let plan = try session.makePlan()
     let lit = plan.tiles.filter(\.lit)

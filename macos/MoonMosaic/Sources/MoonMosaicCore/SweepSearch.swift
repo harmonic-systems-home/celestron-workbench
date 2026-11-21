@@ -86,7 +86,7 @@ extension MosaicSession {
 
         /// Axis angles for a pattern point (degrees from the start, Moon frame) at `t`.
         func axes(_ pt: [Double], at t: Date) -> (az: Double, alt: Double) {
-            let m = Self.moonAxes(at: t, site)
+            let m = modelMoon(at: t)
             return (Ephemeris.normalize(m.az + home.az + pt[0]), m.alt + home.alt + pt[1])
         }
         func trackMoon(extraAz: Double = 0) throws {

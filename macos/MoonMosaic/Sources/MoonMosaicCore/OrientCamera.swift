@@ -47,6 +47,31 @@ extension MosaicSession {
             let e = MosaicPlanner.axes(for: extra, altitudeDeg: alt)
             try mount.track(azDegS: r.az + e.azDeg, altDegS: r.alt + e.altDeg)
         }
+        /// The image's drift (pixels per second) and the encoders' (the
+        /// pointing against the model's Moon, ″/s) while tracking.
+        func holdDrift(seconds: Double) async throws -> (v: PixelOffset, u: SkyOffset, frames: Int) {
+            let ref = try await grabFrame()
+            let refT = clock().addingTimeInterval(ref.time.timeIntervalSinceNow)
+            let r0 = try await reading()
+            var img: [(t: Double, x: Double, y: Double)] = []
+            var enc: [(t: Double, x: Double, y: Double)] = []
+            let s0 = Date()
+            while Date().timeIntervalSince(s0) < seconds {
+                try await Task.sleep(for: .milliseconds(400))
+                let f = try await grabFrame()
+                let t = clock().addingTimeInterval(f.time.timeIntervalSinceNow).timeIntervalSince(refT)
+                let sh = Registration.shift(from: ref, to: f)
+                if sh.peak > 0.05 { img.append((t, sh.dx, sh.dy)) }
+                let r = try await reading()
+                let c = skyChange(from: r0, to: r)
+                enc.append((r.0.timeIntervalSince(refT), c.x, c.y))
+            }
+            guard img.count >= 6 else { return (PixelOffset(x: 0, y: 0), SkyOffset(x: 0, y: 0), img.count) }
+            let i = Self.slope(img)
+            let e = Self.slope(enc)
+            return (PixelOffset(x: i.x, y: i.y), SkyOffset(x: e.x, y: e.y), img.count)
+        }
+        func trackMoon0() { try? trackMoon() }
         func reading() async throws -> (Date, [Double]) {
             let st = try mount.status()
             if let p = st.positionsDeg, let age = st.positionsAgeMs {
@@ -55,7 +80,7 @@ extension MosaicSession {
             return (clock(), try await freshPosition())
         }
         func back(to home: FollowState.Offset) async throws {
-            let m = Self.moonAxes(at: clock().addingTimeInterval(3), settings.site)
+            let m = modelMoon(at: clock().addingTimeInterval(3))
             try await armForStep()
             for (axis, target) in [
                 (MountSession.Axis.azimuth, Ephemeris.normalize(m.az + home.az)), (.altitude, m.alt + home.alt),
@@ -81,6 +106,14 @@ extension MosaicSession {
             try await Task.sleep(for: .seconds(still))
             let start = try await reading()
             let home = offset(of: start.1, at: start.0)
+
+            // 0. Hold, tracking: how the image drifts while the mount follows
+            // the model's Moon. The real Moon slides against the model (a
+            // mount not level: 2026-11-20, first night, 1–2″/s), and that
+            // slide is in the drift and the nudge as well: measured here, it
+            // comes out of both, and becomes the model's correction.
+            onEvent(.detail("Holding on the Moon, tracking, to see how it drifts"))
+            let hold = try await holdDrift(seconds: 8)
 
             // 1. Drift.
             try mount.stopTracking()
@@ -112,6 +145,7 @@ extension MosaicSession {
             var dSky = SkyOffset(x: 0, y: 0)
             var dPx = PixelOffset(x: 0, y: 0)
             var used = 0
+            var pairSeconds = 0.0
             var records: [[String: Any]] = []
             // Pairs a few frames apart, so each shift is well clear of the
             // sensor's fixed pattern at zero (adjacent frames 0.2 s apart move
@@ -130,6 +164,7 @@ extension MosaicSession {
                 if ok {
                     dSky = SkyOffset(x: dSky.x + sky.x, y: dSky.y + sky.y)
                     dPx = PixelOffset(x: dPx.x + r.dx, y: dPx.y + r.dy)
+                    pairSeconds += b.1.0.timeIntervalSince(a.1.0)
                     used += 1
                 }
             }
@@ -142,6 +177,19 @@ extension MosaicSession {
                 onEvent(.message("Orient camera attempt \(attempt) of 3: \(why); trying again."))
                 continue
             }
+            // The real Moon's slide against the model moved the image too:
+            // M·slide = M·u − v (the hold), so the drift's image motion
+            // against the model's Moon is dPx + (M·u − v)·t. M·u needs M:
+            // first without it, then with that first answer.
+            let rawPx = dPx
+            dPx = PixelOffset(x: rawPx.x - hold.v.x * pairSeconds, y: rawPx.y - hold.v.y * pairSeconds)
+            func firstGuess() -> CameraCalibration {
+                let k = hypot(dPx.x, dPx.y) / hypot(dSky.x, dSky.y)
+                let phi = atan2(dPx.y, dPx.x) - atan2(dSky.y, dSky.x)
+                return CameraCalibration(a: cos(phi) * k, b: -sin(phi) * k, c: sin(phi) * k, d: cos(phi) * k)
+            }
+            let mu = firstGuess().image(for: hold.u)
+            dPx = PixelOffset(x: dPx.x + mu.x * pairSeconds, y: dPx.y + mu.y * pairSeconds)
             let scale = hypot(dSky.x, dSky.y) / hypot(dPx.x, dPx.y)
             // The two maps the drift allows: a turn and a scale, seen directly
             // or mirrored (reflected across the image's x axis, then turned).
@@ -186,7 +234,14 @@ extension MosaicSession {
             let encoders = skyChange(from: r0, to: (clock().addingTimeInterval(f1.time.timeIntervalSinceNow), r1.1))
             let nSky = across
             let expected = hypot(nSky.x, nSky.y) / scale
-            let shift = Registration.shift(from: f0, to: f1, minShift: max(6, 0.25 * expected))
+            let rawShift = Registration.shift(from: f0, to: f1, minShift: max(6, 0.25 * expected))
+            // Less the hold's drift over the same time (the slide, and the
+            // mount's own small error).
+            let nudgeSeconds = f1.time.timeIntervalSince(f0.time)
+            let shift = (
+                dx: rawShift.dx - hold.v.x * nudgeSeconds, dy: rawShift.dy - hold.v.y * nudgeSeconds,
+                peak: rawShift.peak
+            )
             // 4. Back again.
             onEvent(.detail("Back again"))
             try await back(to: home)
@@ -228,6 +283,20 @@ extension MosaicSession {
             }
             let m = aD <= aM ? direct : mirrored
             calibration = m
+            // The slide, now the camera is known: u − M⁻¹·v.
+            if hold.frames >= 6 {
+                let iv = m.sky(for: hold.v)
+                let slide = SkyOffset(x: hold.u.x - iv.x, y: hold.u.y - iv.y)
+                let alt = Self.moonAxes(at: clock(), settings.site).alt
+                self.drift.addRate(
+                    (az: slide.x / cos(alt * .pi / 180) / 3600, alt: slide.y / 3600), at: clock())
+                trackMoon0()
+                onEvent(
+                    .message(
+                        String(
+                            format: "Tracking drift: the Moon slides %.1f″/s against the model (image %.1f″/s while tracking); corrected from now.",
+                            hypot(slide.x, slide.y), hypot(iv.x, iv.y))))
+            }
             onEvent(
                 .message(
                     String(

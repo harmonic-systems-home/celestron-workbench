@@ -105,6 +105,10 @@ public enum Rehearsal {
         /// The camera's exposure and gain (the app's defaults otherwise).
         public var exposureUs: Int?
         public var gain: Int?
+        /// The real Moon sliding against the ephemeris (arcseconds per second
+        /// on the sky): a mount not level (2026-11-20, first night: 1–2″/s).
+        public var slideX = 0.0
+        public var slideY = 0.0
 
         /// A test set's scenario: the seed sets the rest (where the Moon is,
         /// the seeing).
@@ -131,6 +135,10 @@ public enum Rehearsal {
             seeingArcsec = Double.random(in: 1.5...4, using: &g)
             phaseAngleDeg = Double.random(in: 20...140, using: &g)
             hoursLater = Double.random(in: 0...2, using: &g)
+            // Drawn last, so the seed's other choices stay as they were.
+            let angle = Double.random(in: 0..<(2 * .pi), using: &g)
+            let size = Double.random(in: 0...2.5, using: &g)
+            (slideX, slideY) = (size * cos(angle), size * sin(angle))
         }
     }
 
@@ -230,17 +238,24 @@ public enum Rehearsal {
             }
             try mount.setAltitudeReference(Ephemeris.moon(at: clock(), from: site).horizontal.altDeg)
             let p0 = try await session.freshPosition()
-            let o0 = session.offset(of: p0, at: clock())
+            let t0 = clock()
+            let o0 = MosaicSession.ephemerisOffset(of: p0, at: t0, site)
+            let slide = (x: scenario.slideX, y: scenario.slideY)
             let (dAz, dAlt) = (scenario.moonOffsetAz, scenario.moonOffsetAlt)
             camera.provider = { [weak session] in
                 guard let session, let st = try? session.mount.status(), var p = st.positionsDeg else { return (1e6, 1e6) }
                 if let r = st.tracking, let age = st.positionsAgeMs {
                     p = [p[0] + r[0] * Double(age) / 1000, p[1] + r[1] * Double(age) / 1000]
                 }
-                let o = session.offset(of: p, at: clock())
-                let alt = Ephemeris.moon(at: clock(), from: site).horizontal.altDeg
+                // The truth: the ephemeris alone (never the app's drift
+                // correction), and the real Moon sliding against it.
+                let now = clock()
+                let o = MosaicSession.ephemerisOffset(of: p, at: now, site)
+                let alt = Ephemeris.moon(at: now, from: site).horizontal.altDeg
+                let slid = now.timeIntervalSince(t0)
                 return (
-                    (wrap180(o.az - o0.az) - dAz) * cos(alt * .pi / 180) * 3600, (o.alt - o0.alt - dAlt) * 3600
+                    (wrap180(o.az - o0.az) - dAz) * cos(alt * .pi / 180) * 3600 - slide.x * slid,
+                    (o.alt - o0.alt - dAlt) * 3600 - slide.y * slid
                 )
             }
             defer { try? mount.stopTracking() }

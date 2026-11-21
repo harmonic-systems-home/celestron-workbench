@@ -186,6 +186,12 @@ struct SimulatorView: View {
                 Slider(value: $sim.shimmerArcsec, in: 0...3, step: 0.1) {
                     Text(String(format: "Shimmer %.1f″ (parts of the image wobbling)", sim.shimmerArcsec))
                 }
+                Slider(value: $sim.slideArcsecPerSec, in: 0...3, step: 0.1) {
+                    Text(String(format: "Tracking drift %.1f″/s (a mount not level)", sim.slideArcsecPerSec))
+                }
+                Slider(value: $sim.slideDirectionDeg, in: 0...359, step: 15) {
+                    Text(String(format: "Drift direction %.0f° from up", sim.slideDirectionDeg))
+                }
             }
             Section("Faults (rehearse recovery)") {
                 HStack {

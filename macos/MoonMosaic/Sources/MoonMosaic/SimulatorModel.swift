@@ -95,6 +95,14 @@ final class SimulatorModel: ObservableObject {
     @Published var shakeArcsec: Double = 20 { didSet { applyConditions() } }
     /// Shimmer: parts of the image moving against each other, arcseconds RMS.
     @Published var shimmerArcsec: Double = 0.6 { didSet { applyConditions() } }
+    /// The real Moon sliding against the ephemeris, as a mount not level
+    /// makes it (″/s on the sky, and its direction from straight up).
+    @Published var slideArcsecPerSec: Double = 0 { didSet { applySlide() } }
+    @Published var slideDirectionDeg: Double = 45 { didSet { applySlide() } }
+    private func applySlide() {
+        let a = slideDirectionDeg * .pi / 180
+        truth.setSlide(x: slideArcsecPerSec * sin(a), y: slideArcsecPerSec * cos(a))
+    }
     @Published var seed: UInt64 = 1
     /// Where the Moon starts, from the mount's position at connect (degrees
     /// of azimuth and altitude axis).
@@ -492,6 +500,27 @@ final class SimTruth: @unchecked Sendable {
     private let lock = NSLock()
     private var value: (mount: [Double], moon: [Double])?
     private var pointing: (x: Double, y: Double)?
+    private var slide = (x: 0.0, y: 0.0)
+    private var slid = (x: 0.0, y: 0.0)
+    private var slideSince: Date?
+    /// How far the Moon has slid (″) by `t`, at the rate in force.
+    func slidOffset(at t: Date) -> (x: Double, y: Double) {
+        lock.withLock {
+            guard let s = slideSince else { return slid }
+            let dt = t.timeIntervalSince(s)
+            return (slid.x + slide.x * dt, slid.y + slide.y * dt)
+        }
+    }
+    func setSlide(x: Double, y: Double, at t: Date = Date()) {
+        lock.withLock {
+            if let s = slideSince {
+                let dt = t.timeIntervalSince(s)
+                slid = (slid.x + slide.x * dt, slid.y + slide.y * dt)
+            }
+            slide = (x, y)
+            slideSince = t
+        }
+    }
     var latest: (mount: [Double], moon: [Double])? { lock.withLock { value } }
     var latestPointing: (x: Double, y: Double)? { lock.withLock { pointing } }
     func set(mount: [Double], moon: [Double], pointing p: (x: Double, y: Double)? = nil) {

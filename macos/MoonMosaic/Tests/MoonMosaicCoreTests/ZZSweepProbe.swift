@@ -6,7 +6,7 @@ import Testing
 /// The sweep search (ADR 0022 amendment 7) on the simulated mount and
 /// camera: rows as single moves with the video watched, the Moon out of view
 /// at the start, found and stepped onto, riding on the Moon's motion.
-@Test(.timeLimit(.minutes(1)))
+@Test(.timeLimit(.minutes(2)))  // the moves wait out the mount's coast now
 func zzProbeSweepExtent() async throws {
     let site = Site(latitudeDeg: 40, longitudeDeg: -100)
     var t = Date(timeIntervalSince1970: 1_793_491_200)

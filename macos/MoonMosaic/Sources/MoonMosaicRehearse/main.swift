@@ -80,6 +80,10 @@ if option("--set") == "phases" {
         }
     }
 }
+// --slide x,y sets the real Moon's slide (″/s) for every scenario; 0,0 for none.
+if let v = option("--slide")?.split(separator: ",").compactMap({ Double($0) }), v.count == 2 {
+    scenarios = scenarios.map { var s = $0; (s.slideX, s.slideY) = (v[0], v[1]); return s }
+}
 print("\(scenarios.count) scenarios.")
 
 let started = Date()
@@ -88,9 +92,9 @@ for s in scenarios {
     let seed = s.seed
     print(
         String(
-            format: "seed %llu: %@%@, camera %.0f°%@, Moon %.2f°, %.2f° off, seeing %.1f″", seed,
+            format: "seed %llu: %@%@, camera %.0f°%@, Moon %.2f°, %.2f° off, seeing %.1f″, slide (%.1f, %.1f)″/s", seed,
             s.camera == .asi482mc ? "ASI482MC" : "ASI662MC", s.phase.map { ", " + $0.rawValue } ?? "",
-            s.cameraRotationDeg, s.diagonal ? " (diagonal)" : "", s.moonOffsetAz, s.moonOffsetAlt, s.seeingArcsec))
+            s.cameraRotationDeg, s.diagonal ? " (diagonal)" : "", s.moonOffsetAz, s.moonOffsetAlt, s.seeingArcsec, s.slideX, s.slideY))
     let dir = keep?.appendingPathComponent("seed-\(seed)-\(s.camera.rawValue)")
     if let dir { try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true) }
     let r = await Rehearsal.run(s, speed: speed, tiles: tiles, folder: dir, log: { if verbose { print("    \($0)") } })

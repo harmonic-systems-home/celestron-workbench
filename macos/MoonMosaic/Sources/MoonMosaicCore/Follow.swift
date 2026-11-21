@@ -61,13 +61,13 @@ extension MosaicSession {
 
     /// The Moon's rate on each axis now (deg/s), from the ephemeris over ±15 s.
     func moonRate(at time: Date) -> (az: Double, alt: Double) {
-        let a = Self.moonAxes(at: time.addingTimeInterval(-15), settings.site)
-        let b = Self.moonAxes(at: time.addingTimeInterval(15), settings.site)
+        let a = modelMoon(at: time.addingTimeInterval(-15))
+        let b = modelMoon(at: time.addingTimeInterval(15))
         return (wrap180(b.az - a.az) / 30, (b.alt - a.alt) / 30)
     }
 
     func offset(of p: [Double], at time: Date) -> FollowState.Offset {
-        let m = Self.moonAxes(at: time, settings.site)
+        let m = modelMoon(at: time)
         // Both wrapped: before Here the altitude encoder can read near 360.
         return FollowState.Offset(az: wrap180(p[0] - m.az), alt: wrap180(p[1] - m.alt))
     }
@@ -302,7 +302,7 @@ extension MosaicSession {
     /// A goto back to `back` against the Moon, aimed a moment ahead.
     private func undo(to back: FollowState.Offset) async throws {
         let lead = 3.0
-        let m = Self.moonAxes(at: clock().addingTimeInterval(lead), settings.site)
+        let m = modelMoon(at: clock().addingTimeInterval(lead))
         if let p = try? mount.status().positionsDeg {
             try checkSun(path: [p, [m.az + back.az, p[1]], [m.az + back.az, m.alt + back.alt]], what: "Undo")
         }
