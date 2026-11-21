@@ -158,3 +158,63 @@ public enum Registration {
         return (re, im, (x0 - (w - n) / 2, y0 - (h - n) / 2))
     }
 }
+
+extension Registration {
+    /// How much detail a frame has for matching, in two directions: the
+    /// RMS gradient (counts per binned pixel) of the band-passed image (4×4
+    /// binned, structure of about 1–12 binned pixels, as `shift` sees it)
+    /// along its strongest direction and across it. A limb alone is strong
+    /// one way only; a bland mare is weak both ways; the sensor's noise
+    /// alone gives about 0.02 (2026-11-20, the 662 at 10 ms by night), and
+    /// real lunar detail 0.6–1.6.
+    public static func detail(_ f: Frame) -> (strong: Double, weak: Double) {
+        let bin = 4
+        let (w, h) = (f.width / bin, f.height / bin)
+        guard w > 40, h > 40 else { return (0, 0) }
+        var b = [Double](repeating: 0, count: w * h)
+        for y in 0..<h {
+            for x in 0..<w {
+                var s = 0
+                for dy in 0..<bin {
+                    let row = (y * bin + dy) * f.width + x * bin
+                    for dx in 0..<bin { s += Int(f.pixels[row + dx]) }
+                }
+                b[y * w + x] = Double(s) / Double(bin * bin)
+            }
+        }
+        // Integral image for box means.
+        var ii = [Double](repeating: 0, count: (w + 1) * (h + 1))
+        for y in 0..<h {
+            var row = 0.0
+            for x in 0..<w {
+                row += b[y * w + x]
+                ii[(y + 1) * (w + 1) + x + 1] = ii[y * (w + 1) + x + 1] + row
+            }
+        }
+        func box(_ x: Int, _ y: Int, _ r: Int) -> Double {
+            let (x0, y0) = (max(0, x - r), max(0, y - r))
+            let (x1, y1) = (min(w, x + r + 1), min(h, y + r + 1))
+            let s = ii[y1 * (w + 1) + x1] - ii[y0 * (w + 1) + x1] - ii[y1 * (w + 1) + x0] + ii[y0 * (w + 1) + x0]
+            return s / Double((x1 - x0) * (y1 - y0))
+        }
+        var bp = [Double](repeating: 0, count: w * h)
+        for y in 0..<h { for x in 0..<w { bp[y * w + x] = box(x, y, 1) - box(x, y, 12) } }
+        let m = 9
+        var (jxx, jyy, jxy, n) = (0.0, 0.0, 0.0, 0.0)
+        for y in m..<(h - m) {
+            for x in m..<(w - m) {
+                let gx = (bp[y * w + x + 1] - bp[y * w + x - 1]) / 2
+                let gy = (bp[(y + 1) * w + x] - bp[(y - 1) * w + x]) / 2
+                jxx += gx * gx
+                jyy += gy * gy
+                jxy += gx * gy
+                n += 1
+            }
+        }
+        guard n > 0 else { return (0, 0) }
+        (jxx, jyy, jxy) = (jxx / n, jyy / n, jxy / n)
+        let tr = jxx + jyy
+        let disc = max(0, tr * tr / 4 - (jxx * jyy - jxy * jxy)).squareRoot()
+        return ((tr / 2 + disc).squareRoot(), max(0, tr / 2 - disc).squareRoot())
+    }
+}

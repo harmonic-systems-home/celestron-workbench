@@ -49,7 +49,7 @@ extension MosaicSession {
         }
         /// The image's drift (pixels per second) and the encoders' (the
         /// pointing against the model's Moon, ″/s) while tracking.
-        func holdDrift(seconds: Double) async throws -> (v: PixelOffset, u: SkyOffset, frames: Int) {
+        func holdDrift(seconds: Double) async throws -> (v: PixelOffset, u: SkyOffset, frames: Int, sigma: Double) {
             let ref = try await grabFrame()
             let refT = clock().addingTimeInterval(ref.time.timeIntervalSinceNow)
             let r0 = try await reading()
@@ -66,10 +66,14 @@ extension MosaicSession {
                 let c = skyChange(from: r0, to: r)
                 enc.append((r.0.timeIntervalSince(refT), c.x, c.y))
             }
-            guard img.count >= 6 else { return (PixelOffset(x: 0, y: 0), SkyOffset(x: 0, y: 0), img.count) }
+            guard img.count >= 6 else { return (PixelOffset(x: 0, y: 0), SkyOffset(x: 0, y: 0), img.count, .infinity) }
             let i = Self.slope(img)
             let e = Self.slope(enc)
-            return (PixelOffset(x: i.x, y: i.y), SkyOffset(x: e.x, y: e.y), img.count)
+            // The slope's uncertainty (px/s): the scatter over the spread of times.
+            let mt = img.map(\.t).reduce(0, +) / Double(img.count)
+            let stt = img.map { ($0.t - mt) * ($0.t - mt) }.reduce(0, +)
+            let sigma = stt > 0 ? i.scatter / stt.squareRoot() : .infinity
+            return (PixelOffset(x: i.x, y: i.y), SkyOffset(x: e.x, y: e.y), img.count, sigma)
         }
         func trackMoon0() { try? trackMoon() }
         func reading() async throws -> (Date, [Double]) {
@@ -106,14 +110,6 @@ extension MosaicSession {
             try await Task.sleep(for: .seconds(still))
             let start = try await reading()
             let home = offset(of: start.1, at: start.0)
-
-            // 0. Hold, tracking: how the image drifts while the mount follows
-            // the model's Moon. The real Moon slides against the model (a
-            // mount not level: 2026-11-20, first night, 1–2″/s), and that
-            // slide is in the drift and the nudge as well: measured here, it
-            // comes out of both, and becomes the model's correction.
-            onEvent(.detail("Holding on the Moon, tracking, to see how it drifts"))
-            let hold = try await holdDrift(seconds: 8)
 
             // 1. Drift.
             try mount.stopTracking()
@@ -168,15 +164,30 @@ extension MosaicSession {
                     used += 1
                 }
             }
-            // 2. Back, tracking.
-            onEvent(.detail("Back to where it was, tracking again"))
-            try await back(to: home)
+            // 2. Back, tracking, to the drift frame with the most detail both
+            // ways: the hold next watches one patch, and a bland mare (or
+            // the limb alone, which shows motion across it only) can't show
+            // its drift.
+            let scores = drift.map { Registration.detail($0.0) }
+            let best = scores.indices.max { scores[$0].weak < scores[$1].weak } ?? 0
+            let detail = scores.isEmpty ? (strong: 0.0, weak: 0.0) : scores[best]
+            let spot = drift.isEmpty ? home : offset(of: drift[best].1.1, at: drift[best].1.0)
+            onEvent(.detail("Back to the drift's most detailed spot, tracking again"))
+            try await back(to: spot)
             guard used >= 2, hypot(dPx.x, dPx.y) > 10 else {
                 why = "the drift couldn't be followed (\(used) of \(settings.driftFrames) steps matched)"
                 note("orient", ["time": stamp, "attempt": attempt, "drift": records, "result": why])
                 onEvent(.message("Orient camera attempt \(attempt) of 3: \(why); trying again."))
                 continue
             }
+            // 3. Hold there, tracking: how the image drifts while the mount
+            // follows the model's Moon. The real Moon slides against the
+            // model (a mount not level: 2026-11-20, first night, 1–2″/s), and
+            // that slide is in the drift and the nudge as well: measured
+            // here, it comes out of both and becomes the model's correction.
+            // Longer where the detail is thin.
+            onEvent(.detail("Holding on the Moon, tracking, to see how it drifts"))
+            let hold = try await holdDrift(seconds: detail.weak < 0.3 ? 16 : 8)
             // The real Moon's slide against the model moved the image too:
             // M·slide = M·u − v (the hold), so the drift's image motion
             // against the model's Moon is dPx + (M·u − v)·t. M·u needs M:
@@ -244,7 +255,7 @@ extension MosaicSession {
             )
             // 4. Back again.
             onEvent(.detail("Back again"))
-            try await back(to: home)
+            try await back(to: spot)
             onEvent(.detail(nil))
 
             func error(_ m: CameraCalibration) -> Double {
@@ -284,7 +295,10 @@ extension MosaicSession {
             let m = aD <= aM ? direct : mirrored
             calibration = m
             // The slide, now the camera is known: u − M⁻¹·v.
-            if hold.frames >= 6 {
+            // Applied only when it's measured well: enough frames matched,
+            // some detail both ways, and an uncertainty under 0.5″/s.
+            let sigma = hold.sigma * m.arcsecPerPixel
+            if hold.frames >= 6, detail.weak >= 0.15, sigma < 0.5 {
                 let iv = m.sky(for: hold.v)
                 let slide = SkyOffset(x: hold.u.x - iv.x, y: hold.u.y - iv.y)
                 let alt = Self.moonAxes(at: clock(), settings.site).alt
@@ -294,8 +308,14 @@ extension MosaicSession {
                 onEvent(
                     .message(
                         String(
-                            format: "Tracking drift: the Moon slides %.1f″/s against the model (image %.1f″/s while tracking); corrected from now.",
-                            hypot(slide.x, slide.y), hypot(iv.x, iv.y))))
+                            format: "Tracking drift: the Moon slides %.1f ± %.1f″/s against the model (image %.1f″/s while tracking; detail %.2f); corrected from now.",
+                            hypot(slide.x, slide.y), sigma, hypot(iv.x, iv.y), detail.weak)))
+            } else {
+                onEvent(
+                    .message(
+                        String(
+                            format: "Tracking drift not measured well (detail %.2f, %d frames matched, ±%.1f″/s); left uncorrected for the limb check to settle.",
+                            detail.weak, hold.frames, sigma.isFinite ? sigma : 99)))
             }
             onEvent(
                 .message(

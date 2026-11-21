@@ -97,7 +97,7 @@ for s in scenarios {
             s.cameraRotationDeg, s.diagonal ? " (diagonal)" : "", s.moonOffsetAz, s.moonOffsetAlt, s.seeingArcsec, s.slideX, s.slideY))
     let dir = keep?.appendingPathComponent("seed-\(seed)-\(s.camera.rawValue)")
     if let dir { try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true) }
-    let r = await Rehearsal.run(s, speed: speed, tiles: tiles, folder: dir, log: { if verbose { print("    \($0)") } })
+    let r = await Rehearsal.run(s, speed: speed, limbCheckAfter: option("--limb-check").flatMap(Double.init) ?? 0, tiles: tiles, folder: dir, log: { if verbose { print("    \($0)") } })
     for step in r.steps {
         print(String(format: "  %@ %-14@ %6.1f s  %@", step.ok ? "ok  " : "FAIL", step.name, step.seconds, step.note ?? ""))
     }

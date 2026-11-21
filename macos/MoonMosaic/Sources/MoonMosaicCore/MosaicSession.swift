@@ -126,6 +126,9 @@ public final class MosaicSession: @unchecked Sendable {
     public let sun = SunGuard()
     /// The Moon model's measured drift (the mount not level, and so on).
     public let drift = MoonModelDrift()
+    /// When the Moon's centre was last fixed (Orient Moon or a limb check),
+    /// on the session's clock.
+    public internal(set) var centreFixedAt: Date?
     /// When the last app move ended (wall clock), for waits on the tube's
     /// ringing.
     var lastMoveEnd = Date.distantPast
@@ -137,7 +140,7 @@ public final class MosaicSession: @unchecked Sendable {
     /// centre) to the centre: calibrated, or the focal-length guess.
     public func panSky(for pixel: PixelOffset) -> SkyOffset { sky(for: pixel, searchOrientation) }
     public private(set) var settings: MosaicSettings
-    public private(set) var here: Here?
+    public internal(set) var here: Here?
     public internal(set) var calibration: CameraCalibration?
     /// The survey's fit, once the centre has been found.
     public private(set) var centreFit: MoonCentre.Fit?
@@ -965,6 +968,7 @@ public final class MosaicSession: @unchecked Sendable {
         try mount.setAltitudeReference(moonNow.altDeg + wrap180(pos[1] - centreNow.alt))
         try await goToSky(SkyOffset(x: 0, y: 0))
         if let p = try? await freshPosition() { markOnMoon(p, at: clock()) }
+        centreFixedAt = clock()
         // Tracking on, unarmed (as the survey's own ending used to leave it).
         endStep()
         let rate = moonRate(at: clock())
@@ -1227,6 +1231,9 @@ public final class MosaicSession: @unchecked Sendable {
         tiles: [Int]? = nil, into folder: URL, shouldContinue: @Sendable () -> Bool = { true }
     ) async throws {
         guard let plan else { throw MosaicError(description: "Plan first.") }
+        // The centre checked against the limb first if it's a while old
+        // (the model drifts: 2026-11-20, a capture 1,300″ off).
+        if let t = centreFixedAt, clock().timeIntervalSince(t) > 120 { await limbCheckQuietly() }
         try await armForStep()
         defer { endStep() }
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -1260,6 +1267,8 @@ public final class MosaicSession: @unchecked Sendable {
         for id in ids {
             guard shouldContinue() else { break }
             guard let tile = plan.tiles.first(where: { $0.id == id }) else { continue }
+            // And again every five minutes of capture.
+            if let t = centreFixedAt, clock().timeIntervalSince(t) > 300 { await limbCheckQuietly() }
             do {
                 set(id, .moving)
                 try await goToSky(tile.pointing)

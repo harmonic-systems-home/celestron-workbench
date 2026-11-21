@@ -160,6 +160,7 @@ public enum Rehearsal {
     /// Moon, Plan, and the first `tiles` sunlit tiles captured.
     public static func run(
         _ scenario: Scenario, site siteIn: Site = Site(latitudeDeg: 40, longitudeDeg: -100), speed: Double = 5,
+        limbCheckAfter: Double = 0,
         tiles: Int = 2, folder: URL? = nil, log: @escaping @Sendable (String) -> Void = { _ in }
     ) async -> Result {
         var loaded: MoonScene?
@@ -260,6 +261,18 @@ public enum Rehearsal {
             }
             defer { try? mount.stopTracking() }
 
+            /// How far the model's centre is from the true centre (″): where
+            /// the model says the camera points against the centre, less
+            /// where it really points. No goto involved.
+            @Sendable func modelError() async throws -> Double {
+                guard let h = session.here, let st = try? session.mount.status(), var p = st.positionsDeg else { return .nan }
+                if let r = st.tracking, let age = st.positionsAgeMs {
+                    p = [p[0] + r[0] * Double(age) / 1000, p[1] + r[1] * Double(age) / 1000]
+                }
+                let sky = session.relativeMove(from: (h.time, [h.azimuthDeg, h.altitudeDeg]), to: (clock(), p))
+                let t = camera.pointing
+                return hypot(sky.x - t.x, sky.y - t.y)
+            }
             func step(_ name: String, limit: Double = 180, _ body: @escaping @Sendable () async throws -> String?) async -> Bool {
                 let t0 = Date()
                 do {
@@ -311,6 +324,7 @@ public enum Rehearsal {
             guard
                 await step("Orient Moon", limit: 400, {
                     let fit = try await session.findCentre()
+                    let modelErr = try await modelError()
                     if let off = session.checkRotation(), off > 30 {
                         throw MosaicError(description: String(format: "rotation check %.0f° off", off))
                     }
@@ -318,7 +332,7 @@ public enum Rehearsal {
                     guard hypot(p.x, p.y) < 120 else {
                         throw MosaicError(description: String(format: "centred %.0f″ off", hypot(p.x, p.y)))
                     }
-                    return String(format: "centred %.0f″ off; fit moved %.0f″", hypot(p.x, p.y), hypot(fit.centre.x, fit.centre.y))
+                    return String(format: "centred %.0f″ off (the model's centre %.0f″ off); fit moved %.0f″", hypot(p.x, p.y), modelErr, hypot(fit.centre.x, fit.centre.y))
                 })
             else { return Result(scenario: scenario, steps: steps) }
             guard
@@ -327,6 +341,28 @@ public enum Rehearsal {
                     return "\(plan.tiles.count) tiles, \(plan.tiles.filter(\.lit).count) sunlit"
                 })
             else { return Result(scenario: scenario, steps: steps) }
+            if limbCheckAfter > 0 {
+                _ = await step("Limb check", limit: 300, {
+                    // A while later, with the model's correction as measured:
+                    // how far the centre is, then the limb check, then again.
+                    try await Task.sleep(for: .seconds(limbCheckAfter))
+                    let errBefore = try await modelError()
+                    try await session.goToSky(SkyOffset(x: 0, y: 0))
+                    try await Task.sleep(for: .milliseconds(500))
+                    let before = camera.pointing
+                    guard try await session.limbCheck() != nil else {
+                        throw MosaicError(description: String(format: "probe failed (centre %.0f″ off before)", hypot(before.x, before.y)))
+                    }
+                    let errAfter = try await modelError()
+                    try await session.goToSky(SkyOffset(x: 0, y: 0))
+                    try await Task.sleep(for: .milliseconds(500))
+                    let after = camera.pointing
+                    guard hypot(after.x, after.y) < 60 else {
+                        throw MosaicError(description: String(format: "centre %.0f″ off after (%.0f″ before)", hypot(after.x, after.y), hypot(before.x, before.y)))
+                    }
+                    return String(format: "centre %.0f″ off before, %.0f″ after (the model's centre %.0f″ → %.0f″ off)", hypot(before.x, before.y), hypot(after.x, after.y), errBefore, errAfter)
+                })
+            }
             if tiles > 0, let plan = session.plan {
                 let dir = folder ?? FileManager.default.temporaryDirectory.appendingPathComponent("rehearsal-\(scenario.seed)")
                 _ = await step("Capture \(tiles)", {

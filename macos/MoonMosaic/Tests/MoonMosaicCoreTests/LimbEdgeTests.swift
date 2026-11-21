@@ -111,3 +111,16 @@ private func diskFrame(
     #expect(abs(b2.az - (0.1 + 0.006)) < 1e-9)
     #expect(d.measured == t1)
 }
+
+@Test func driftRefinementDoesNotReachBackPastItsMoment() {
+    let d = MoonModelDrift()
+    let t0 = Date(timeIntervalSince1970: 1_000_000)
+    d.addRate((az: 0.001, alt: 0), at: t0)
+    let here = t0.addingTimeInterval(-50)  // Here was pressed before the first measurement
+    #expect(abs(d.bias(at: here).az + 0.05) < 1e-9)  // the first rate runs back to it
+    let t1 = t0.addingTimeInterval(100)
+    d.addRate((az: 0.002, alt: 0), at: t1)
+    #expect(abs(d.bias(at: here).az + 0.05) < 1e-9)  // a refinement doesn't
+    #expect(abs(d.bias(at: t1).az - 0.1) < 1e-9)
+    #expect(abs(d.bias(at: t1.addingTimeInterval(10)).az - 0.13) < 1e-9)
+}

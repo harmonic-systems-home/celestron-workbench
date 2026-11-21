@@ -86,6 +86,10 @@ public enum LimbEdge {
         public let centre: SkyOffset
         /// The radius fitted freely to the same points: a check on the fit.
         public let freeRadius: Double
+        /// That free circle's centre: free of any error in the radius (the
+        /// probes are all on the sunlit side, so a radius a little off moves
+        /// the fixed-radius centre toward or away from them).
+        public let freeCentre: SkyOffset
         public let inliers: Int
         public let total: Int
         /// RMS distance of the inliers from the circle (″).
@@ -144,6 +148,7 @@ public enum LimbEdge {
         }
         let d0 = det3(m)
         var free = r
+        var freeCentre = c
         if abs(d0) > 1e-9 {
             var sol = [0.0, 0.0, 0.0]
             for i in 0..<3 {
@@ -153,11 +158,15 @@ public enum LimbEdge {
             }
             let (a, b) = (sol[0] / 2, sol[1] / 2)
             let rr = sol[2] + a * a + b * b
-            if rr > 0 { free = rr.squareRoot() }
+            if rr > 0 {
+                free = rr.squareRoot()
+                freeCentre = SkyOffset(x: c.x + a, y: c.y + b)
+            }
         }
         let rms = (inl.map { pow(hypot($0.sky.x - c.x, $0.sky.y - c.y) - r, 2) }.reduce(0, +) / Double(inl.count))
             .squareRoot()
-        return Circle(centre: c, freeRadius: free, inliers: inl.count, total: points.count, rms: rms)
+        return Circle(
+            centre: c, freeRadius: free, freeCentre: freeCentre, inliers: inl.count, total: points.count, rms: rms)
     }
 }
 
@@ -323,11 +332,64 @@ extension MosaicSession {
             onEvent(.message("Limb probe: the circle doesn't check out; using the survey."))
             return nil
         }
+        // The free circle's centre: the radius check passed, and a radius a
+        // little off (the scale, the edge's exact place) would otherwise
+        // shift the centre along the probes (the test runner: free radii
+        // 1.3–2.3% large, centres 20–30″ off).
         return MoonCentre.Fit(
-            centre: circle.centre, agreement: share, moonCells: 0, litCells: circle.inliers, skyCells: 0,
+            centre: circle.freeCentre, agreement: share, moonCells: 0, litCells: circle.inliers, skyCells: 0,
             // Not measured by the probe: at night the dark side's earthshine
             // is there to capture (the dark tiles stay in the plan); by day
             // it never shows.
             earthshine: !daytime, levels: MoonCentre.Levels(sky: 0, moon: 0, lit: 0))
+    }
+}
+
+extension MosaicSession {
+    /// Checks the centre against the limb (needs no detail in view, only the
+    /// sharp sunlit edge): the probe finds where the centre is now against
+    /// Here (the last centre). That offset puts Here right, and divided by
+    /// the time since the last fix it is the drift the model missed, added
+    /// to the correction. Returns the offset found, nil if the probe failed.
+    @discardableResult
+    public func limbCheck() async throws -> SkyOffset? {
+        guard let here, let since = centreFixedAt else { return nil }
+        let r = Ephemeris.moon(at: clock(), from: settings.site).diameterDeg * 1800
+        onEvent(.detail("Checking the centre against the limb"))
+        defer { onEvent(.detail(nil)) }
+        guard let fit = try await probeLimbCentre(radius: r) else {
+            onEvent(.message("Limb check: the probe didn't find the limb well; the centre is as it was."))
+            return nil
+        }
+        let c = fit.centre
+        let now = clock()
+        let dt = now.timeIntervalSince(since)
+        let shift = MosaicPlanner.axes(for: c, altitudeDeg: here.moon.horizontal.altDeg)
+        self.here = Here(
+            time: here.time, azimuthDeg: Ephemeris.normalize(here.azimuthDeg + shift.azDeg),
+            altitudeDeg: here.altitudeDeg + shift.altDeg, moon: here.moon)
+        var rateNote = ""
+        if dt > 60 {
+            let alt = Self.moonAxes(at: now, settings.site).alt
+            drift.addRate((az: c.x / dt / cos(alt * .pi / 180) / 3600, alt: c.y / dt / 3600), at: now)
+            rateNote = String(format: "; %.2f″/s more drift corrected", hypot(c.x, c.y) / dt)
+        }
+        centreFixedAt = now
+        note("limb", ["time": Self.fileStamp(now), "kind": "check", "moved": [c.x, c.y], "sinceSeconds": dt])
+        onEvent(
+            .message(
+                String(
+                    format: "Limb check: the centre had moved %.0f″ (%.0f″, %.0f″) in %.0f s%@.",
+                    hypot(c.x, c.y), c.x, c.y, dt, rateNote)))
+        return c
+    }
+
+    /// A limb check during a capture: a failure is reported, not thrown.
+    func limbCheckQuietly() async {
+        do {
+            try await limbCheck()
+        } catch {
+            onEvent(.message("Limb check failed (\(error)); carrying on."))
+        }
     }
 }

@@ -13,9 +13,13 @@ import Foundation
 /// where it was at that moment.
 public final class MoonModelDrift: @unchecked Sendable {
     private let lock = NSLock()
-    private var base = (az: 0.0, alt: 0.0)
-    private var rate = (az: 0.0, alt: 0.0)
-    private var since: Date?
+    /// The pieces in time order: from `since`, `base + rate · (t − since)`.
+    /// Before the first piece its rate runs backward too (the slide was
+    /// there before it was measured, e.g. at Here); a later refinement
+    /// counts only from its own moment, so what was fixed before it (Here
+    /// moved to the centre) stays put (2026-11-21, the test runner: a
+    /// refinement applied back to Here's time moved targets 20–50″).
+    private var pieces: [(since: Date, base: (az: Double, alt: Double), rate: (az: Double, alt: Double))] = []
     private var _measured: Date?
 
     public init() {}
@@ -23,27 +27,26 @@ public final class MoonModelDrift: @unchecked Sendable {
     /// When the drift was last measured (the session's clock).
     public var measured: Date? { lock.withLock { _measured } }
 
-    /// The bias (degrees on each axis) at `t`.
-    public func bias(at t: Date) -> (az: Double, alt: Double) {
-        lock.withLock {
-            guard let since else { return (0, 0) }
-            let dt = t.timeIntervalSince(since)
-            return (base.az + rate.az * dt, base.alt + rate.alt * dt)
-        }
+    private func value(at t: Date) -> (az: Double, alt: Double) {
+        guard let first = pieces.first else { return (0, 0) }
+        let p = pieces.last { $0.since <= t } ?? first
+        let dt = t.timeIntervalSince(p.since)
+        return (p.base.az + p.rate.az * dt, p.base.alt + p.rate.alt * dt)
     }
 
-    /// The bias's rate (degrees per second on each axis).
-    public var ratePerSecond: (az: Double, alt: Double) { lock.withLock { rate } }
+    /// The bias (degrees on each axis) at `t`.
+    public func bias(at t: Date) -> (az: Double, alt: Double) { lock.withLock { value(at: t) } }
+
+    /// The bias's rate now (degrees per second on each axis).
+    public var ratePerSecond: (az: Double, alt: Double) { lock.withLock { pieces.last?.rate ?? (0, 0) } }
 
     /// Adds `extra` (deg/s on each axis) to the rate from `t` on.
     public func addRate(_ extra: (az: Double, alt: Double), at t: Date) {
         lock.withLock {
-            if let since {
-                let dt = t.timeIntervalSince(since)
-                base = (base.az + rate.az * dt, base.alt + rate.alt * dt)
-            }
-            rate = (rate.az + extra.az, rate.alt + extra.alt)
-            since = t
+            let base = value(at: t)
+            let rate: (az: Double, alt: Double) = pieces.last?.rate ?? (0, 0)
+            pieces.removeAll { $0.since >= t }
+            pieces.append((t, base, (rate.az + extra.az, rate.alt + extra.alt)))
             _measured = t
         }
     }
@@ -51,9 +54,8 @@ public final class MoonModelDrift: @unchecked Sendable {
     /// Forgets the correction (a new session, or Here pressed afresh).
     public func reset() {
         lock.withLock {
-            base = (0, 0)
-            rate = (0, 0)
-            since = nil
+            pieces = []
+            _measured = nil
         }
     }
 }
@@ -159,6 +161,17 @@ extension MosaicSession {
         let slope = Self.slope
         let i = slope(img)
         let e = slope(enc)
+        let mt = img.map(\.t).reduce(0, +) / Double(img.count)
+        let stt = img.map { ($0.t - mt) * ($0.t - mt) }.reduce(0, +)
+        let sigma = stt > 0 ? i.scatter / stt.squareRoot() : .infinity
+        guard sigma < 0.5 else {
+            onEvent(
+                .message(
+                    String(
+                        format: "Tracking drift not measured well (±%.1f″/s from %d frames: little detail in view?); left as it was.",
+                        sigma, img.count)))
+            throw MosaicError(description: String(format: "drift uncertain (±%.1f″/s)", sigma))
+        }
         // Pointing − real Moon = (pointing − model) − (real − model): the
         // real Moon moves against the model at (encoders − image).
         let added = SkyOffset(x: e.x - i.x, y: e.y - i.y)
