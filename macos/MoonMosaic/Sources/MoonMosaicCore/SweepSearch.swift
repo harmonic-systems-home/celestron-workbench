@@ -28,6 +28,26 @@ extension MosaicSession {
         let searchStart = clock()
         let home = offset(of: p0, at: searchStart)
 
+        func trackMoon0() throws {
+            let r = moonRate(at: clock())
+            try mount.track(azDegS: r.az, altDegS: r.alt)
+        }
+        // Already in view? Then there's nothing to search for (2026-11-20,
+        // first night: the Moon centred, and the sweep went off anyway).
+        _ = try? await grabFrame()
+        if let now = try? await grabFrame(), case let b = Blob.find(now, thresholdFraction: 0.3), found(b), let b {
+            onEvent(.message("Sweep: the Moon is in view already; no search needed."))
+            markOnMoon(p0, at: searchStart)
+            if let converge, calibration != nil {
+                let outcome = try await convergeOnDisk(from: b, converge, cancelled)
+                try? trackMoon0()
+                return SearchOutcome(
+                    found: true, atAzAltDeg: outcome.atAzAltDeg, blob: outcome.blob, stops: 0,
+                    converged: outcome.converged, convergeSteps: outcome.convergeSteps)
+            }
+            return SearchOutcome(found: true, atAzAltDeg: p0, blob: b, stops: 0, converged: true)
+        }
+
         // Rows: the start's row, then alternately above and below.
         // (A hair over, so 1.2 / 0.4 counts 3 rows each way, not 2.9999…:
         // 2026-11-20, rows stopped at ±0.8° of a ±1.2° area.)

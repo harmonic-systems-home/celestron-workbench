@@ -207,12 +207,26 @@ extension MosaicSession {
                     "nudge": ["sky": [nSky.x, nSky.y], "encoders": [encoders.x, encoders.y], "shift": [shift.dx, shift.dy, shift.peak]],
                     "errorDirect": eD, "errorMirrored": eM, "guessArcsecPerPixel": guess,
                 ])
-            let best = min(eD, eM)
-            guard shift.peak > 0.05, best <= 0.3, max(eD, eM) >= 2 * best + 0.2 else {
+            // Decided by direction: the nudge's size on the sky is less sure
+            // than its way (2026-11-20, first night: the image moved 1.75×
+            // the commanded 36″, likely the altitude axis reversing and the
+            // hand controller's anti-backlash adding a kick, so the size test
+            // failed all three times though the mirrored way matched).
+            func angle(_ m: CameraCalibration) -> Double {
+                let q = m.image(for: nSky)
+                let d = atan2(shift.dy, shift.dx) - atan2(q.y, q.x)
+                return abs(atan2(sin(d), cos(d))) * 180 / .pi
+            }
+            let (aD, aM) = (angle(direct), angle(mirrored))
+            let predicted = hypot(nSky.x, nSky.y) / scale
+            let ratio = hypot(shift.dx, shift.dy) / max(1, predicted)
+            why += String(format: "; angle %.0f° direct, %.0f° mirrored, size ×%.2f", aD, aM, ratio)
+            let bestAngle = min(aD, aM)
+            guard shift.peak > 0.05, bestAngle <= 35, max(aD, aM) >= bestAngle + 60, (0.4...2.5).contains(ratio) else {
                 onEvent(.message("Orient camera attempt \(attempt) of 3 didn't settle (\(why)); trying again."))
                 continue
             }
-            let m = eD <= eM ? direct : mirrored
+            let m = aD <= aM ? direct : mirrored
             calibration = m
             onEvent(
                 .message(
