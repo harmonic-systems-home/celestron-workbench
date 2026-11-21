@@ -148,7 +148,9 @@ impl SimMount {
             sends: VecDeque::new(),
             arriving: Vec::new(),
             watch: None,
-            accel_deg_s2: 5.0,
+            // The real mount ramps rates at about 2.7°/s² (2026-11-20 trace:
+            // a 1.9°/s move coasted on 0.7 s and 0.6° after the stop).
+            accel_deg_s2: 2.7,
             start_altitude_deg,
             noise: seed.max(1),
             received: Vec::new(),

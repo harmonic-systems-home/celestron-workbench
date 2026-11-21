@@ -226,40 +226,76 @@ extension MosaicSession {
         }
     }
 
+    /// Waits (up to `maxSeconds`) until both axes run at the Moon's rate
+    /// again. The mount ramps rates at only ~2.7°/s², so after a 1.9°/s move
+    /// it coasts on for most of a second and over half a degree
+    /// (2026-11-20, first raster night: a read taken mid-coast sent the
+    /// return to a sighting 0.46° off and lost the Moon every time).
+    func waitUntilSettled(maxSeconds: Double = 3) async throws {
+        let end = Date().addingTimeInterval(maxSeconds)
+        var last: (wall: Date, p: [Double])?
+        var calm = 0
+        while Date() < end {
+            if let st = try? mount.status(), let p = st.positionsDeg, let age = st.positionsAgeMs {
+                let wall = Date().addingTimeInterval(-Double(age) / 1000)
+                if let l = last, wall.timeIntervalSince(l.wall) > 0.15 {
+                    let dt = wall.timeIntervalSince(l.wall)
+                    let r = moonRate(at: clock())
+                    let vAz = wrap180(p[0] - l.p[0]) / dt - r.az
+                    let vAlt = wrap180(p[1] - l.p[1]) / dt - r.alt
+                    calm = abs(vAz) < 0.03 && abs(vAlt) < 0.03 ? calm + 1 : 0
+                    if calm >= 2 { return }
+                    last = (wall, p)
+                } else if last == nil {
+                    last = (wall, p)
+                }
+            }
+            try await Task.sleep(for: .milliseconds(80))
+        }
+    }
+
     /// A straight move to axis angles `target` (the Moon-relative point a
     /// moment ahead): extra tracking rate on both axes together for as long
     /// as the move takes at `speedDegS` on the sky, then tracking on. Fast
-    /// (the firmware's slow goto crawls), cross-coupled, and accurate to a
-    /// few arcseconds per second of command latency, which is plenty for
-    /// searching.
-    func rateMove(to target: (az: Double, alt: Double), speedDegS: Double = 1.5) async throws {
+    /// (the firmware's slow goto crawls) and cross-coupled. It waits for the
+    /// mount to settle before measuring and after moving, then corrects at
+    /// a gentler speed until within `toleranceDeg` on the sky (the ramp and
+    /// coast make a single open-loop move tenths of a degree off).
+    func rateMove(
+        to target: (az: Double, alt: Double), speedDegS: Double = 1.5, toleranceDeg: Double = 0.02
+    ) async throws {
         if (try? mount.status().state) == "Armed" { endStep() }
-        // Where the mount is now: the last read carried forward at the
-        // tracking rates by its age. Right after a sweep the last read can
-        // be a quarter second old at 1.4°/s (2026-11-20: a column started
-        // 0.6° off). A moment first for the mount to come back to the
-        // Moon's rate.
-        try await Task.sleep(for: .milliseconds(250))
-        var p = try await freshPosition()
-        if let st = try? mount.status(), let q = st.positionsDeg, let age = st.positionsAgeMs {
-            let r = st.tracking ?? [0, 0]
-            p = [q[0] + r[0] * Double(age) / 1000, q[1] + r[1] * Double(age) / 1000]
+        let started = clock()
+        let rStart = moonRate(at: started)
+        for attempt in 0..<4 {
+            try await waitUntilSettled()
+            var p = try await freshPosition()
+            if let st = try? mount.status(), let q = st.positionsDeg, let age = st.positionsAgeMs {
+                let r = st.tracking ?? [0, 0]
+                p = [q[0] + r[0] * Double(age) / 1000, q[1] + r[1] * Double(age) / 1000]
+            }
+            // The target moves with the Moon.
+            let since = clock().timeIntervalSince(started)
+            let aim = (az: target.az + rStart.az * since, alt: target.alt + rStart.alt * since)
+            let alt = Self.moonAxes(at: clock(), settings.site).alt
+            let dAz = wrap180(aim.az - p[0])
+            let dAlt = wrap180(aim.alt - p[1])
+            let sky = hypot(dAz * cos(alt * .pi / 180), dAlt)
+            let r = moonRate(at: clock())
+            if sky < (attempt == 0 ? 1.0 / 3600 : toleranceDeg) { break }
+            if attempt == 0 { try checkSun(from: p, to: [p[0] + dAz, p[1] + dAlt], what: "the move") }
+            // Corrections gentler: less ramp, less coast.
+            let speed = attempt == 0 ? speedDegS : min(speedDegS, 0.5)
+            // Within the session's 2°/s on each axis (azimuth runs faster
+            // than the sky by 1/cos(altitude)).
+            var seconds = max(0.3, sky / speed)
+            seconds = max(seconds, abs(dAz) / 1.9, abs(dAlt) / 1.9)
+            try mount.track(azDegS: r.az + dAz / seconds, altDegS: r.alt + dAlt / seconds)
+            try await Task.sleep(for: .seconds(seconds))
+            try mount.track(azDegS: r.az, altDegS: r.alt)
+            lastMoveEnd = Date()
         }
-        let alt = Self.moonAxes(at: clock(), settings.site).alt
-        let dAz = wrap180(target.az - p[0])
-        let dAlt = wrap180(target.alt - p[1])
-        let sky = hypot(dAz * cos(alt * .pi / 180), dAlt)
-        let r = moonRate(at: clock())
-        guard sky > 1.0 / 3600 else { return }
-        try checkSun(from: p, to: [p[0] + dAz, p[1] + dAlt], what: "the move")
-        // Within the session's 2°/s on each axis (azimuth runs faster than
-        // the sky by 1/cos(altitude)).
-        var seconds = max(0.3, sky / speedDegS)
-        seconds = max(seconds, abs(dAz) / 1.9, abs(dAlt) / 1.9)
-        // The target moves with the Moon meanwhile; the Moon's rate covers it.
-        try mount.track(azDegS: r.az + dAz / seconds, altDegS: r.alt + dAlt / seconds)
-        try await Task.sleep(for: .seconds(seconds))
-        try mount.track(azDegS: r.az, altDegS: r.alt)
+        try await waitUntilSettled()
         lastMoveEnd = Date()
     }
 
