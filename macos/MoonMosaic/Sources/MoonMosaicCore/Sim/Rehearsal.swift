@@ -99,6 +99,12 @@ public enum Rehearsal {
         public var camera: CameraModel = .asi662mc
         /// By day: the Sun well up, a bright blue sky.
         public var daytime = false
+        /// A scene image (with its sidecar): its moment and place set the
+        /// sky, its own sky the brightness and colour; nil for synthetic.
+        public var scenePath: String?
+        /// The camera's exposure and gain (the app's defaults otherwise).
+        public var exposureUs: Int?
+        public var gain: Int?
 
         /// A test set's scenario: the seed sets the rest (where the Moon is,
         /// the seeing).
@@ -145,15 +151,29 @@ public enum Rehearsal {
     /// The steps run, in order: Find (sweep), Here, Orient Camera, Orient
     /// Moon, Plan, and the first `tiles` sunlit tiles captured.
     public static func run(
-        _ scenario: Scenario, site: Site = Site(latitudeDeg: 40, longitudeDeg: -100), speed: Double = 5,
+        _ scenario: Scenario, site siteIn: Site = Site(latitudeDeg: 40, longitudeDeg: -100), speed: Double = 5,
         tiles: Int = 2, folder: URL? = nil, log: @escaping @Sendable (String) -> Void = { _ in }
     ) async -> Result {
+        var loaded: MoonScene?
+        if let path = scenario.scenePath {
+            do {
+                loaded = try MoonScene(contentsOf: URL(fileURLWithPath: path))
+            } catch {
+                return Result(scenario: scenario, steps: [Step(name: "Setup", ok: false, seconds: 0, note: "\(error)")])
+            }
+        }
+        let site: Site = {
+            if let i = loaded?.info, let lat = i.latitude, let lon = i.longitude { return Site(latitudeDeg: lat, longitudeDeg: lon) }
+            return siteIn
+        }()
         var steps: [Step] = []
         do {
             // The test set's phase; else the first time the Moon is well up,
             // then the scenario's hours on.
             let epoch: Date
-            if let phase = scenario.phase {
+            if let taken = loaded?.info.taken {
+                epoch = taken
+            } else if let phase = scenario.phase {
                 guard let m = moment(for: phase, site: site, daytime: scenario.daytime) else {
                     throw MosaicError(description: "no moment found for the \(phase.rawValue) Moon")
                 }
@@ -176,14 +196,22 @@ public enum Rehearsal {
             let truthOptics = optics
             let phase = Ephemeris.phase(at: clock(), from: site)
             let camera = SimCamera(
-                optics: optics, scene: MoonScene.synthetic(size: 768, phaseAngleDeg: phase.phaseAngleDeg),
+                optics: optics, scene: loaded ?? MoonScene.synthetic(size: 768, phaseAngleDeg: phase.phaseAngleDeg),
                 seed: scenario.seed)
-            camera.alignBrightLimb(toDeg: phase.brightLimbFromZenithDeg)
+            if loaded?.info.level == true {
+                camera.sceneRotationDeg = 0
+            } else if camera.alignNorth(toDeg: Ephemeris.moonNorthFromZenithDeg(at: clock(), from: site)) == false {
+                camera.alignBrightLimb(toDeg: phase.brightLimbFromZenithDeg)
+            }
             var c = SimCamera.Conditions()
             c.seeingArcsec = scenario.seeingArcsec
             if scenario.daytime {
                 c.skyLevel = 0.25
                 c.skyColour = [0.55, 1, 1.6]
+            }
+            if let s = loaded, s.skyLevel > 0.01 {
+                c.skyLevel = min(0.5, s.skyLevel)
+                c.skyColour = s.skyColour ?? [0.55, 1, 1.6]
             }
             camera.conditions = c
             camera.moonRadiusArcsec = Ephemeris.moon(at: clock(), from: site).diameterDeg * 1800
@@ -191,6 +219,8 @@ public enum Rehearsal {
             settings.focalLengthMm = 2032
             settings.settleSeconds = 0.7 / speed
             settings.videoSeconds = 1
+            if let e = scenario.exposureUs { settings.exposureUs = e }
+            if let g = scenario.gain { settings.gain = g }
             let session = MosaicSession(
                 mount: mount, camera: camera, settings: settings, clock: clock,
                 onEvent: { if case .message(let m) = $0 { log(m) } })

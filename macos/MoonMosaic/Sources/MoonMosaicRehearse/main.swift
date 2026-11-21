@@ -56,6 +56,21 @@ if option("--set") == "phases" {
             }
         }
     }
+} else if let scene = option("--scene") {
+    // One photo as the scene, at its own moment and place, for `count` seeds.
+    for seed in first..<(first + UInt64(count)) {
+        var s = Rehearsal.Scenario(seed: seed)
+        s.scenePath = scene
+        s.camera = cameras[0]
+        s.exposureUs = option("--exposure-ms").flatMap(Double.init).map { Int($0 * 1000) }
+        s.gain = option("--gain").flatMap(Int.init)
+        if let r = option("--rotation").flatMap(Double.init) { s.cameraRotationDeg = r }
+        if let d = option("--diagonal") { s.diagonal = d == "yes" }
+        if let m = option("--moon"), case let v = m.split(separator: ",").compactMap({ Double($0) }), v.count == 2 {
+            (s.moonOffsetAz, s.moonOffsetAlt) = (v[0], v[1])
+        }
+        scenarios.append(s)
+    }
 } else {
     for seed in first..<(first + UInt64(count)) {
         for camera in cameras {

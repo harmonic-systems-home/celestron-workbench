@@ -62,11 +62,15 @@ public enum MoonCentre {
             var x0 = (w % cell) / 2
             while x0 + cell <= w {
                 var sum = 0
-                // Every other pixel each way: plenty for a mean.
+                // Every pixel: a colour sensor's raw frame alternates red,
+                // green and blue, and every other pixel each way read only
+                // one of them, which one depending on where the cell grid
+                // fell (2026-11-20: on a blue daytime sky the blue pixels
+                // made the sky read as sunlit Moon and the fit failed).
                 var n = 0
-                for y in stride(from: y0, to: y0 + cell, by: 2) {
+                for y in y0..<(y0 + cell) {
                     let row = y * w
-                    for x in stride(from: x0, to: x0 + cell, by: 2) {
+                    for x in x0..<(x0 + cell) {
                         sum += Int(frame.pixels[row + x])
                         n += 1
                     }

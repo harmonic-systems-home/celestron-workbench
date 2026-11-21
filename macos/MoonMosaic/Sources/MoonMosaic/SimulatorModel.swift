@@ -118,7 +118,7 @@ final class SimulatorModel: ObservableObject {
         // The camera's truth now, or the last good one: with no position
         // read at that instant the provider answers (1e6, 1e6), which put
         // the box a world away and zoomed the view out to nothing.
-        if let p = camera?.pointing, abs(p.x) < 1e5, abs(p.y) < 1e5 {
+        if let p = truthPointing ?? camera?.pointing, abs(p.x) < 1e5, abs(p.y) < 1e5 {
             searchCentre = CGPoint(x: p.x, y: p.y)
         } else {
             searchCentre = pointing
@@ -451,6 +451,9 @@ final class SimulatorModel: ObservableObject {
         phaseAngleNowDeg = sceneChoice == .phase ? phaseAngleDeg : phase.phaseAngleDeg
     }
 
+    /// The latest rendered frame's pointing, from the Moon's centre.
+    private var truthPointing: (x: Double, y: Double)? { truth.latestPointing }
+
     private func tick() {
         guard let camera else { return }
         if let t = truth.latest {
@@ -462,15 +465,11 @@ final class SimulatorModel: ObservableObject {
         // which can come back empty while a step is busy with the mount and
         // left this view frozen (2026-11-20: still during Orient Moon while
         // the camera view moved).
-        var p = camera.pointing
-        if let t = truth.latest, t.mount.count == 2, t.moon.count == 2 {
-            let alt = t.moon[1] * .pi / 180
-            var dAz = (t.mount[0] - t.moon[0]).truncatingRemainder(dividingBy: 360)
-            if dAz > 180 { dAz -= 360 } else if dAz < -180 { dAz += 360 }
-            var dAlt = (t.mount[1] - t.moon[1]).truncatingRemainder(dividingBy: 360)
-            if dAlt > 180 { dAlt -= 360 } else if dAlt < -180 { dAlt += 360 }
-            p = (dAz * cos(alt) * 3600, dAlt * 3600)
-        }
+        // (Exactly what the camera rendered: the encoder's altitude isn't
+        // the sky's before Here, so a cosine from it stretched the view's
+        // path 1.4× along azimuth: 2026-11-20, the search seemed to run
+        // outside its area.)
+        let p = truthPointing ?? camera.pointing
         guard abs(p.x) < 1e5, abs(p.y) < 1e5 else { return }
         let point = CGPoint(x: p.x, y: p.y)
         pointing = point
@@ -492,6 +491,13 @@ final class SimulatorModel: ObservableObject {
 final class SimTruth: @unchecked Sendable {
     private let lock = NSLock()
     private var value: (mount: [Double], moon: [Double])?
+    private var pointing: (x: Double, y: Double)?
     var latest: (mount: [Double], moon: [Double])? { lock.withLock { value } }
-    func set(mount: [Double], moon: [Double]) { lock.withLock { value = (mount, moon) } }
+    var latestPointing: (x: Double, y: Double)? { lock.withLock { pointing } }
+    func set(mount: [Double], moon: [Double], pointing p: (x: Double, y: Double)? = nil) {
+        lock.withLock {
+            value = (mount, moon)
+            if let p { pointing = p }
+        }
+    }
 }

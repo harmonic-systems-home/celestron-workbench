@@ -681,9 +681,9 @@ final class AppModel: ObservableObject {
                 targetAlt += mNow.altDeg - m0.altDeg
                 altForCos = mNow.altDeg
             }
-            truth.set(mount: p, moon: [targetAz, targetAlt])
             let dAz = wrap180app(p[0] - targetAz) * cos(altForCos * .pi / 180) * 3600
             let dAlt = wrap180app(p[1] - targetAlt) * 3600
+            truth.set(mount: p, moon: [targetAz, targetAlt], pointing: (dAz, dAlt))
             return (dAz, dAlt)
         }
         fake?.provider = provider
