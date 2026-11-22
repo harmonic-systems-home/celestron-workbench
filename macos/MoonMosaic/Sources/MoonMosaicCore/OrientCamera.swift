@@ -84,14 +84,12 @@ extension MosaicSession {
             return (clock(), try await freshPosition())
         }
         func back(to home: FollowState.Offset) async throws {
-            let m = modelMoon(at: clock().addingTimeInterval(3))
-            try await armForStep()
-            for (axis, target) in [
-                (MountSession.Axis.azimuth, Ephemeris.normalize(m.az + home.az)), (.altitude, m.alt + home.alt),
-            ] {
-                try await moveAxis(axis, to: target, approach: nil)
-            }
-            endStep()
+            // Tracking all the way, each axis ending the way it tracks.
+            try await rateMove(
+                aim: { t in
+                    let m = self.modelMoon(at: t)
+                    return (Ephemeris.normalize(m.az + home.az), m.alt + home.alt)
+                }, speedDegS: 1.5, toleranceDeg: 0.005, trackingWay: true)
             try trackMoon()
             // Let the tube stop ringing after the goto. Not shortened when
             // rehearsing faster: the ringing is the tube's, not the mount's

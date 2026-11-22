@@ -132,6 +132,9 @@ public final class MosaicSession: @unchecked Sendable {
     /// When the last app move ended (wall clock), for waits on the tube's
     /// ringing.
     var lastMoveEnd = Date.distantPast
+    /// How long a rate move's leg runs on past its time (s), learned from
+    /// the legs themselves; its sleep is cut short by this much.
+    var legLatency = 0.0
     /// Searches move their pattern with the Moon (off for a fixed test
     /// target such as the drainpipe).
     public var searchFollowsMoon = false
@@ -165,11 +168,6 @@ public final class MosaicSession: @unchecked Sendable {
     public private(set) var states: [Int: TileState] = [:]
     /// Each finished tile's quick stack, for the preview.
     public private(set) var stacks: [Int: QuickStack] = [:]
-    /// Each axis finishes its gotos moving the way the Moon drifts on it,
-    /// so touch-ups after a goto are single short legs (set at Here).
-    private var approach: (az: MountSession.Direction, alt: MountSession.Direction) = (
-        .positive, .positive
-    )
     let clock: @Sendable () -> Date
     /// The session's time (the rehearsal clock when simulating).
     public var now: Date { clock() }
@@ -276,11 +274,6 @@ public final class MosaicSession: @unchecked Sendable {
         here = Here(time: now, azimuthDeg: p[0], altitudeDeg: p[1], moon: moon)
         centreFit = nil
         litSky = []
-        let later = Ephemeris.moon(at: now.addingTimeInterval(60), from: settings.site).horizontal
-        approach = (
-            wrap180(later.azDeg - moon.horizontal.azDeg) >= 0 ? .positive : .negative,
-            later.altDeg >= moon.horizontal.altDeg ? .positive : .negative
-        )
         onEvent(
             .message(
                 String(
@@ -342,11 +335,9 @@ public final class MosaicSession: @unchecked Sendable {
         let guess = 206.265 * camera.info.pixelSizeUm / settings.focalLengthMm
         let short = Double(min(camera.info.width, camera.info.height))
         let move = settings.calibrationFraction * short * guess
-        // Re-centre: a goto to where the ephemeris puts the aim, then track.
+        // Re-centre: a move to where the model puts the aim, then track.
         func centre() async throws {
-            try await armForStep()
             try await goToSky(aimOffset)
-            endStep()
             try await track(aimOffset, correct: false)
         }
         var why = ""
@@ -894,12 +885,10 @@ public final class MosaicSession: @unchecked Sendable {
     /// reference must already be set (a search sets it).
     public func recentre(pixelOffset: PixelOffset) async throws {
         let sky = sky(for: pixelOffset, searchOrientation)
-        try await armForStep()
-        defer { endStep() }
         let pos = try await freshPosition()
         let alt = (try? mount.status())?.altitudeDeg ?? pos[1]
         let m = MosaicPlanner.axes(for: sky, altitudeDeg: alt)
-        try await goTo(az: pos[0] + m.azDeg, alt: pos[1] + m.altDeg)
+        try await rateMove(to: (pos[0] + m.azDeg, pos[1] + m.altDeg), toleranceDeg: 0.005, trackingWay: true)
     }
 
     // MARK: Finding the centre
@@ -1234,7 +1223,6 @@ public final class MosaicSession: @unchecked Sendable {
         // The centre checked against the limb first if it's a while old
         // (the model drifts: 2026-11-20, a capture 1,300″ off).
         if let t = centreFixedAt, clock().timeIntervalSince(t) > 120 { await limbCheckQuietly() }
-        try await armForStep()
         defer { endStep() }
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         try camera.configure(exposureUs: settings.exposureUs, gain: settings.gain)
@@ -1272,8 +1260,9 @@ public final class MosaicSession: @unchecked Sendable {
             do {
                 set(id, .moving)
                 try await goToSky(tile.pointing)
-                // Track during the video so the Moon holds still on the
-                // sensor; the next tile's goto stops it.
+                // Track during the video at the tile's own rate, so the
+                // Moon holds still on the sensor (the move left the Moon's
+                // centre's rate on).
                 do {
                     try await track(tile.pointing, correct: false)
                 } catch {
@@ -1430,9 +1419,7 @@ public final class MosaicSession: @unchecked Sendable {
             hypot(wrap180(aim.az - $0[0]) * cos(aim.alt * .pi / 180), aim.alt - $0[1])
         } ?? .infinity
         if s.tracking == nil || error > 0.033 {
-            try await armForStep()
             try await goToSky(aimOffset)
-            endStep()
         }
         try await track(aimOffset, correct: true)
     }
@@ -1485,29 +1472,16 @@ public final class MosaicSession: @unchecked Sendable {
         if (try? mount.status().state) == "Armed" { try? mount.disarm() }
     }
 
-    /// Aims `sky` (relative to the Moon's centre) for the middle of the
-    /// coming video: the gotos, then up to three touch-ups while the error,
-    /// against where the Moon will be by then, is over 5% of the frame.
+    /// Aims `sky` (relative to the Moon's centre): a rate move with tracking
+    /// on throughout, each axis finishing the way it tracks, to within 5%
+    /// of the frame, then the settle. Tracking stays on, so the video can
+    /// start at once. (Until 2026-11-21 the firmware's gotos, tracking off:
+    /// slow, and each one's touch-ups chased a Moon that moved on.)
     public func goToSky(_ sky: SkyOffset) async throws {
-        // A goto ends with the settle; a passing check starts the video at once.
-        let ahead = settings.videoSeconds / 2
-        let settle = settings.settleSeconds
-        var aim = try target(sky, at: clock().addingTimeInterval(settle + ahead + 2))
-        try await goTo(az: aim.az, alt: aim.alt)
         let tolerance = 0.05 * Double(min(camera.info.width, camera.info.height)) * scaleGuess
-        for _ in 0..<3 {
-            // Judged against the video's middle if it started now; a
-            // touch-up aims a second further on, for its own travel.
-            let check = try target(sky, at: clock().addingTimeInterval(ahead))
-            let p = try await freshPosition()
-            let alt = here?.moon.horizontal.altDeg ?? 45
-            let error = SkyOffset(
-                x: wrap180(check.az - p[0]) * cos(alt * .pi / 180) * 3600,
-                y: wrap180(check.alt - p[1]) * 3600)
-            if hypot(error.x, error.y) <= tolerance { return }
-            aim = try target(sky, at: clock().addingTimeInterval(settle + ahead + 1))
-            try await goTo(az: aim.az, alt: aim.alt)
-        }
+        try await rateMove(toSky: sky, speedDegS: 1.5, toleranceDeg: min(0.02, tolerance / 3600))
+        // The tube rings on after the motors stop.
+        try await Task.sleep(for: .seconds(settings.settleSeconds))
     }
 
     /// Arcseconds per pixel: calibrated, or from the pixel size and focal length.
@@ -1518,27 +1492,8 @@ public final class MosaicSession: @unchecked Sendable {
     /// Moves by `sky` from where the mount points now.
     func goBy(_ sky: SkyOffset) async throws {
         guard let p = try mount.status().positionsDeg, let here else { return }
-        let alt = here.moon.horizontal.altDeg
-        let m = MosaicPlanner.axes(for: sky, altitudeDeg: alt)
-        try await goTo(az: p[0] + m.azDeg, alt: p[1] + m.altDeg)
-    }
-
-    /// Gotos on each axis in turn to these axis angles, always finishing
-    /// moving the Moon's way on that axis, so backlash drops out.
-    func goTo(az: Double, alt: Double) async throws {
-        for (axis, target) in [(MountSession.Axis.azimuth, az), (.altitude, alt)] {
-            let way = axis == .azimuth ? approach.az : approach.alt
-            let position = try await freshPosition()
-            try await moveAxis(axis, to: target, approach: way)
-            if ProcessInfo.processInfo.environment["MOSAIC_DEBUG"] != nil {
-                let st = try mount.status()
-                onEvent(
-                    .message(
-                        "goto \(axis) to \(target)° from \(position) → \(st.positionsDeg ?? []) (age \(st.positionsAgeMs ?? -1) ms, \(st.lastRecord?.lastStage ?? "?"))"
-                    ))
-            }
-        }
-        try await Task.sleep(for: .seconds(settings.settleSeconds))
+        let m = MosaicPlanner.axes(for: sky, altitudeDeg: here.moon.horizontal.altDeg)
+        try await rateMove(to: (p[0] + m.azDeg, p[1] + m.altDeg), toleranceDeg: 0.005, trackingWay: true)
     }
 
     /// A search move: straight gotos (no anti-backlash approach overshoot) and

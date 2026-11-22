@@ -59,7 +59,8 @@ func followTracksNudgesAndUndoes() async throws {
         try await Task.sleep(for: .milliseconds(200))
         if session.follow.undoDepth == 0, !session.follow.nudging { break }
     }
-    try await Task.sleep(for: .seconds(2))
+    // The move back may go past and return, to end the way it tracks.
+    try await Task.sleep(for: .seconds(6))
     let back = sky(try await offsetNow(), before)
     #expect(hypot(back.0, back.1) < 30, "after Undo \(back)")
     stop.value = true

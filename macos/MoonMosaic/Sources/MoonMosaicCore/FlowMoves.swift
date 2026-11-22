@@ -51,8 +51,6 @@ extension MosaicSession {
     /// Aims `feature` mid-frame (then the caller tracks on).
     public func goTo(_ feature: Feature) async throws {
         let o = try featureOffset(feature)
-        try await armForStep()
-        defer { endStep() }
         try await goToSky(o)
         let name: String
         switch feature {

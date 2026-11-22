@@ -192,11 +192,17 @@ func aSearchSetsTheAltitudeReferenceWhenNoneIsSet() async throws {
 func recentreSlewsTheClickedPointTowardTheCentre() async throws {
     let camera = FakeCamera(width: 320, height: 240, scale: 1.0, moonRadiusArcsec: 200)
     let (mount, session) = try await simulatedSession(camera)
-    let before = try #require(try mount.status().positionsDeg)
+    // Against the Moon: the move tracks it all the way (and after).
+    let p0 = try #require(try mount.status().positionsDeg)
+    let o0 = session.offset(of: p0, at: Date())
+    let before = [o0.az, o0.alt]
 
     try await session.recentre(pixelOffset: PixelOffset(x: 0, y: 200))
 
-    let after = try #require(try mount.status().positionsDeg)
+    let p1 = try await session.freshPosition()
+    let o1 = session.offset(of: p1, at: Date())
+    let after = [o1.az, o1.alt]
+    defer { try? mount.stopTracking() }
     let arcsecPerPixel = 206.265 * camera.info.pixelSizeUm / 2000  // no calibration yet
     let expectedAltDrop = 200 * arcsecPerPixel / 3600
     // The raw encoder angle wraps (0° → ~360°), so compare the wrapped delta.

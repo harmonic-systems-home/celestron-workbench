@@ -255,43 +255,127 @@ extension MosaicSession {
     }
 
     /// A straight move to axis angles `target` (the Moon-relative point a
-    /// moment ahead): extra tracking rate on both axes together for as long
-    /// as the move takes at `speedDegS` on the sky, then tracking on. Fast
-    /// (the firmware's slow goto crawls) and cross-coupled. It waits for the
-    /// mount to settle before measuring and after moving, then corrects at
-    /// a gentler speed until within `toleranceDeg` on the sky (the ramp and
-    /// coast make a single open-loop move tenths of a degree off).
+    /// moment ahead), which moves on with the Moon: see `rateMove(aim:)`.
     func rateMove(
-        to target: (az: Double, alt: Double), speedDegS: Double = 1.5, toleranceDeg: Double = 0.02
+        to target: (az: Double, alt: Double), speedDegS: Double = 1.5, toleranceDeg: Double = 0.02,
+        trackingWay: Bool = false
+    ) async throws {
+        let started = clock()
+        let r = moonRate(at: started)
+        try await rateMove(
+            aim: { t in
+                let since = t.timeIntervalSince(started)
+                return (target.az + r.az * since, target.alt + r.alt * since)
+            }, speedDegS: speedDegS, toleranceDeg: toleranceDeg, trackingWay: trackingWay)
+    }
+
+    /// A move to `sky` (relative to the Moon's centre), the aim taken
+    /// afresh from the Moon model before every leg.
+    func rateMove(
+        toSky sky: SkyOffset, speedDegS: Double = 1.5, toleranceDeg: Double = 0.02, trackingWay: Bool = true
+    ) async throws {
+        try await rateMove(
+            aim: { try self.target(sky, at: $0) }, speedDegS: speedDegS, toleranceDeg: toleranceDeg,
+            trackingWay: trackingWay)
+    }
+
+    /// How far past its aim an axis goes, to come back the way it tracks:
+    /// past the gears' backlash (azimuth 245″, altitude 70–120″;
+    /// observations O9, O13), axis degrees.
+    static let tackDeg = 0.1
+
+    /// A straight move to `aim(t)`, the axis angles to be at, at session time
+    /// `t`: extra tracking rate on both axes together for as long as the
+    /// move takes at `speedDegS` on the sky, then tracking on. Fast (the
+    /// firmware's slow goto crawls) and cross-coupled, and tracking never
+    /// stops. It waits for the mount to settle before measuring and after
+    /// moving, then corrects at a gentler speed until within `toleranceDeg`
+    /// on the sky (the ramp and coast make a single open-loop move tenths
+    /// of a degree off).
+    ///
+    /// With `trackingWay`, each axis's last leg turns its motor the way it
+    /// tracks: an axis that must go back goes `tackDeg` past and returns.
+    /// A reversal leaves the gears' slack on the other side, which the motor
+    /// encoders count but the tube doesn't follow, and the tracking then
+    /// takes it up with the tube standing still; and the hand controller's
+    /// anti-backlash kicks the axis on a reversal (2026-11-20, first night:
+    /// the nudge's image moved 1.75× as far as commanded).
+    func rateMove(
+        aim: (Date) throws -> (az: Double, alt: Double), speedDegS: Double, toleranceDeg: Double,
+        trackingWay: Bool
     ) async throws {
         if (try? mount.status().state) == "Armed" { endStep() }
-        let started = clock()
-        let rStart = moonRate(at: started)
-        for attempt in 0..<4 {
+        // Each axis: did its last leg turn the motor against the tracking?
+        var against = [false, false]
+        var tacks = [0, 0]
+        // The last leg: where it started, when, what it asked, how long.
+        var leg: (p: [Double], wall: Date, d: [Double], seconds: Double, r: (az: Double, alt: Double))?
+        for attempt in 0..<6 {
             try await waitUntilSettled()
             var p = try await freshPosition()
             if let st = try? mount.status(), let q = st.positionsDeg, let age = st.positionsAgeMs {
                 let r = st.tracking ?? [0, 0]
                 p = [q[0] + r[0] * Double(age) / 1000, q[1] + r[1] * Double(age) / 1000]
             }
-            // The target moves with the Moon.
-            let since = clock().timeIntervalSince(started)
-            let aim = (az: target.az + rStart.az * since, alt: target.alt + rStart.alt * since)
+            let pWall = Date()
+            if let l = leg {
+                // How far the leg really went along its way, less the
+                // tracking's share: a leg runs on past its time for the
+                // command's latency (the test runner: ~25″ long at 0.35°/s,
+                // so every return from going past went past again).
+                let dt = pWall.timeIntervalSince(l.wall)
+                let moved = [wrap180(p[0] - l.p[0]) - l.r.az * dt, wrap180(p[1] - l.p[1]) - l.r.alt * dt]
+                let n = hypot(l.d[0], l.d[1])
+                if n > 0.02 {
+                    let along = (moved[0] * l.d[0] + moved[1] * l.d[1]) / n
+                    let extra = (along - n) / (n / l.seconds)
+                    legLatency = min(0.3, max(-0.2, 0.5 * legLatency + 0.5 * extra))
+                }
+            }
+            let a = try aim(clock())
             let alt = Self.moonAxes(at: clock(), settings.site).alt
-            let dAz = wrap180(aim.az - p[0])
-            let dAlt = wrap180(aim.alt - p[1])
-            let sky = hypot(dAz * cos(alt * .pi / 180), dAlt)
+            let cosAlt = cos(alt * .pi / 180)
+            var d = [wrap180(a.az - p[0]), wrap180(a.alt - p[1])]
+            let sky = hypot(d[0] * cosAlt, d[1])
             let r = moonRate(at: clock())
-            if sky < (attempt == 0 ? 1.0 / 3600 : toleranceDeg) { break }
-            if attempt == 0 { try checkSun(from: p, to: [p[0] + dAz, p[1] + dAlt], what: "the move") }
+            let tolerance = attempt == 0 ? 1.0 / 3600 : toleranceDeg
+            if sky < tolerance && !(trackingWay && against.contains(true)) { break }
+            if attempt == 0 { try checkSun(from: p, to: [p[0] + d[0], p[1] + d[1]], what: "the move") }
+            if trackingWay {
+                let way = [r.az >= 0 ? 1.0 : -1.0, r.alt >= 0 ? 1.0 : -1.0]
+                for i in 0..<2 {
+                    let need = d[i] * way[i]  // + the tracking's way
+                    let k = i == 0 ? cosAlt : 1  // axis degrees to sky
+                    if (need < 0 && -need * k > toleranceDeg && tacks[i] < 2) || (against[i] && need < 0.03) {
+                        d[i] -= way[i] * Self.tackDeg
+                        tacks[i] += 1
+                    } else if need < 0 {
+                        d[i] = 0  // a little back: left, not reversed for
+                    } else if need * k > toleranceDeg {
+                        // Aimed a third of the tolerance short: a leg lands
+                        // a few arcseconds long as often as short, and long
+                        // would mean going back.
+                        d[i] -= way[i] * toleranceDeg / 3 / k
+                    }
+                }
+                for i in 0..<2 where d[i] != 0 {
+                    if d[i] * way[i] < 0 { against[i] = true } else if d[i] * way[i] >= 0.03 { against[i] = false }
+                }
+            }
+            if ProcessInfo.processInfo.environment["MOSAIC_DEBUG"] != nil {
+                onEvent(.message(String(format: "rateMove %d: off %.0f″, leg (%.4f°, %.4f°), latency %.3f s, against %@", attempt, sky * 3600, d[0], d[1], legLatency, "\(against)")))
+            }
+            if d == [0, 0] { break }
+            let legSky = hypot(d[0] * cosAlt, d[1])
             // Corrections gentler: less ramp, less coast.
             let speed = attempt == 0 ? speedDegS : min(speedDegS, 0.5)
             // Within the session's 2°/s on each axis (azimuth runs faster
             // than the sky by 1/cos(altitude)).
-            var seconds = max(0.3, sky / speed)
-            seconds = max(seconds, abs(dAz) / 1.9, abs(dAlt) / 1.9)
-            try mount.track(azDegS: r.az + dAz / seconds, altDegS: r.alt + dAlt / seconds)
-            try await Task.sleep(for: .seconds(seconds))
+            var seconds = max(0.3, legSky / speed)
+            seconds = max(seconds, abs(d[0]) / 1.9, abs(d[1]) / 1.9)
+            leg = (p, pWall, d, seconds, r)
+            try mount.track(azDegS: r.az + d[0] / seconds, altDegS: r.alt + d[1] / seconds)
+            try await Task.sleep(for: .seconds(max(0.1, seconds - legLatency)))
             try mount.track(azDegS: r.az, altDegS: r.alt)
             lastMoveEnd = Date()
         }
@@ -299,19 +383,16 @@ extension MosaicSession {
         lastMoveEnd = Date()
     }
 
-    /// A goto back to `back` against the Moon, aimed a moment ahead.
+    /// A move back to `back` against the Moon, tracking all the way.
     private func undo(to back: FollowState.Offset) async throws {
-        let lead = 3.0
-        let m = modelMoon(at: clock().addingTimeInterval(lead))
+        let m = modelMoon(at: clock())
         if let p = try? mount.status().positionsDeg {
-            try checkSun(path: [p, [m.az + back.az, p[1]], [m.az + back.az, m.alt + back.alt]], what: "Undo")
+            try checkSun(path: [p, [m.az + back.az, m.alt + back.alt]], what: "Undo")
         }
-        try await armForStep()
-        defer { endStep() }
-        for (axis, target) in [
-            (MountSession.Axis.azimuth, Ephemeris.normalize(m.az + back.az)), (.altitude, m.alt + back.alt),
-        ] {
-            try await moveAxis(axis, to: target, approach: nil)
-        }
+        try await rateMove(
+            aim: { t in
+                let m = self.modelMoon(at: t)
+                return (Ephemeris.normalize(m.az + back.az), m.alt + back.alt)
+            }, speedDegS: 1.5, toleranceDeg: 0.01, trackingWay: true)
     }
 }
