@@ -13,6 +13,11 @@ public struct MosaicSettings: Sendable {
     /// On 2026-11-19 the found centre was ~1000 px off and the limb fell
     /// outside a 3% margin; 20% (about one more ring of tiles) absorbs that.
     public var planMargin: Double = 0.2
+    /// The glow around the sunlit limb to capture too (″ beyond the limb;
+    /// 0 for none). In haze the glow is part of the picture: 2026-11-21's
+    /// DWARF stack, 16% of the disk's brightness just outside the limb, 4%
+    /// at 136″, 1% at 273″.
+    public var glowArcsec: Double = 240
     /// Each tile's video. No tracking runs, and the Moon drifts about 15″ a
     /// second, so keep it short; stacking aligns the frames.
     public var videoSeconds: Double = 3
@@ -215,6 +220,9 @@ public final class MosaicSession: @unchecked Sendable {
 
     /// What happens to the dark side's tiles (for the next Plan).
     public func setDarkTiles(_ d: DarkTiles) { settings.darkTiles = d }
+
+    /// The glow beyond the sunlit limb the plan covers (″).
+    public func setGlow(_ arcsec: Double) { settings.glowArcsec = max(0, arcsec) }
 
     /// Sun avoidance's minimum separation (degrees).
     public func setSunLimit(_ deg: Double) { settings.minSunSeparationDeg = deg }
@@ -1170,10 +1178,13 @@ public final class MosaicSession: @unchecked Sendable {
                 description:
                     "Find centre hasn't succeeded, so the plan would be centred on Here, which may be off the Moon's centre.")
         }
+        // Far enough out for the glow, and its tiles' error margin.
+        let radiusArcsec = here.moon.diameterDeg / 2 * 3600
         var plan = MosaicPlanner.plan(
             moonDiameterDeg: here.moon.diameterDeg, calibration: calibration,
             frameWidth: camera.info.width, frameHeight: camera.info.height,
-            overlap: settings.overlap, margin: settings.planMargin)
+            overlap: settings.overlap,
+            margin: max(settings.planMargin, settings.glowArcsec / radiusArcsec + 0.05))
         var dropped = 0
         if let fit = centreFit {
             // Lit or dark from the ephemeris (where the Sun lights the disk),
@@ -1184,7 +1195,7 @@ public final class MosaicSession: @unchecked Sendable {
             let phase = Ephemeris.phase(at: clock(), from: settings.site)
             let r = here.moon.diameterDeg / 2 * 3600
             plan = MosaicPlanner.markLit(
-                plan, calibration: calibration, phase: phase, radiusArcsec: r)
+                plan, calibration: calibration, phase: phase, radiusArcsec: r, glowArcsec: settings.glowArcsec)
             // Earthshine never shows in daylight (the dark side is the
             // sky's own brightness, which can pass for it).
             let daylight = sunHorizontal(at: clock()).altDeg > SunGuard.upAltitudeDeg

@@ -826,6 +826,12 @@ struct SettingsView: View {
                 Stepper(
                     "Video per tile: \(String(format: "%.1f", model.videoSeconds)) s",
                     value: $model.videoSeconds, in: 1...10, step: 0.5)
+                Stepper(
+                    model.glowArcsec > 0
+                        ? String(format: "Glow beyond the limb: %.0f′", model.glowArcsec / 60) : "Glow beyond the limb: none",
+                    value: $model.glowArcsec, in: 0...600, step: 60)
+                Text("Tiles out this far past the sunlit limb, for the halo in haze (at 4′ it's about 1% of the Moon's brightness). Takes effect at the next Plan.")
+                    .font(.caption).foregroundStyle(.secondary)
                 Picker("Dark-side tiles", selection: $model.darkTilesMode) {
                     Text("Only when earthshine shows").tag("auto")
                     Text("Always: Start shoots them too").tag("include")

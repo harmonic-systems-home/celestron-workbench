@@ -74,6 +74,13 @@ final class AppModel: ObservableObject {
     }
     @Published var testAltitudeDeg: Double { didSet { save() } }
     /// The dark side's tiles (DarkTiles raw value): auto, include or omit.
+    /// The glow beyond the sunlit limb the plan covers (″, 0 for none).
+    @Published var glowArcsec: Double {
+        didSet {
+            save()
+            session?.setGlow(glowArcsec)
+        }
+    }
     @Published var darkTilesMode: String {
         didSet {
             save()
@@ -291,6 +298,7 @@ final class AppModel: ObservableObject {
         searchSky = d["searchSky"] as? String ?? "auto"
         sunMinSeparationDeg = d["sunMinSeparationDeg"] as? Double ?? 40
         darkTilesMode = d["darkTilesMode"] as? String ?? "auto"
+        glowArcsec = d["glowArcsec"] as? Double ?? 240
         sunOverrideDeg = nil
         save()
         updatePalette()
@@ -311,6 +319,7 @@ final class AppModel: ObservableObject {
             "searchPattern": searchPattern.rawValue, "searchStepDeg": searchStepDeg,
             "searchReachDeg": searchReachDeg, "testMode": testMode, "testAltitudeDeg": testAltitudeDeg, "searchSky": searchSky,
             "sunMinSeparationDeg": sunMinSeparationDeg, "darkTilesMode": darkTilesMode,
+            "glowArcsec": glowArcsec,
         ]
         do {
             try FileManager.default.createDirectory(
@@ -446,6 +455,7 @@ final class AppModel: ObservableObject {
         settings.surveyGain = surveyGain
         settings.minSunSeparationDeg = sunMinSeparationDeg
         settings.darkTiles = DarkTiles(rawValue: darkTilesMode) ?? .auto
+        settings.glowArcsec = glowArcsec
         // Rehearsing: the clock runs from the next time the Moon is high here.
         let realTime: @Sendable () -> Date = { Date() }
         // Rehearsing: from the chosen scene's moment if it has one (the sky

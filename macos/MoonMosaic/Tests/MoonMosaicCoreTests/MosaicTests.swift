@@ -88,3 +88,42 @@ import Testing
     let m = MosaicPlanner.axes(for: SkyOffset(x: 3600, y: 1800), altitudeDeg: 60)
     #expect(abs(m.azDeg - 2) < 1e-9 && abs(m.altDeg - 0.5) < 1e-9)
 }
+
+/// The glow around the sunlit limb is captured: sky out to `glowArcsec`
+/// beyond a sunlit stretch of the limb is covered by tiles kept as lit;
+/// beyond the dark limb, nothing extra.
+@Test func thePlanCoversTheGlowBeyondTheSunlitLimb() {
+    let k = 1 / 0.29
+    let t = 20 * Double.pi / 180
+    let cal = CameraCalibration(a: k * cos(t), b: -k * sin(t), c: k * sin(t), d: k * cos(t))
+    let r = 946.0
+    let glow = 240.0
+    // A gibbous Moon lit from +x (sky).
+    let e = 130.0
+    let phase = Ephemeris.Phase(
+        illuminatedFraction: (1 - cos(e * .pi / 180)) / 2, phaseAngleDeg: 180 - e, brightLimb: (1, 0),
+        brightLimbFromZenithDeg: 90)
+    var plan = MosaicPlanner.plan(
+        moonDiameterDeg: 2 * r / 3600, calibration: cal, frameWidth: 1920, frameHeight: 1080,
+        margin: glow / r + 0.05)
+    plan = MosaicPlanner.withoutDark(
+        MosaicPlanner.markLit(plan, calibration: cal, phase: phase, radiusArcsec: r, glowArcsec: glow))
+    let without = MosaicPlanner.withoutDark(
+        MosaicPlanner.markLit(
+            MosaicPlanner.plan(moonDiameterDeg: 2 * r / 3600, calibration: cal, frameWidth: 1920, frameHeight: 1080, margin: 0.2),
+            calibration: cal, phase: phase, radiusArcsec: r))
+    #expect(plan.tiles.count > without.tiles.count, "\(plan.tiles.count) with the glow, \(without.tiles.count) without")
+    // Is a sky point (″ from the centre) inside some tile's frame?
+    func covered(_ s: SkyOffset) -> Bool {
+        let p = cal.image(for: s)
+        return plan.tiles.contains { abs(-p.x - $0.center.x) <= 960 && abs(-p.y - $0.center.y) <= 540 }
+    }
+    // Beyond the sunlit limb, all round it, out to the glow's reach.
+    for a in stride(from: -80.0, through: 80, by: 5) {
+        let u = (x: cos(a * .pi / 180), y: sin(a * .pi / 180))
+        let s = SkyOffset(x: u.x * (r + glow), y: u.y * (r + glow))
+        #expect(covered(s), "\(a)°: glow at \(s) not covered")
+    }
+    // Beyond the dark limb, well out: nothing.
+    #expect(!covered(SkyOffset(x: -(r + glow + 300), y: 0)))
+}

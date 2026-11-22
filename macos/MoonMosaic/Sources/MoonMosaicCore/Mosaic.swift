@@ -151,11 +151,21 @@ public enum MosaicPlanner {
     /// Marks each tile lit when any part of it, or of a margin around it
     /// (`margin` of the frame each way, for error in the centre and the
     /// turn), falls on the sunlit part of the disk as the ephemeris predicts
-    /// it (`phase`), sampling the tile on a grid.
+    /// it (`phase`), sampling the tile on a grid. With `glowArcsec`, the sky
+    /// that far beyond a sunlit stretch of the limb counts too (the glow
+    /// around it in haze, which the picture should keep).
     public static func markLit(
         _ plan: MosaicPlan, calibration: CameraCalibration, phase: Ephemeris.Phase,
-        radiusArcsec r: Double, margin: Double = 0.1
+        radiusArcsec r: Double, margin: Double = 0.1, glowArcsec: Double = 0
     ) -> MosaicPlan {
+        func shows(_ x: Double, _ y: Double) -> Bool {
+            if phase.isLit(x, y) { return true }
+            let d = hypot(x, y)
+            // Outside the disk, within the glow: lit if the limb straight
+            // in from it is.
+            guard glowArcsec > 0, d >= 1, d <= 1 + glowArcsec / r else { return false }
+            return phase.isLit(x / d * 0.999, y / d * 0.999)
+        }
         let (hw, hh) = (Double(plan.frameWidth) / 2 * (1 + 2 * margin), Double(plan.frameHeight) / 2 * (1 + 2 * margin))
         let tiles = plan.tiles.map { t -> Tile in
             var t = t
@@ -166,7 +176,7 @@ public enum MosaicPlanner {
                         x: -(t.center.x + Double(gx) / 8 * hw),
                         y: -(t.center.y + Double(gy) / 6 * hh))
                     let sky = calibration.sky(for: px)
-                    if phase.isLit(sky.x / r, sky.y / r) {
+                    if shows(sky.x / r, sky.y / r) {
                         lit = true
                         break
                     }
