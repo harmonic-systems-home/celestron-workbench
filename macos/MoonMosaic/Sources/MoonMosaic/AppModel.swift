@@ -187,11 +187,12 @@ final class AppModel: ObservableObject {
     /// whether the image has settled (touch-shake gone, only seeing left).
     @Published private(set) var focusHistory: [FocusAssist.Sample] = []
     @Published private(set) var focusSettled = false
-    /// Where the camera points on the Moon, for the Moon map: from Here on,
-    /// or the simulator's truth before then.
+    /// Where the camera points on the Moon, for the Moon map: from Here on.
     @Published private(set) var moonMap: MoonMap?
-    /// The aim's recent path on the sky (″ from the Moon's centre).
+    /// The aim's path over the last minute on the sky (″ from the Moon's
+    /// centre), with when each point was passed.
     private var aimTrail: [SkyOffset] = []
+    private var aimTrailTimes: [Date] = []
     /// The Here the trail is measured from (a new Here starts a new trail).
     private var aimTrailHere: Date?
     @Published private(set) var hereSet = false
@@ -1528,43 +1529,60 @@ final class AppModel: ObservableObject {
             return
         }
         let t = session.now
-        let m = session.imageMap
+        // As the camera sees it once oriented; before that, the sky as seen
+        // by eye (x along azimuth, up up), like the simulator's sky view.
+        let m = session.calibration ?? {
+            let k = 1 / session.imageMap.arcsecPerPixel
+            return CameraCalibration(a: -k, b: 0, c: 0, d: k)
+        }()
         let (w, h) = session.frameSize
         func px(_ s: SkyOffset) -> PixelOffset {
             let p = m.image(for: s)
             return PixelOffset(x: -p.x, y: -p.y)
         }
-        var truthFrame: [PixelOffset]?
-        if simulator.attached, simulator.footprint.count == 4 {
-            truthFrame = simulator.footprint.map { px(SkyOffset(x: $0.x, y: $0.y)) }
-        }
         let axes = (simulator.attached ? simulator.mountAxesDeg : nil) ?? positionDeg
-        let aimSky = axes.flatMap { session.skyOffset(axes: $0, at: t) }
-        guard aimSky != nil || truthFrame != nil else {
+        guard let aim = axes.flatMap({ session.skyOffset(axes: $0, at: t) }) else {
             if moonMap != nil { moonMap = nil }
             aimTrail = []
+            aimTrailTimes = []
             return
         }
         if session.here?.time != aimTrailHere {
             aimTrail = []
+            aimTrailTimes = []
             aimTrailHere = session.here?.time
         }
-        var frame: [PixelOffset]?
-        if let a = aimSky {
-            if let last = aimTrail.last, hypot(last.x - a.x, last.y - a.y) < 0.02 * Double(w) * m.arcsecPerPixel {
-            } else {
-                aimTrail.append(a)
-                if aimTrail.count > 600 { aimTrail.removeFirst(aimTrail.count - 600) }
-            }
-            let c = px(a)
-            let (hw, hh) = (Double(w) / 2, Double(h) / 2)
-            frame = [(-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh)].map { PixelOffset(x: c.x + $0.0, y: c.y + $0.1) }
+        let wall = Date()
+        if let last = aimTrail.last, hypot(last.x - aim.x, last.y - aim.y) < 0.02 * Double(w) * m.arcsecPerPixel {
         } else {
-            aimTrail = []
+            aimTrail.append(aim)
+            aimTrailTimes.append(wall)
         }
-        let moon = session.moonInImage(at: t)
+        if let k = aimTrailTimes.firstIndex(where: { wall.timeIntervalSince($0) < 60 }), k > 0 {
+            aimTrail.removeFirst(k)
+            aimTrailTimes.removeFirst(k)
+        }
+        // A frame in the camera's pixels, centred on `c`, turned onto the map
+        // (square to it once oriented).
+        func frame(at s: SkyOffset) -> [PixelOffset] {
+            let (hw, hh) = (Double(w) / 2, Double(h) / 2)
+            let imageMap = session.imageMap
+            return [(-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh)].map { u, v in
+                // The point at pixel (u, v) of a frame aimed at s: on the sky
+                // it is s + M⁻¹(u, v); the plan's pixels have the opposite
+                // sign, so once oriented the frame is square, top left first.
+                let d = imageMap.sky(for: PixelOffset(x: u, y: v))
+                let sign = session.calibration == nil ? 1.0 : -1.0
+                return px(SkyOffset(x: s.x + sign * d.x, y: s.y + sign * d.y))
+            }
+        }
+        var truthFrame: [PixelOffset]?
+        if simulator.attached, simulator.footprint.count == 4 {
+            truthFrame = simulator.footprint.map { px(SkyOffset(x: $0.x, y: $0.y)) }
+        }
+        let moon = session.moonInImage(at: t, map: m)
         let map = MoonMap(
-            radiusPx: moon.radiusPx, outline: moon.outline, frame: frame, truthFrame: truthFrame,
+            radiusPx: moon.radiusPx, outline: moon.outline, frame: frame(at: aim), truthFrame: truthFrame,
             trail: aimTrail.map(px), frameWidth: w, frameHeight: h, oriented: session.calibration != nil)
         if map != moonMap { moonMap = map }
     }
@@ -1844,8 +1862,8 @@ final class Flag: @unchecked Sendable {
 struct MoonMap: Equatable {
     var radiusPx: Double
     var outline: [PixelOffset]
-    /// The estimated frame (from Here), corners in order.
-    var frame: [PixelOffset]?
+    /// The estimated frame (from Here), corners in order from the top left.
+    var frame: [PixelOffset]
     /// The simulator's true frame.
     var truthFrame: [PixelOffset]?
     var trail: [PixelOffset]

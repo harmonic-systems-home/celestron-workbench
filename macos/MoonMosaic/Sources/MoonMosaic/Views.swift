@@ -53,13 +53,20 @@ struct ContentView: View {
                 flowStrip
                 imagePanel
                 HStack(alignment: .top, spacing: 12) {
-                    // The search's map while one runs; otherwise the Moon map:
-                    // the plan's tiles, and where the camera points now.
+                    // Finding the Moon: the wide view (the simulator's sky, or
+                    // the search's map). Once Here places it: the Moon map,
+                    // with the plan's tiles and where the camera points now.
                     Group {
-                        if let progress = model.searchProgress,
-                            model.searching || (model.plan == nil && model.moonMap == nil)
-                        {
-                            SearchMap(model: model, sim: model.simulator, progress: progress)
+                        if model.searching || model.moonMap == nil {
+                            if model.simulator.attached {
+                                SkyMap(sim: model.simulator, steady: true)
+                                    .background(Color.black)
+                                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                            } else if let progress = model.searchProgress {
+                                SearchMap(model: model, sim: model.simulator, progress: progress)
+                            } else {
+                                TileGrid(model: model, palette: palette)
+                            }
                         } else {
                             TileGrid(model: model, palette: palette)
                         }
@@ -655,8 +662,8 @@ struct ContentView: View {
 
 /// The Moon map: the Moon as the camera shows it, with the plan's tiles
 /// (coloured by state; tap to select for Redo) and where the camera points
-/// now, from Here on. While simulating, the true frame is drawn dashed, and
-/// alone before Here.
+/// now, from Here on: the sky as seen by eye until the camera is oriented,
+/// then as the camera sees it. While simulating, the true frame is dashed.
 struct TileGrid: View {
     @ObservedObject var model: AppModel
     let palette: Palette
@@ -718,6 +725,7 @@ struct TileGrid: View {
                         .foregroundStyle(palette.dim)
                 }
             }
+            .clipShape(RoundedRectangle(cornerRadius: 10))
         }
     }
 
@@ -735,12 +743,16 @@ struct TileGrid: View {
             if map.trail.count > 1 {
                 var path = Path()
                 path.addLines(map.trail.map(layout.point))
-                ctx.stroke(path, with: .color(palette.dim.opacity(0.7)), lineWidth: 1)
+                ctx.stroke(path, with: .color(palette.dim.opacity(0.5)), lineWidth: 1)
             }
             if let t = map.truthFrame {
                 ctx.stroke(poly(t), with: .color(.cyan.opacity(0.8)), style: StrokeStyle(lineWidth: 1.5, dash: [4, 3]))
+                var top = Path()
+                top.addLines([layout.point(t[0]), layout.point(t[1])])
+                ctx.stroke(top, with: .color(.cyan.opacity(0.8)), lineWidth: 3)
             }
-            if let f = map.frame {
+            do {
+                let f = map.frame
                 let path = poly(f)
                 if bounds.intersects(path.boundingRect) {
                     ctx.stroke(path, with: .color(palette.bright), lineWidth: 2)
@@ -771,9 +783,9 @@ struct TileGrid: View {
                 }
             }
             let note =
-                map.frame == nil
-                ? "Simulator's truth (dashed); the estimate starts at Here"
-                : map.oriented ? "" : "Turned by guess until Orient Camera"
+                map.oriented
+                ? (map.truthFrame == nil ? "As the camera sees it" : "As the camera sees it; the simulator's truth dashed")
+                : "The sky as seen by eye until Orient Camera"
             if !note.isEmpty {
                 ctx.draw(
                     Text(note).font(.system(size: 10)).foregroundColor(palette.dim),
@@ -812,13 +824,10 @@ struct TileGrid: View {
             } else {
                 return nil
             }
-            span = (max(span.x, 1.15 * radius), max(span.y, 1.15 * radius))
-            // Take in the frame (and the truth) while within 2.5 radii; past
-            // that an arrow points to it.
-            for f in [map?.frame, map?.truthFrame].compactMap({ $0 }) {
-                let fx = f.map { abs($0.x) }.max() ?? 0, fy = f.map { abs($0.y) }.max() ?? 0
-                if max(fx, fy) < 2.5 * radius { span = (max(span.x, fx + 10), max(span.y, fy + 10)) }
-            }
+            // A steady view: the Moon's neighbourhood (or the plan, if
+            // larger). The frame doesn't move the zoom; off the view, an arrow
+            // points to it.
+            span = (max(span.x, 1.8 * radius), max(span.y, 1.5 * radius))
             scale = min((size.width - 12) / (2 * span.x), (size.height - 12) / (2 * span.y))
             centre = CGPoint(x: size.width / 2, y: size.height / 2)
             moonDiameter = 2 * radius * scale

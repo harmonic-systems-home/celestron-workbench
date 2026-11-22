@@ -222,6 +222,9 @@ struct SimulatorView: View {
 /// camera's frame and path, all in arcseconds from the Moon's centre.
 struct SkyMap: View {
     @ObservedObject var sim: SimulatorModel
+    /// A steady view of the search area alone (the main window's finding
+    /// view), rather than zooming to fit the frame and its path as they move.
+    var steady = false
 
     var body: some View {
         Canvas { ctx, size in
@@ -238,8 +241,10 @@ struct SkyMap: View {
                 CGPoint(x: box.minX, y: box.minY), CGPoint(x: box.maxX, y: box.maxY),
                 CGPoint(x: -r0, y: -r0), CGPoint(x: r0, y: r0),
             ]
-            pts += sim.footprint
-            pts += sim.trail
+            if !steady {
+                pts += sim.footprint
+                pts += sim.trail
+            }
             // Nothing absurd in the fit (a stray far point zooms it to nothing).
             pts = pts.filter { abs($0.x) < 1e5 && abs($0.y) < 1e5 }
             let pad = 0.06 * max(box.width, box.height, 2 * r0)
