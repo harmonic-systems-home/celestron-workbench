@@ -39,7 +39,12 @@ cat > "$app/Contents/Info.plist" <<PLIST
 </dict>
 </plist>
 PLIST
-codesign --force --sign - "$app"
+# Signed with an Apple Development identity when there is one (the
+# APPLE_TEAM_ID team's if that is set), so macOS keeps its permissions (removable volumes) across
+# builds; an ad-hoc signature is new each build and asks again.
+ident=$(security find-identity -v -p codesigning 2>/dev/null | grep "Apple Development" \
+  | grep -F "${APPLE_TEAM_ID:+($APPLE_TEAM_ID)}" | head -1 | awk '{print $2}')
+codesign --force --sign "${ident:--}" "$app"
 echo "Built $app"
 
 case "${1:-}" in

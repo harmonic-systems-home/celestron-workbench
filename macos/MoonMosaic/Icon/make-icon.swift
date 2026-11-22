@@ -1,6 +1,8 @@
 // Draws Moon Mosaic's app icon: a gibbous Moon with the mosaic plan's
 // tiles over it. Synthetic (procedural craters and maria), no photos.
-//   swift make-icon.swift out.png [size]
+//   swift make-icon.swift out.png [size] [moon.png]
+// With moon.png (a square crop, the disk 1/1.05 of its side), that photo is
+// the Moon and the tiles cover its sunlit part; without, a drawn Moon.
 import AppKit
 import CoreGraphics
 
@@ -8,6 +10,18 @@ let args = CommandLine.arguments
 let out = args.count > 1 ? args[1] : "icon.png"
 let S = args.count > 2 ? Double(args[2])! : 1024
 let s = S / 1024
+/// The photo, brightened (×1.6, gamma 0.85) so it reads at icon size.
+let photo: CGImage? = args.count > 3 ? brighten(
+    CGImageSourceCreateImageAtIndex(CGImageSourceCreateWithURL(URL(fileURLWithPath: args[3]) as CFURL, nil)!, 0, nil)!) : nil
+func brighten(_ img: CGImage) -> CGImage {
+    let w = img.width, h = img.height
+    let g = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w,
+        space: CGColorSpaceCreateDeviceGray(), bitmapInfo: 0)!
+    g.draw(img, in: CGRect(x: 0, y: 0, width: w, height: h))
+    let p = g.data!.bindMemory(to: UInt8.self, capacity: w * h)
+    for i in 0..<(w * h) { p[i] = UInt8(min(255, 255 * pow(Double(p[i]) / 255 * 1.6, 0.85))) }
+    return g.makeImage()!
+}
 let cs = CGColorSpace(name: CGColorSpace.sRGB)!
 let ctx = CGContext(data: nil, width: Int(S), height: Int(S), bitsPerComponent: 8, bytesPerRow: 0,
     space: cs, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
@@ -33,6 +47,21 @@ for _ in 0..<60 {  // a few stars
 // The Moon: a disk with maria and craters, lit from the right (gibbous).
 let c = CGPoint(x: 512 * s, y: 512 * s), R = 300 * s
 let disk = CGRect(x: c.x - R, y: c.y - R, width: 2 * R, height: 2 * R)
+var litMask: [UInt8]? = nil
+if let photo {
+    let big = CGRect(x: c.x - 1.05 * R, y: c.y - 1.05 * R, width: 2.1 * R, height: 2.1 * R)
+    ctx.saveGState()
+    ctx.addEllipse(in: disk.insetBy(dx: -2 * s, dy: -2 * s)); ctx.clip()
+    ctx.interpolationQuality = .high
+    ctx.draw(photo, in: big)
+    ctx.restoreGState()
+    // The photo's brightness at icon scale, for which tiles are sunlit.
+    var m = [UInt8](repeating: 0, count: Int(S) * Int(S))
+    let g = CGContext(data: &m, width: Int(S), height: Int(S), bitsPerComponent: 8, bytesPerRow: Int(S),
+        space: CGColorSpaceCreateDeviceGray(), bitmapInfo: 0)!
+    g.draw(photo, in: big)
+    litMask = m
+} else {
 ctx.saveGState()
 ctx.addEllipse(in: disk); ctx.clip()
 let body = CGGradient(colorsSpace: cs, colors: [rgb(0.93, 0.92, 0.88), rgb(0.70, 0.69, 0.66)] as CFArray, locations: [0, 1])!
@@ -62,6 +91,7 @@ ctx.setShadow(offset: .zero, blur: 18 * s, color: rgb(0, 0, 0, 1))
 ctx.addPath(term); ctx.setFillColor(rgb(0.02, 0.02, 0.05, 0.93)); ctx.fillPath()
 ctx.restoreGState()
 
+}
 // The plan: overlapping tiles over the sunlit part, in the app's red.
 let cols = 4, rows = 5
 let step = (x: 2.16 * R / Double(cols), y: 2.16 * R / Double(rows))
@@ -70,6 +100,11 @@ let red = rgb(1.0, 0.27, 0.22)
 ctx.setLineWidth(6 * s)
 ctx.setLineJoin(.round)
 func lit(_ p: CGPoint) -> Bool {
+    if let m = litMask {
+        let x = Int(p.x), y = Int(S) - 1 - Int(p.y)  // the buffer runs top-down
+        guard x >= 0, y >= 0, x < Int(S), y < Int(S) else { return false }
+        return m[y * Int(S) + x] > 40
+    }
     let dx = (p.x - c.x) / R, dy = (p.y - c.y) / R
     return hypot(dx, dy) < 1 && dx > -0.55 * sqrt(max(0, 1 - dy * dy))
 }
