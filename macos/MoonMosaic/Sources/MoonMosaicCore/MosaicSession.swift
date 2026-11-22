@@ -27,8 +27,8 @@ public struct MosaicSettings: Sendable {
     public var calibrationFraction: Double = 0.2
     /// Calibration's drift: how long the Moon drifts untracked, and how many
     /// frame-to-frame steps it's measured in.
-    public var driftSeconds: Double = 6
-    public var driftFrames: Int = 30
+    public var driftSeconds: Double = 12
+    public var driftFrames: Int = 40
     /// How long each calibration move's extra tracking rate runs.
     public var calibrationMoveSeconds: Double = 4
     /// The Moon must be at least this far from the Sun.

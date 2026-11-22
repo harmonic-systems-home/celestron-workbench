@@ -57,7 +57,7 @@ extension MosaicSession {
             var enc: [(t: Double, x: Double, y: Double)] = []
             let s0 = Date()
             while Date().timeIntervalSince(s0) < seconds {
-                try await Task.sleep(for: .milliseconds(400))
+                try await Task.sleep(for: .milliseconds(200))
                 let f = try await grabFrame()
                 let t = clock().addingTimeInterval(f.time.timeIntervalSinceNow).timeIntervalSince(refT)
                 let sh = Registration.shift(from: ref, to: f)
@@ -141,13 +141,18 @@ extension MosaicSession {
             var used = 0
             var pairSeconds = 0.0
             var records: [[String: Any]] = []
-            // Pairs a few frames apart, so each shift is well clear of the
-            // sensor's fixed pattern at zero (adjacent frames 0.2 s apart move
-            // only ~10 px: 2026-11-20, the test runner, one drift in a dozen
-            // locked onto noise), summed over every such pair so each frame's
-            // seeing jitter counts a little.
+            // Pairs half the drift apart, each frame in at most two: the
+            // scale is the drift's length over its pixels, and a frame's
+            // seeing tip-tilt (RMS ~1″, ~3 px) counts against the whole
+            // baseline. Pairs ~40 px apart only summed to a few frames' worth
+            // of baseline: ±2% scatter, −3.5% at worst (2026-11-22, the test
+            // runner). At least ~40 px, clear of the sensor's fixed pattern
+            // at zero (one drift in a dozen locked onto noise at ~10 px), and
+            // at most a third of the frame, for overlap.
             let perStep = hypot(skyChange(from: drift[0].1, to: drift[1].1).x, skyChange(from: drift[0].1, to: drift[1].1).y) / guess
-            let lag = min(max(1, Int((40 / max(perStep, 1)).rounded(.up))), max(1, drift.count / 3))
+            let minLag = max(1, Int((40 / max(perStep, 1)).rounded(.up)))
+            let maxLag = max(1, Int(0.33 * short / max(perStep, 1)))
+            let lag = max(1, min(max(minLag, drift.count / 2), maxLag, drift.count - 1))
             for i in 0..<max(0, drift.count - lag) {
                 let (a, b) = (drift[i], drift[i + lag])
                 let sky = skyChange(from: a.1, to: b.1)
@@ -183,9 +188,13 @@ extension MosaicSession {
             // model (a mount not level: 2026-11-20, first night, 1–2″/s), and
             // that slide is in the drift and the nudge as well: measured
             // here, it comes out of both and becomes the model's correction.
-            // Longer where the detail is thin.
+            // Longer where the detail is thin. Its error goes straight into
+            // the scale, as a share of the drift's speed (~50 px/s): 8 s at
+            // 2.5 frames a second measured it to ±0.5 px/s, the scale then
+            // ±1.5% where the drift alone was ±0.4% (2026-11-22, the test
+            // runner); 16 s at 5 a second, about four times better.
             onEvent(.detail("Holding on the Moon, tracking, to see how it drifts"))
-            let hold = try await holdDrift(seconds: detail.weak < 0.3 ? 16 : 8)
+            let hold = try await holdDrift(seconds: detail.weak < 0.3 ? 32 : 16)
             // The real Moon's slide against the model moved the image too:
             // M·slide = M·u − v (the hold), so the drift's image motion
             // against the model's Moon is dPx + (M·u − v)·t. M·u needs M:
@@ -264,6 +273,9 @@ extension MosaicSession {
             why = String(
                 format: "drift %d steps, %.0f″ → %.0f px (%.3f″/px); nudge (%.0f″, %.0f″) → (%.0f, %.0f) px, match %.2f; off by %.0f%% direct, %.0f%% mirrored",
                 used, n, hypot(dPx.x, dPx.y), scale, nSky.x, nSky.y, shift.dx, shift.dy, shift.peak, eD * 100, eM * 100)
+            why += String(
+                format: "; %.4f″/px before the hold's correction (%.2f, %.2f) px/s ± %.2f, %d frames", hypot(dSky.x, dSky.y) / hypot(rawPx.x, rawPx.y),
+                hold.v.x, hold.v.y, hold.sigma, hold.frames)
             note(
                 "orient",
                 [
