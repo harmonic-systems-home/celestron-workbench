@@ -32,6 +32,16 @@ struct ContentView: View {
     /// The control column's width.
     static let leftWidth: CGFloat = 360
 
+    /// The pointing panel's view, chosen by the phase: the search's field
+    /// until the camera is oriented, then the Moon.
+    private var autoMoonView: Bool { (model.calibrated || model.plan != nil) && !model.searching }
+    @State private var mapOverride: Bool?
+    private var showMoonView: Bool { mapOverride ?? autoMoonView }
+    /// Where Here puts the Moon, as the camera's aim from its centre (″).
+    private var estimate: SkyEstimate? {
+        model.moonMap.map { SkyEstimate(aim: CGPoint(x: $0.aimSky.x, y: $0.aimSky.y), radiusArcsec: $0.radiusArcsec) }
+    }
+
     var palette: Palette { model.isNight ? .night : .day }
 
     var body: some View {
@@ -53,24 +63,36 @@ struct ContentView: View {
                 flowStrip
                 imagePanel
                 HStack(alignment: .top, spacing: 12) {
-                    // Finding the Moon: the wide view (the simulator's sky, or
-                    // the search's map). Once Here places it: the Moon map,
-                    // with the plan's tiles and where the camera points now.
-                    Group {
-                        if model.searching || model.moonMap == nil {
-                            if model.simulator.attached {
-                                SkyMap(sim: model.simulator, steady: true)
-                                    .background(Color.black)
-                                    .clipShape(RoundedRectangle(cornerRadius: 10))
-                            } else if let progress = model.searchProgress {
-                                SearchMap(model: model, sim: model.simulator, progress: progress)
-                            } else {
-                                TileGrid(model: model, palette: palette)
-                            }
+                    // Finding and placing the Moon: the search's field (the
+                    // simulator's sky, or the search's map), with the camera's
+                    // frame and where Here puts the Moon. From Orient Camera
+                    // on: the Moon map, zoomed to the Moon, with the plan.
+                    // A click on the corner switch overrides until the next
+                    // phase.
+                    ZStack(alignment: .topTrailing) {
+                        if showMoonView, model.moonMap != nil {
+                            TileGrid(model: model, palette: palette)
+                        } else if model.simulator.attached {
+                            SkyMap(sim: model.simulator, steady: true, estimate: estimate)
+                                .background(Color.black)
+                                .clipShape(RoundedRectangle(cornerRadius: 10))
+                        } else if let progress = model.searchProgress {
+                            SearchMap(model: model, sim: model.simulator, progress: progress, estimate: estimate)
                         } else {
                             TileGrid(model: model, palette: palette)
                         }
+                        if model.moonMap != nil {
+                            Button { mapOverride = !showMoonView } label: {
+                                Text(showMoonView ? "Sky view" : "Moon view")
+                                    .font(.system(size: 11, weight: .semibold))
+                                    .frame(width: 76, height: 20)
+                            }
+                            .buttonStyle(BigButton(palette: palette))
+                            .padding(6)
+                                .help("Switch until the next step changes it")
+                        }
                     }
+                    .onChange(of: autoMoonView) { mapOverride = nil }
                     .frame(width: 400, height: 250)
                     logPanel
                 }
@@ -671,20 +693,20 @@ struct TileGrid: View {
     var body: some View {
         GeometryReader { geo in
             ZStack {
-                RoundedRectangle(cornerRadius: 10).fill(palette.panel)
+                RoundedRectangle(cornerRadius: 10).fill(sky)
                 if let layout = Layout(plan: model.plan, map: model.moonMap, size: geo.size) {
                     Canvas { ctx, size in
                         let c = layout.centre
                         let d = layout.moonDiameter
                         ctx.fill(
                             Path(ellipseIn: CGRect(x: c.x - d / 2, y: c.y - d / 2, width: d, height: d)),
-                            with: .color(palette.dim.opacity(0.25)))
+                            with: .color(darkSide))
                         let outline = model.moonMap?.outline ?? model.planOutline
                         if outline.count > 2 {
                             var lit = Path()
                             lit.addLines(outline.map(layout.point))
                             lit.closeSubpath()
-                            ctx.fill(lit, with: .color(palette.text.opacity(0.3)))
+                            ctx.fill(lit, with: .color(sunlit))
                         }
                     }
                     .allowsHitTesting(false)
@@ -692,10 +714,11 @@ struct TileGrid: View {
                         ForEach(plan.tiles) { tile in
                             let r = layout.rect(tile, plan)
                             Rectangle()
-                                .fill(color(tile.id).opacity(0.55))
+                                .fill(color(tile.id))
+                                .contentShape(Rectangle())
                                 .overlay(
                                     Rectangle().stroke(
-                                        model.selected.contains(tile.id) ? palette.bright : palette.dim,
+                                        model.selected.contains(tile.id) ? palette.bright : grid,
                                         style: StrokeStyle(
                                             lineWidth: model.selected.contains(tile.id) ? 3 : 1,
                                             // Dark-side tiles (for the Earthshine pass) dashed.
@@ -713,7 +736,7 @@ struct TileGrid: View {
                         }
                     }
                     Circle()
-                        .stroke(palette.dim, lineWidth: 1)
+                        .stroke(grid, lineWidth: 1)
                         .frame(width: layout.moonDiameter, height: layout.moonDiameter)
                         .position(layout.centre)
                         .allowsHitTesting(false)
@@ -722,7 +745,7 @@ struct TileGrid: View {
                     }
                 } else {
                     Text("The Moon map appears after Find or Here")
-                        .foregroundStyle(palette.dim)
+                        .foregroundStyle(grid)
                 }
             }
             .clipShape(RoundedRectangle(cornerRadius: 10))
@@ -743,7 +766,7 @@ struct TileGrid: View {
             if map.trail.count > 1 {
                 var path = Path()
                 path.addLines(map.trail.map(layout.point))
-                ctx.stroke(path, with: .color(palette.dim.opacity(0.5)), lineWidth: 1)
+                ctx.stroke(path, with: .color(grid.opacity(0.5)), lineWidth: 1)
             }
             if let t = map.truthFrame {
                 ctx.stroke(poly(t), with: .color(.cyan.opacity(0.8)), style: StrokeStyle(lineWidth: 1.5, dash: [4, 3]))
@@ -788,18 +811,25 @@ struct TileGrid: View {
                 : "The sky as seen by eye until Orient Camera"
             if !note.isEmpty {
                 ctx.draw(
-                    Text(note).font(.system(size: 10)).foregroundColor(palette.dim),
+                    Text(note).font(.system(size: 10)).foregroundColor(grid),
                     at: CGPoint(x: 6, y: size.height - 4), anchor: .bottomLeading)
             }
         }
     }
 
+    // A night sky in either palette, like the sky view: the sunlit part
+    // brighter than the dark side; red at night.
+    private var sky: Color { model.isNight ? palette.panel : .black }
+    private var darkSide: Color { model.isNight ? palette.dim.opacity(0.35) : Color(white: 0.18) }
+    private var sunlit: Color { model.isNight ? palette.text.opacity(0.55) : Color(white: 0.55) }
+    private var grid: Color { model.isNight ? palette.dim : Color(white: 0.7) }
+
     private func color(_ id: Int) -> Color {
         switch model.tileStates[id] {
-        case .done: palette.text
-        case .moving, .capturing: palette.bright
-        case .failed: .orange
-        default: palette.background
+        case .done: (model.isNight ? palette.text : Color(white: 0.9)).opacity(0.45)
+        case .moving, .capturing: palette.bright.opacity(0.6)
+        case .failed: Color.orange.opacity(0.6)
+        default: .clear
         }
     }
 
@@ -1047,4 +1077,12 @@ struct SimulatorBox: View {
         .padding(8)
         .background(RoundedRectangle(cornerRadius: 8).stroke(palette.dim.opacity(0.5), lineWidth: 1))
     }
+}
+
+/// Where Here puts the Moon, for the wide views: the camera's aim from the
+/// Moon's centre as the app reckons it (″, x along azimuth, y up). The
+/// estimated Moon is drawn that far back from the camera's frame.
+struct SkyEstimate: Equatable {
+    let aim: CGPoint
+    let radiusArcsec: Double
 }

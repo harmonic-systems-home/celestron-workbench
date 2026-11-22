@@ -9,6 +9,8 @@ struct SearchMap: View {
     @ObservedObject var model: AppModel
     @ObservedObject var sim: SimulatorModel
     let progress: SearchProgress
+    /// Where Here puts the Moon (drawn back from the camera's frame by the aim).
+    var estimate: SkyEstimate? = nil
 
     var body: some View {
         Canvas { ctx, size in
@@ -118,6 +120,16 @@ struct SearchMap: View {
                 ctx.stroke(
                     Path(CGRect(x: c.x - w / 2, y: c.y - h / 2, width: w, height: h)), with: .color(.red),
                     lineWidth: 1.5)
+            }
+            if let now, let e = estimate {
+                let c = pt(CGPoint(x: now.x - e.aim.x / 3600, y: now.y - e.aim.y / 3600))
+                let r = e.radiusArcsec / 3600 * k
+                ctx.stroke(
+                    Path(ellipseIn: CGRect(x: c.x - r, y: c.y - r, width: 2 * r, height: 2 * r)),
+                    with: .color(.orange), style: StrokeStyle(lineWidth: 1.5, dash: [5, 3]))
+                ctx.draw(
+                    Text("Moon by Here").font(.system(size: 10)).foregroundColor(.orange),
+                    at: CGPoint(x: c.x, y: c.y + r + 2), anchor: .top)
             }
             let label = progress.caption ?? (progress.finished
                 ? "Search finished: \(progress.visited.count) of \(progress.pattern.count) stops"

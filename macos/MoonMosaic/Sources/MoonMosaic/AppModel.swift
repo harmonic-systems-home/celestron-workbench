@@ -1583,7 +1583,8 @@ final class AppModel: ObservableObject {
         let moon = session.moonInImage(at: t, map: m)
         let map = MoonMap(
             radiusPx: moon.radiusPx, outline: moon.outline, frame: frame(at: aim), truthFrame: truthFrame,
-            trail: aimTrail.map(px), frameWidth: w, frameHeight: h, oriented: session.calibration != nil)
+            trail: aimTrail.map(px), aimSky: aim, radiusArcsec: moon.radiusPx * m.arcsecPerPixel,
+            frameWidth: w, frameHeight: h, oriented: session.calibration != nil)
         if map != moonMap { moonMap = map }
     }
 
@@ -1867,6 +1868,9 @@ struct MoonMap: Equatable {
     /// The simulator's true frame.
     var truthFrame: [PixelOffset]?
     var trail: [PixelOffset]
+    /// The aim from the Moon's centre on the sky (″), and the Moon's radius.
+    var aimSky: SkyOffset
+    var radiusArcsec: Double
     var frameWidth: Int
     var frameHeight: Int
     /// Calibrated, rather than turned by the focal-length guess.

@@ -225,6 +225,8 @@ struct SkyMap: View {
     /// A steady view of the search area alone (the main window's finding
     /// view), rather than zooming to fit the frame and its path as they move.
     var steady = false
+    /// Where Here puts the Moon (drawn back from the true frame by the aim).
+    var estimate: SkyEstimate? = nil
 
     var body: some View {
         Canvas { ctx, size in
@@ -318,6 +320,16 @@ struct SkyMap: View {
                 top.move(to: pt(sim.footprint[0]))
                 top.addLine(to: pt(sim.footprint[1]))
                 ctx.stroke(top, with: .color(.orange), lineWidth: 3)
+            }
+            if let e = estimate {
+                let c = pt(CGPoint(x: sim.pointing.x - e.aim.x, y: sim.pointing.y - e.aim.y))
+                let r = e.radiusArcsec * k
+                ctx.stroke(
+                    Path(ellipseIn: CGRect(x: c.x - r, y: c.y - r, width: 2 * r, height: 2 * r)),
+                    with: .color(.orange), style: StrokeStyle(lineWidth: 1.5, dash: [5, 3]))
+                ctx.draw(
+                    Text("Moon by Here").font(.caption2).foregroundColor(.orange),
+                    at: CGPoint(x: c.x, y: c.y + r + 2), anchor: .top)
             }
             ctx.draw(
                 Text(String(format: "camera %.0f″, %.0f″ from the Moon's centre", sim.pointing.x, sim.pointing.y))
