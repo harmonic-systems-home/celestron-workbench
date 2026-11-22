@@ -187,6 +187,13 @@ final class AppModel: ObservableObject {
     /// whether the image has settled (touch-shake gone, only seeing left).
     @Published private(set) var focusHistory: [FocusAssist.Sample] = []
     @Published private(set) var focusSettled = false
+    /// Where the camera points on the Moon, for the Moon map: from Here on,
+    /// or the simulator's truth before then.
+    @Published private(set) var moonMap: MoonMap?
+    /// The aim's recent path on the sky (″ from the Moon's centre).
+    private var aimTrail: [SkyOffset] = []
+    /// The Here the trail is measured from (a new Here starts a new trail).
+    private var aimTrailHere: Date?
     @Published private(set) var hereSet = false
     @Published private(set) var calibrated = false
     @Published private(set) var centreFound = false
@@ -1513,6 +1520,55 @@ final class AppModel: ObservableObject {
         darkTiles = session.darkTilesToDo.count
     }
 
+    /// The Moon map in the plan's pixels: the estimate once Here is set,
+    /// with the simulator's truth beside it (or alone before Here).
+    private func updateMoonMap() {
+        guard let session else {
+            if moonMap != nil { moonMap = nil }
+            return
+        }
+        let t = session.now
+        let m = session.imageMap
+        let (w, h) = session.frameSize
+        func px(_ s: SkyOffset) -> PixelOffset {
+            let p = m.image(for: s)
+            return PixelOffset(x: -p.x, y: -p.y)
+        }
+        var truthFrame: [PixelOffset]?
+        if simulator.attached, simulator.footprint.count == 4 {
+            truthFrame = simulator.footprint.map { px(SkyOffset(x: $0.x, y: $0.y)) }
+        }
+        let axes = (simulator.attached ? simulator.mountAxesDeg : nil) ?? positionDeg
+        let aimSky = axes.flatMap { session.skyOffset(axes: $0, at: t) }
+        guard aimSky != nil || truthFrame != nil else {
+            if moonMap != nil { moonMap = nil }
+            aimTrail = []
+            return
+        }
+        if session.here?.time != aimTrailHere {
+            aimTrail = []
+            aimTrailHere = session.here?.time
+        }
+        var frame: [PixelOffset]?
+        if let a = aimSky {
+            if let last = aimTrail.last, hypot(last.x - a.x, last.y - a.y) < 0.02 * Double(w) * m.arcsecPerPixel {
+            } else {
+                aimTrail.append(a)
+                if aimTrail.count > 600 { aimTrail.removeFirst(aimTrail.count - 600) }
+            }
+            let c = px(a)
+            let (hw, hh) = (Double(w) / 2, Double(h) / 2)
+            frame = [(-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh)].map { PixelOffset(x: c.x + $0.0, y: c.y + $0.1) }
+        } else {
+            aimTrail = []
+        }
+        let moon = session.moonInImage(at: t)
+        let map = MoonMap(
+            radiusPx: moon.radiusPx, outline: moon.outline, frame: frame, truthFrame: truthFrame,
+            trail: aimTrail.map(px), frameWidth: w, frameHeight: h, oriented: session.calibration != nil)
+        if map != moonMap { moonMap = map }
+    }
+
     private func poll() {
         if Date().timeIntervalSince(paletteCheckedAt) > 60 { updatePalette() }
         guard let mount else { return }
@@ -1537,6 +1593,7 @@ final class AppModel: ObservableObject {
             for m in s.messages { say(m) }
             checkLink(s)
         }
+        updateMoonMap()
     }
 
     /// Warns once each time the battery's level byte falls to 1, and sounds
@@ -1779,4 +1836,21 @@ final class Flag: @unchecked Sendable {
         get { lock.withLock { _value } }
         set { lock.withLock { _value = newValue } }
     }
+}
+
+/// The Moon map (the plan's panel): the Moon as the camera shows it, the
+/// camera's frame now and its path, in the plan's pixels from the Moon's
+/// centre. While simulating, the true frame too.
+struct MoonMap: Equatable {
+    var radiusPx: Double
+    var outline: [PixelOffset]
+    /// The estimated frame (from Here), corners in order.
+    var frame: [PixelOffset]?
+    /// The simulator's true frame.
+    var truthFrame: [PixelOffset]?
+    var trail: [PixelOffset]
+    var frameWidth: Int
+    var frameHeight: Int
+    /// Calibrated, rather than turned by the focal-length guess.
+    var oriented: Bool
 }

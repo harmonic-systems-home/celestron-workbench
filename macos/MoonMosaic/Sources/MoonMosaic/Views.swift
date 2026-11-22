@@ -29,48 +29,51 @@ struct ContentView: View {
 
     enum Panel { case camera, focus, preview }
 
+    /// The control column's width.
+    static let leftWidth: CGFloat = 360
+
     var palette: Palette { model.isNight ? .night : .day }
 
     var body: some View {
-        VStack(spacing: 12) {
-            if let alarm = model.linkAlarm { alarmBanner(alarm) }
-            flowStrip
-            HStack(alignment: .top, spacing: 14) {
-                // Scrolls on its own so the long button column stays reachable
-                // on a short laptop screen.
-                VStack(alignment: .leading, spacing: 6) {
-                    // A fixed height, so the buttons below don't jump as
-                    // lines (a move's progress, a step's detail) come and go.
-                    statusPanel.frame(width: 300, height: 240, alignment: .top).clipped()
-                    ScrollView(.vertical) {
-                        controls.frame(width: 300)
-                    }
-                    .scrollIndicators(.automatic)
+        HStack(alignment: .top, spacing: 14) {
+            // Sized to fit a 13-inch laptop's screen without scrolling; it
+            // scrolls only if something extra (a latch) pushes it over.
+            VStack(alignment: .leading, spacing: 6) {
+                // A fixed height, so the buttons below don't jump as
+                // lines (a move's progress, a step's detail) come and go.
+                statusPanel.frame(width: Self.leftWidth, height: 150, alignment: .top).clipped()
+                ScrollView(.vertical) {
+                    controls.frame(width: Self.leftWidth)
                 }
-                .frame(width: 300)
-                VStack(spacing: 12) {
-                    imagePanel
-                    HStack(alignment: .top, spacing: 12) {
-                        // The plan's area shows the search while one runs, or
-                        // until there is a plan.
-                        Group {
-                            if let progress = model.searchProgress, model.searching || model.plan == nil {
-                                SearchMap(model: model, sim: model.simulator, progress: progress)
-                            } else {
-                                TileGrid(model: model, palette: palette)
-                            }
+                .scrollIndicators(.automatic)
+            }
+            .frame(width: Self.leftWidth)
+            VStack(spacing: 10) {
+                if let alarm = model.linkAlarm { alarmBanner(alarm) }
+                flowStrip
+                imagePanel
+                HStack(alignment: .top, spacing: 12) {
+                    // The search's map while one runs; otherwise the Moon map:
+                    // the plan's tiles, and where the camera points now.
+                    Group {
+                        if let progress = model.searchProgress,
+                            model.searching || (model.plan == nil && model.moonMap == nil)
+                        {
+                            SearchMap(model: model, sim: model.simulator, progress: progress)
+                        } else {
+                            TileGrid(model: model, palette: palette)
                         }
-                        .frame(width: 340, height: 220)
-                        logPanel
                     }
-                    .frame(height: 220)
+                    .frame(width: 400, height: 250)
+                    logPanel
                 }
+                .frame(height: 250)
             }
         }
         .padding(16)
         .background(palette.background)
         .foregroundStyle(palette.text)
-        .font(.system(size: 17, design: .rounded))
+        .font(.system(size: 13, design: .rounded))
         .preferredColorScheme(model.isNight ? .dark : .light)
         .onChange(of: model.showPreviewRequest) { panel = .preview }
         .sheet(isPresented: $model.showSettings) { SettingsView(model: model, palette: palette) }
@@ -168,22 +171,22 @@ struct ContentView: View {
     /// The mount's status, above the scrolling buttons so it stays in view.
     private var statusPanel: some View {
         VStack(alignment: .leading, spacing: 3) {
-                Text(model.mountState).font(.system(size: 22, weight: .semibold, design: .rounded))
+                Text(model.mountState).font(.system(size: 18, weight: .semibold, design: .rounded))
                 if model.connected {
                     let t = model.trackingStatus
                     Label(t.text, systemImage: t.symbol)
-                        .font(.system(size: 15, weight: .semibold, design: .rounded))
+                        .font(.system(size: 13, weight: .semibold, design: .rounded))
                         .foregroundStyle([Color.green, Color.orange, Color.blue, palette.dim][t.kind])
                 }
                 if model.connected {
                     if let sv = model.savingNow {
                         Label(sv.product ? "\(sv.text) (\(sv.frames) frames)" : sv.text, systemImage: "record.circle")
-                            .font(.system(size: 14, weight: .semibold, design: .rounded))
+                            .font(.system(size: 12, weight: .semibold, design: .rounded))
                             .foregroundStyle(sv.product ? Color.red : Color.orange)
                             .lineLimit(1)
                     } else {
                         Label("Not saving frames", systemImage: "circle")
-                            .font(.system(size: 14, design: .rounded)).foregroundStyle(palette.dim)
+                            .font(.system(size: 11, design: .rounded)).foregroundStyle(palette.dim)
                     }
                 }
                 if let m = model.moveProgress {
@@ -193,7 +196,7 @@ struct ContentView: View {
                             String(format: "%.1f° on %@, %.0f%%", m.degrees, m.axis, m.fraction * 100)
                                 + (m.eta.map { String(format: ", about %.0f s left", $0) } ?? "")
                         )
-                        .font(.system(size: 12, design: .rounded)).foregroundStyle(palette.dim)
+                        .font(.system(size: 11, design: .rounded)).foregroundStyle(palette.dim)
                     }
                 }
                 if let alt = model.altitude {
@@ -206,7 +209,7 @@ struct ContentView: View {
                 Text(model.busy.map { "\($0)…" } ?? "Ready").foregroundStyle(
                     model.busy == nil ? palette.dim : palette.bright)
                 if let d = model.stepDetail {
-                    Text(d).font(.system(size: 14, weight: .semibold, design: .rounded))
+                    Text(d).font(.system(size: 12, weight: .semibold, design: .rounded))
                         .foregroundStyle(palette.bright).lineLimit(2)
                 }
                 if let finish = model.finishAt {
@@ -218,159 +221,165 @@ struct ContentView: View {
     }
 
     private var controls: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        let idle = model.busy == nil
+        let aimed = model.calibrated && model.hereSet && idle
+        return VStack(alignment: .leading, spacing: 6) {
 
             if let reason = model.latchedReason {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Latched: \(reason).").font(.system(size: 15, weight: .semibold))
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Latched: \(reason).").font(.system(size: 13, weight: .semibold))
                     Text("The app stops any motion, so the arrow keys won't work, until you press Reset.")
-                        .font(.system(size: 14))
+                        .font(.system(size: 12))
                     button("Reset", enabled: true) { model.resetFault() }
                 }
                 .foregroundStyle(palette.bright)
-                .padding(10)
-                .background(RoundedRectangle(cornerRadius: 10).stroke(palette.bright, lineWidth: 2))
+                .padding(8)
+                .background(RoundedRectangle(cornerRadius: 8).stroke(palette.bright, lineWidth: 2))
             }
 
-            if model.connected {
-                button("Disconnect", enabled: model.busy == nil) { model.disconnect() }
-            } else {
-                button(
-                    model.simulate ? "Connect (simulated)" : "Connect", enabled: model.busy == nil
-                ) {
-                    model.connect()
+            row {
+                if model.connected {
+                    button("Disconnect", enabled: idle) { model.disconnect() }
+                } else {
+                    button(model.simulate ? "Connect (simulated)" : "Connect", enabled: idle) {
+                        model.connect()
+                    }
+                }
+                if !model.testMode {
+                    button(
+                        model.following ? "Stop tracking" : "Track",
+                        enabled: model.connected && (idle || model.following)
+                    ) { model.toggleTrack() }
+                    .help(model.following ? "Tracking: click to stop" : "Track the Moon")
                 }
             }
             if !model.testMode {
-                button(
-                    model.following ? "Tracking (tap to stop)" : "Track",
-                    enabled: model.connected && (model.busy == nil || model.following)
-                ) { model.toggleTrack() }
-                panControls
-                HStack(spacing: 10) {
-                    button("Stop nudge", enabled: model.following) { model.stopNudge() }
-                    button(
-                        model.undoDepth > 0 ? "Undo (\(model.undoDepth))" : "Undo",
-                        enabled: model.following && model.undoDepth > 0
-                    ) { model.undo() }
+                HStack(alignment: .center, spacing: 12) {
+                    panControls
+                    VStack(spacing: 6) {
+                        Toggle("Fine nudges", isOn: $fineP).toggleStyle(.checkbox)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        button("Stop nudge", enabled: model.following) { model.stopNudge() }
+                        button(
+                            model.undoDepth > 0 ? "Undo (\(model.undoDepth))" : "Undo",
+                            enabled: model.following && model.undoDepth > 0
+                        ) { model.undo() }
+                    }
                 }
             }
             searchControls
             if !model.testMode {
-                HStack(spacing: 10) {
-                    button("Here", enabled: model.connected && model.busy == nil) { model.here() }
-                    button(
-                        model.holding ? "Locked" : "Lock",
-                        enabled: model.hereSet && model.busy == nil
-                    ) { model.toggleHold() }
-                }
-                Text("Find sets Here by itself; press Here after centring by hand. Lock holds a fixed aim.")
-                    .font(.system(size: 12, design: .rounded)).foregroundStyle(palette.dim)
-                button("Orient Camera", enabled: model.connected && model.busy == nil) {
-                    model.calibrate()
-                }
-                button(
-                    model.centreFound ? "Orient Moon (found)" : "Orient Moon",
-                    enabled: model.calibrated && model.busy == nil
-                ) { model.findCentre() }
-                HStack(spacing: 10) {
-                    button("Go to Limb", enabled: model.calibrated && model.hereSet && model.busy == nil) {
-                        model.goTo(.limb)
+                row {
+                    button("Here", enabled: model.connected && idle) { model.here() }
+                        .help("Find sets Here by itself; press Here after centring by hand.")
+                    button(model.holding ? "Locked" : "Lock", enabled: model.hereSet && idle) {
+                        model.toggleHold()
                     }
-                    button("Auto-set exposure", enabled: model.connected && model.busy == nil) {
-                        model.autoSetExposure()
-                    }
+                    .help("Lock holds a fixed aim.")
+                    button("Auto exposure", enabled: model.connected && idle) { model.autoSetExposure() }
                 }
-                HStack(spacing: 10) {
-                    button("Go to Terminator", enabled: model.calibrated && model.hereSet && model.busy == nil) {
-                        model.goTo(.terminator)
+                row {
+                    button("Orient Camera", enabled: model.connected && idle) { model.calibrate() }
+                    button(model.centreFound ? "Orient Moon ✓" : "Orient Moon", enabled: model.calibrated && idle) {
+                        model.findCentre()
                     }
-                    button(model.bestCrater.map { "Go to \($0)" } ?? "Go to crater", enabled: model.calibrated && model.hereSet && model.busy == nil && model.bestCrater != nil) {
+                    button("Recheck", enabled: model.centreFound && idle) { model.recheck() }
+                        .help("Recheck the Moon's place after fine focus")
+                }
+                HStack(spacing: 6) {
+                    Text("Go to").foregroundStyle(palette.dim).frame(width: 40, alignment: .leading)
+                    button("Limb", enabled: aimed) { model.goTo(.limb) }
+                    button("Terminator", enabled: aimed) { model.goTo(.terminator) }
+                    button(model.bestCrater ?? "Crater", enabled: aimed && model.bestCrater != nil) {
                         model.goTo(.crater)
                     }
                 }
-                button("Recheck (after fine focus)", enabled: model.centreFound && model.busy == nil) { model.recheck() }
-                button("Plan", enabled: model.calibrated && model.busy == nil) {
-                    model.makePlan()
+                row {
+                    button("Plan", enabled: model.calibrated && idle) { model.makePlan() }
+                    button("Start", enabled: model.plan != nil && idle) { model.start() }
+                    button(
+                        model.darkTiles > 0 ? "Earthshine (\(model.darkTiles))" : "Earthshine",
+                        enabled: model.darkTiles > 0 && idle
+                    ) { model.startEarthshine() }
+                    .help("Capture the dark-side tiles by earthshine")
                 }
-                button("Start", enabled: model.plan != nil && model.busy == nil) { model.start() }
-                button(
-                    model.darkTiles > 0 ? "Earthshine: \(model.darkTiles) dark tiles" : "Earthshine",
-                    enabled: model.darkTiles > 0 && model.busy == nil
-                ) { model.startEarthshine() }
             }
-            HStack(spacing: 10) {
+            row {
                 button("Pause", enabled: model.busy == "Capturing") { model.pause() }
                 button("Stop", enabled: model.connected) { model.stop() }
+                if !model.testMode {
+                    button("Preview", enabled: model.plan != nil && idle) {
+                        model.makePreview()
+                        panel = .preview
+                    }
+                }
             }
             if !model.testMode {
-                button("Preview", enabled: model.plan != nil && model.busy == nil) {
-                    model.makePreview()
-                    panel = .preview
-                }
                 button(
-                    model.selected.isEmpty
-                        ? "Redo selected" : "Redo \(model.selected.count) selected",
-                    enabled: !model.selected.isEmpty && model.busy == nil
+                    model.selected.isEmpty ? "Redo selected tiles" : "Redo \(model.selected.count) selected",
+                    enabled: !model.selected.isEmpty && idle
                 ) { model.redoSelected() }
             }
             if model.simulate || model.simulatedCamera || model.simulator.attached {
                 SimulatorBox(model: model, sim: model.simulator, palette: palette)
             }
-            Spacer(minLength: 12)
-            button("Settings", enabled: model.busy == nil) { model.showSettings = true }
+            button("Settings…", enabled: idle) { model.showSettings = true }
+                .padding(.top, 4)
         }
+    }
+
+    private func row<C: View>(@ViewBuilder _ content: () -> C) -> some View {
+        HStack(spacing: 6) { content() }
     }
 
     /// Test-mode toggle, the spiral/raster choice, and the search buttons
     /// (ADR 0022). Click a spot in the camera view to recentre there.
     private var searchControls: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Picker("Sky", selection: $model.searchSky) {
-                Text("Auto").tag("auto")
-                Text("Clear night").tag(Blob.Sky.clearNight.rawValue)
-                Text("Cloudy night").tag(Blob.Sky.cloudyNight.rawValue)
-                Text("Day").tag(Blob.Sky.day.rawValue)
-            }
-            .font(.system(size: 13, design: .rounded))
-            .disabled(model.searching)
-            Stepper(
-                value: $model.searchReachDeg, in: 0.25...4, step: 0.25
-            ) {
-                Text(String(format: "Search area ±%.2g°", model.searchReachDeg))
-                    .font(.system(size: 13, design: .rounded))
-            }
-            .disabled(model.searching)
-            Toggle(isOn: $model.testMode) {
-                Text("Test mode (drainpipe) — no tracking")
-                    .font(.system(size: 13, design: .rounded))
-            }
-            .toggleStyle(.switch)
-            .tint(palette.bright)
-            .disabled(!model.connected || model.searching || model.busy != nil)
-
-            Text(
-                model.testMode
-                    ? "Find a fixed target to try the search and focus. Aim the tube near \(Int(model.testAltitudeDeg))° altitude, then:"
-                    : "Get close with the spotting scope, then search for the Moon:"
-            )
-            .font(.system(size: 13, design: .rounded)).foregroundStyle(palette.dim)
-
-            Picker("", selection: $model.searchPattern) {
-                Text("Spiral").tag(SearchPattern.spiral)
-                Text("Raster").tag(SearchPattern.raster)
-            }
-            .pickerStyle(.segmented)
-            .disabled(model.searching || model.busy != nil)
-
+        VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 10) {
+                Picker("Sky", selection: $model.searchSky) {
+                    Text("Auto").tag("auto")
+                    Text("Clear night").tag(Blob.Sky.clearNight.rawValue)
+                    Text("Cloudy night").tag(Blob.Sky.cloudyNight.rawValue)
+                    Text("Day").tag(Blob.Sky.day.rawValue)
+                }
+                .disabled(model.searching)
+                Stepper(value: $model.searchReachDeg, in: 0.25...4, step: 0.25) {
+                    Text(String(format: "Area ±%.2g°", model.searchReachDeg)).monospacedDigit()
+                }
+                .disabled(model.searching)
+                .help("How far the search reaches from where the scope points")
+            }
+            HStack(spacing: 10) {
+                Picker("", selection: $model.searchPattern) {
+                    Text("Spiral").tag(SearchPattern.spiral)
+                    Text("Raster").tag(SearchPattern.raster)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(width: 150)
+                .disabled(model.searching || model.busy != nil)
+                Toggle(isOn: $model.testMode) { Text("Test mode") }
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                    .tint(palette.bright)
+                    .disabled(!model.connected || model.searching || model.busy != nil)
+                    .help("Drainpipe test: a fixed target, no tracking")
+            }
+            if model.testMode {
+                Text("Find a fixed target to try the search and focus. Aim the tube near \(Int(model.testAltitudeDeg))° altitude, then search.")
+                    .font(.system(size: 11, design: .rounded)).foregroundStyle(palette.dim)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            row {
                 button(
                     model.searching ? "Searching…" : "Search",
                     enabled: model.connected && model.busy == nil && !model.searching
                 ) { model.startSearch() }
+                .help("Get close with the spotting scope, then search for the Moon")
                 button("I see it", enabled: model.searching) { model.sawIt() }
+                button("Stop search", enabled: model.searching) { model.stopSearch() }
             }
-            button("Stop search", enabled: model.searching) { model.stopSearch() }
         }
     }
 
@@ -382,33 +391,52 @@ struct ContentView: View {
             "\(model.captureDone) of \(model.captureTotal) tiles\nAbout \(minutes) min left, done ≈ \(at)"
     }
 
-    /// Pan the view without the hand controller: a quarter frame per press,
-    /// or a twelfth with Fine; Centre returns to the Moon's centre.
+    /// Pan the view without the hand controller, laid out as a compass: a
+    /// quarter frame per press, or a twelfth with Fine; the middle returns
+    /// to the Moon's centre.
     @State private var fineP = false
     private var panControls: some View {
         let step = fineP ? 1.0 / 12 : 0.25
         let on = model.connected && (model.busy == nil || model.holding || model.following)
-        return HStack(spacing: 6) {
-            ForEach(
-                [("◀", -step, 0.0), ("▲", 0.0, -step), ("▼", 0.0, step), ("▶", step, 0.0)], id: \.0
-            ) { item in
-                Button(item.0) { model.pan(item.1, item.2) }
-                    .buttonStyle(BigButton(palette: palette))
-                    .frame(minWidth: 44, minHeight: 40)
-                    .disabled(!on).opacity(on ? 1 : 0.35)
+        let centreOn = on && model.hereSet
+        func key(_ symbol: String, _ dx: Double, _ dy: Double, _ help: String) -> some View {
+            Button { model.pan(dx, dy) } label: {
+                Image(systemName: symbol).font(.system(size: 13, weight: .bold)).frame(width: 40, height: 24)
             }
-            Button("Centre") { model.centreAim() }
-                .buttonStyle(BigButton(palette: palette))
-                .frame(minHeight: 40)
-                .disabled(!(on && model.hereSet)).opacity(on && model.hereSet ? 1 : 0.35)
-            Toggle("Fine", isOn: $fineP).toggleStyle(.checkbox).fixedSize()
+            .buttonStyle(BigButton(palette: palette))
+            .disabled(!on).opacity(on ? 1 : 0.35)
+            .help(help)
         }
+        return Grid(horizontalSpacing: 4, verticalSpacing: 4) {
+            GridRow {
+                Color.clear.frame(width: 40, height: 24)
+                key("arrowtriangle.up.fill", 0, -step, "Move the view up")
+                Color.clear.frame(width: 40, height: 24)
+            }
+            GridRow {
+                key("arrowtriangle.left.fill", -step, 0, "Move the view left")
+                Button { model.centreAim() } label: {
+                    Image(systemName: "scope").font(.system(size: 13, weight: .bold)).frame(width: 40, height: 24)
+                }
+                .buttonStyle(BigButton(palette: palette))
+                .disabled(!centreOn).opacity(centreOn ? 1 : 0.35)
+                .help("Centre: back to the Moon's centre")
+                key("arrowtriangle.right.fill", step, 0, "Move the view right")
+            }
+            GridRow {
+                Color.clear.frame(width: 40, height: 24)
+                key("arrowtriangle.down.fill", 0, step, "Move the view down")
+                Color.clear.frame(width: 40, height: 24)
+            }
+        }
+        .fixedSize()
     }
 
     private func button(_ title: String, enabled: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Text(title).font(.system(size: 19, weight: .semibold, design: .rounded))
-                .frame(maxWidth: .infinity, minHeight: 52)
+            Text(title).font(.system(size: 13, weight: .semibold, design: .rounded))
+                .lineLimit(1).minimumScaleFactor(0.8)
+                .frame(maxWidth: .infinity, minHeight: 28)
         }
         .buttonStyle(BigButton(palette: palette))
         .disabled(!enabled)
@@ -426,7 +454,7 @@ struct ContentView: View {
                     Text("Mosaic preview").tag(Panel.preview)
                 }
                 .pickerStyle(.segmented)
-                .frame(width: 400)
+                .frame(width: 300)
                 Spacer()
                 stepper(
                     exposureText, enabled: model.busy == nil,
@@ -584,7 +612,7 @@ struct ContentView: View {
             }
             Button("Reset best") { model.resetBestFocus() }
                 .buttonStyle(BigButton(palette: palette))
-                .frame(width: 130, height: 44)
+                .frame(width: 110, height: 28)
         }
         .padding(14)
         .background(RoundedRectangle(cornerRadius: 10).fill(palette.background.opacity(0.75)))
@@ -595,11 +623,11 @@ struct ContentView: View {
         _ title: String, enabled: Bool, down: @escaping () -> Void, up: @escaping () -> Void
     ) -> some View {
         HStack(spacing: 6) {
-            Text(title).monospacedDigit().frame(minWidth: 140, alignment: .trailing)
+            Text(title).monospacedDigit().frame(minWidth: 110, alignment: .trailing)
             ForEach([("−", down), ("+", up)], id: \.0) { label, action in
                 Button(action: action) {
-                    Text(label).font(.system(size: 24, weight: .semibold, design: .rounded))
-                        .frame(width: 48, height: 40)
+                    Text(label).font(.system(size: 16, weight: .semibold, design: .rounded))
+                        .frame(width: 30, height: 24)
                 }
                 .buttonStyle(BigButton(palette: palette))
             }
@@ -613,7 +641,7 @@ struct ContentView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 3) {
                     ForEach(Array(model.log.enumerated()), id: \.offset) { i, line in
-                        Text(line).font(.system(size: 13, design: .monospaced)).id(i)
+                        Text(line).font(.system(size: 11, design: .monospaced)).id(i)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
@@ -625,7 +653,10 @@ struct ContentView: View {
     }
 }
 
-/// The plan's tiles, coloured by state; tap to select for Redo.
+/// The Moon map: the Moon as the camera shows it, with the plan's tiles
+/// (coloured by state; tap to select for Redo) and where the camera points
+/// now, from Here on. While simulating, the true frame is drawn dashed, and
+/// alone before Here.
 struct TileGrid: View {
     @ObservedObject var model: AppModel
     let palette: Palette
@@ -634,56 +665,119 @@ struct TileGrid: View {
         GeometryReader { geo in
             ZStack {
                 RoundedRectangle(cornerRadius: 10).fill(palette.panel)
-                if let plan = model.plan {
-                    let layout = Layout(plan: plan, size: geo.size)
-                    // The Moon under the tiles: the dark side, and the sunlit
-                    // part from the ephemeris (bounded by the terminator).
+                if let layout = Layout(plan: model.plan, map: model.moonMap, size: geo.size) {
                     Canvas { ctx, size in
-                        let c = CGPoint(x: size.width / 2, y: size.height / 2)
+                        let c = layout.centre
                         let d = layout.moonDiameter
                         ctx.fill(
                             Path(ellipseIn: CGRect(x: c.x - d / 2, y: c.y - d / 2, width: d, height: d)),
                             with: .color(palette.dim.opacity(0.25)))
-                        if model.planOutline.count > 2 {
+                        let outline = model.moonMap?.outline ?? model.planOutline
+                        if outline.count > 2 {
                             var lit = Path()
-                            lit.addLines(model.planOutline.map {
-                                CGPoint(x: c.x + $0.x * layout.scale, y: c.y + $0.y * layout.scale)
-                            })
+                            lit.addLines(outline.map(layout.point))
                             lit.closeSubpath()
                             ctx.fill(lit, with: .color(palette.text.opacity(0.3)))
                         }
                     }
                     .allowsHitTesting(false)
-                    ForEach(plan.tiles) { tile in
-                        let r = layout.rect(tile)
-                        Rectangle()
-                            .fill(color(tile.id).opacity(0.55))
-                            .overlay(
-                                Rectangle().stroke(
-                                    model.selected.contains(tile.id) ? palette.bright : palette.dim,
-                                    style: StrokeStyle(
-                                        lineWidth: model.selected.contains(tile.id) ? 3 : 1,
-                                        // Dark-side tiles (for the Earthshine pass) dashed.
-                                        dash: tile.lit ? [] : [4, 3]))
-                            )
-                            .frame(width: r.width, height: r.height)
-                            .position(x: r.midX, y: r.midY)
-                            .onTapGesture {
-                                if model.selected.contains(tile.id) {
-                                    model.selected.remove(tile.id)
-                                } else {
-                                    model.selected.insert(tile.id)
+                    if let plan = model.plan {
+                        ForEach(plan.tiles) { tile in
+                            let r = layout.rect(tile, plan)
+                            Rectangle()
+                                .fill(color(tile.id).opacity(0.55))
+                                .overlay(
+                                    Rectangle().stroke(
+                                        model.selected.contains(tile.id) ? palette.bright : palette.dim,
+                                        style: StrokeStyle(
+                                            lineWidth: model.selected.contains(tile.id) ? 3 : 1,
+                                            // Dark-side tiles (for the Earthshine pass) dashed.
+                                            dash: tile.lit ? [] : [4, 3]))
+                                )
+                                .frame(width: r.width, height: r.height)
+                                .position(x: r.midX, y: r.midY)
+                                .onTapGesture {
+                                    if model.selected.contains(tile.id) {
+                                        model.selected.remove(tile.id)
+                                    } else {
+                                        model.selected.insert(tile.id)
+                                    }
                                 }
-                            }
+                        }
                     }
                     Circle()
                         .stroke(palette.dim, lineWidth: 1)
                         .frame(width: layout.moonDiameter, height: layout.moonDiameter)
-                        .position(x: geo.size.width / 2, y: geo.size.height / 2)
+                        .position(layout.centre)
                         .allowsHitTesting(false)
+                    if let map = model.moonMap {
+                        pointing(map, layout).allowsHitTesting(false)
+                    }
                 } else {
-                    Text("Tiles appear after Plan").foregroundStyle(palette.dim)
+                    Text("The Moon map appears after Find or Here")
+                        .foregroundStyle(palette.dim)
                 }
+            }
+        }
+    }
+
+    /// The camera's frame now, its path, and the truth while simulating; an
+    /// arrow at the edge when the frame is off the map.
+    private func pointing(_ map: MoonMap, _ layout: Layout) -> some View {
+        Canvas { ctx, size in
+            let bounds = CGRect(origin: .zero, size: size).insetBy(dx: 2, dy: 2)
+            func poly(_ pts: [PixelOffset]) -> Path {
+                var p = Path()
+                p.addLines(pts.map(layout.point))
+                p.closeSubpath()
+                return p
+            }
+            if map.trail.count > 1 {
+                var path = Path()
+                path.addLines(map.trail.map(layout.point))
+                ctx.stroke(path, with: .color(palette.dim.opacity(0.7)), lineWidth: 1)
+            }
+            if let t = map.truthFrame {
+                ctx.stroke(poly(t), with: .color(.cyan.opacity(0.8)), style: StrokeStyle(lineWidth: 1.5, dash: [4, 3]))
+            }
+            if let f = map.frame {
+                let path = poly(f)
+                if bounds.intersects(path.boundingRect) {
+                    ctx.stroke(path, with: .color(palette.bright), lineWidth: 2)
+                    // The frame's top edge, so its turn shows (always the top
+                    // in the camera's view, which this map is).
+                    var top = Path()
+                    top.addLines([layout.point(f[0]), layout.point(f[1])])
+                    ctx.stroke(top, with: .color(palette.bright), lineWidth: 4)
+                } else {
+                    // Off the map: an arrow at the edge towards it.
+                    let c = layout.point(PixelOffset(x: (f[0].x + f[2].x) / 2, y: (f[0].y + f[2].y) / 2))
+                    let o = layout.centre
+                    let (dx, dy) = (c.x - o.x, c.y - o.y)
+                    let k = min(
+                        (bounds.width / 2 - 14) / max(abs(dx), 1e-6), (bounds.height / 2 - 14) / max(abs(dy), 1e-6))
+                    let tip = CGPoint(x: o.x + dx * k, y: o.y + dy * k)
+                    let a = atan2(dy, dx)
+                    var arrow = Path()
+                    arrow.move(to: tip)
+                    arrow.addLine(to: CGPoint(x: tip.x - 14 * cos(a - 0.4), y: tip.y - 14 * sin(a - 0.4)))
+                    arrow.addLine(to: CGPoint(x: tip.x - 14 * cos(a + 0.4), y: tip.y - 14 * sin(a + 0.4)))
+                    arrow.closeSubpath()
+                    ctx.fill(arrow, with: .color(palette.bright))
+                    let radii = hypot(dx, dy) / max(layout.moonDiameter / 2, 1)
+                    ctx.draw(
+                        Text(String(format: "%.1f radii", radii)).font(.system(size: 11)).foregroundColor(palette.bright),
+                        at: CGPoint(x: tip.x - 26 * cos(a), y: tip.y - 26 * sin(a)))
+                }
+            }
+            let note =
+                map.frame == nil
+                ? "Simulator's truth (dashed); the estimate starts at Here"
+                : map.oriented ? "" : "Turned by guess until Orient Camera"
+            if !note.isEmpty {
+                ctx.draw(
+                    Text(note).font(.system(size: 10)).foregroundColor(palette.dim),
+                    at: CGPoint(x: 6, y: size.height - 4), anchor: .bottomLeading)
             }
         }
     }
@@ -697,31 +791,47 @@ struct TileGrid: View {
         }
     }
 
-    /// Plan pixels to view points, centred on the Moon.
+    /// Plan pixels to view points, centred on the Moon: the plan (or the
+    /// Moon with a margin) and the camera's frame when it is near.
     struct Layout {
         let scale: Double
-        let size: CGSize
-        let tileSize: CGSize
+        let centre: CGPoint
         let moonDiameter: Double
 
-        init(plan: MosaicPlan, size: CGSize) {
-            let xs = plan.tiles.map { abs($0.center.x) + Double(plan.frameWidth) / 2 }
-            let ys = plan.tiles.map { abs($0.center.y) + Double(plan.frameHeight) / 2 }
-            let spanX = 2 * (xs.max() ?? 1)
-            let spanY = 2 * (ys.max() ?? 1)
-            scale = min((size.width - 12) / spanX, (size.height - 12) / spanY)
-            self.size = size
-            tileSize = CGSize(
-                width: Double(plan.frameWidth) * scale, height: Double(plan.frameHeight) * scale)
-            moonDiameter = 2 * plan.moonRadiusPixels * scale
+        init?(plan: MosaicPlan?, map: MoonMap?, size: CGSize) {
+            let radius: Double
+            var span = (x: 0.0, y: 0.0)
+            if let plan {
+                radius = plan.moonRadiusPixels
+                for t in plan.tiles {
+                    span.x = max(span.x, abs(t.center.x) + Double(plan.frameWidth) / 2)
+                    span.y = max(span.y, abs(t.center.y) + Double(plan.frameHeight) / 2)
+                }
+            } else if let map {
+                radius = map.radiusPx
+            } else {
+                return nil
+            }
+            span = (max(span.x, 1.15 * radius), max(span.y, 1.15 * radius))
+            // Take in the frame (and the truth) while within 2.5 radii; past
+            // that an arrow points to it.
+            for f in [map?.frame, map?.truthFrame].compactMap({ $0 }) {
+                let fx = f.map { abs($0.x) }.max() ?? 0, fy = f.map { abs($0.y) }.max() ?? 0
+                if max(fx, fy) < 2.5 * radius { span = (max(span.x, fx + 10), max(span.y, fy + 10)) }
+            }
+            scale = min((size.width - 12) / (2 * span.x), (size.height - 12) / (2 * span.y))
+            centre = CGPoint(x: size.width / 2, y: size.height / 2)
+            moonDiameter = 2 * radius * scale
         }
 
-        func rect(_ tile: Tile) -> CGRect {
-            let cx = size.width / 2 + tile.center.x * scale
-            let cy = size.height / 2 + tile.center.y * scale
-            return CGRect(
-                x: cx - tileSize.width / 2, y: cy - tileSize.height / 2, width: tileSize.width,
-                height: tileSize.height)
+        func point(_ p: PixelOffset) -> CGPoint {
+            CGPoint(x: centre.x + p.x * scale, y: centre.y + p.y * scale)
+        }
+
+        func rect(_ tile: Tile, _ plan: MosaicPlan) -> CGRect {
+            let (w, h) = (Double(plan.frameWidth) * scale, Double(plan.frameHeight) * scale)
+            let c = point(tile.center)
+            return CGRect(x: c.x - w / 2, y: c.y - h / 2, width: w, height: h)
         }
     }
 }
@@ -733,10 +843,10 @@ struct BigButton: ButtonStyle {
         configuration.label
             .foregroundStyle(configuration.isPressed ? palette.background : palette.text)
             .background(
-                RoundedRectangle(cornerRadius: 12).fill(
+                RoundedRectangle(cornerRadius: 7).fill(
                     configuration.isPressed ? palette.bright : palette.panel)
             )
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(palette.dim, lineWidth: 1.5))
+            .overlay(RoundedRectangle(cornerRadius: 7).stroke(palette.dim, lineWidth: 1))
             .contentShape(Rectangle())
     }
 }
@@ -893,19 +1003,20 @@ struct SimulatorBox: View {
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Simulator").font(.system(size: 15, weight: .semibold, design: .rounded))
-            Picker("Scene", selection: $sim.libraryScene) {
-                ForEach(sim.library, id: \.self) { url in
-                    Text(sim.libraryNames[url] ?? url.deletingPathExtension().lastPathComponent).tag(Optional(url))
+        VStack(alignment: .leading, spacing: 5) {
+            HStack {
+                Picker("Simulator scene", selection: $sim.libraryScene) {
+                    ForEach(sim.library, id: \.self) { url in
+                        Text(sim.libraryNames[url] ?? url.deletingPathExtension().lastPathComponent).tag(Optional(url))
+                    }
                 }
+                .onChange(of: sim.libraryScene) { if sim.sceneChoice != .library { sim.sceneChoice = .library } }
+                .disabled(sim.library.isEmpty)
+                if sim.loadingScene { ProgressView().controlSize(.small) }
             }
-            .onChange(of: sim.libraryScene) { if sim.sceneChoice != .library { sim.sceneChoice = .library } }
-            .disabled(sim.library.isEmpty)
             if sim.library.isEmpty {
-                Button("Choose scene folder…") { sim.chooseLibraryFolder() }.font(.system(size: 13))
+                Button("Choose scene folder…") { sim.chooseLibraryFolder() }
             }
-            if sim.loadingScene { ProgressView().controlSize(.small) }
             Text(
                 sim.library.isEmpty
                     ? "No scenes yet: choose the folder of Moon images for the simulator."
@@ -913,18 +1024,18 @@ struct SimulatorBox: View {
                     ? sim.sceneNote
                     : (sim.sceneMoment.map { "Connect rehearses at this scene's moment: \($0.time.formatted(date: .abbreviated, time: .shortened))." }
                         ?? "Pick a scene, then Connect.")
-            ).font(.system(size: 11)).foregroundStyle(palette.dim).lineLimit(3)
+            ).font(.system(size: 10)).foregroundStyle(palette.dim).lineLimit(2)
             HStack {
-                Text("Speed \(Int(sim.speed))×").font(.system(size: 13))
-                Slider(value: $sim.speed, in: 1...10, step: 1).disabled(!model.simulate)
-            }
-            HStack {
-                Button("Random scenario") { sim.randomize(reachDeg: model.searchReachDeg) }
+                Text("Speed \(Int(sim.speed))×").monospacedDigit()
+                Slider(value: $sim.speed, in: 1...10, step: 1).disabled(!model.simulate).frame(width: 90)
+                Spacer()
+                Button("Random") { sim.randomize(reachDeg: model.searchReachDeg) }
+                    .help("Random scenario")
                 Button("More…") { openWindow(id: "simulator") }
             }
-            .font(.system(size: 13))
         }
-        .padding(10)
-        .background(RoundedRectangle(cornerRadius: 10).stroke(palette.dim.opacity(0.5), lineWidth: 1))
+        .font(.system(size: 12))
+        .padding(8)
+        .background(RoundedRectangle(cornerRadius: 8).stroke(palette.dim.opacity(0.5), lineWidth: 1))
     }
 }

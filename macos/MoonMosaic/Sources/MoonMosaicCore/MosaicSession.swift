@@ -218,6 +218,47 @@ public final class MosaicSession: @unchecked Sendable {
         }
     }
 
+    /// The map from sky offsets to image pixels in use: the calibration, or
+    /// before one the focal-length guess turned as the search found it.
+    public var imageMap: CameraCalibration {
+        if let calibration { return calibration }
+        let (f, s) = (searchOrientation.flips, scaleGuess)
+        return CameraCalibration(a: f.x / s, b: 0, c: 0, d: -f.y / s)
+    }
+
+    /// Where the mount's `axes` (azimuth, altitude axis degrees) point at
+    /// `time`, relative to the Moon's centre: `target`'s inverse. Nil before
+    /// Here.
+    public func skyOffset(axes: [Double], at time: Date) -> SkyOffset? {
+        guard let here, axes.count == 2 else { return nil }
+        let moon = Ephemeris.moon(at: time, from: settings.site).horizontal
+        let (b, b0) = (drift.bias(at: time), drift.bias(at: here.time))
+        let dAz = wrap180(moon.azDeg - here.moon.horizontal.azDeg) + b.az - b0.az
+        let dAlt = moon.altDeg - here.moon.horizontal.altDeg + b.alt - b0.alt
+        let offAz = wrap180(axes[0] - here.azimuthDeg - dAz)
+        let offAlt = axes[1] - here.altitudeDeg - dAlt
+        return SkyOffset(x: offAz * 3600 * cos(moon.altDeg * .pi / 180), y: offAlt * 3600)
+    }
+
+    /// The Moon now as the camera shows it, in the plan's pixels (from the
+    /// Moon's centre): its radius and sunlit outline. A part of the Moon at
+    /// sky offset s shows at −M·s, and the frame aimed at s is centred there.
+    public func moonInImage(at time: Date) -> (radiusPx: Double, outline: [PixelOffset]) {
+        let m = imageMap
+        let r = Ephemeris.moon(at: time, from: settings.site).diameterDeg / 2 * 3600
+        let phase = Ephemeris.phase(at: time, from: settings.site)
+        let outline = Ephemeris.litOutline(
+            brightLimbFromZenithDeg: phase.brightLimbFromZenithDeg, phaseAngleDeg: phase.phaseAngleDeg
+        ).map {
+            let p = m.image(for: SkyOffset(x: $0.x * r, y: $0.y * r))
+            return PixelOffset(x: -p.x, y: -p.y)
+        }
+        return (r / m.arcsecPerPixel, outline)
+    }
+
+    /// The camera's frame size (pixels).
+    public var frameSize: (width: Int, height: Int) { (camera.info.width, camera.info.height) }
+
     /// What happens to the dark side's tiles (for the next Plan).
     public func setDarkTiles(_ d: DarkTiles) { settings.darkTiles = d }
 
