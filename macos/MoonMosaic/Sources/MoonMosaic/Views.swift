@@ -902,9 +902,14 @@ struct SimulatorBox: View {
             }
             .onChange(of: sim.libraryScene) { if sim.sceneChoice != .library { sim.sceneChoice = .library } }
             .disabled(sim.library.isEmpty)
+            if sim.library.isEmpty {
+                Button("Choose scene folder…") { sim.chooseLibraryFolder() }.font(.system(size: 13))
+            }
             if sim.loadingScene { ProgressView().controlSize(.small) }
             Text(
-                sim.attached
+                sim.library.isEmpty
+                    ? "No scenes yet: choose the folder of Moon images for the simulator."
+                    : sim.attached
                     ? sim.sceneNote
                     : (sim.sceneMoment.map { "Connect rehearses at this scene's moment: \($0.time.formatted(date: .abbreviated, time: .shortened))." }
                         ?? "Pick a scene, then Connect.")
