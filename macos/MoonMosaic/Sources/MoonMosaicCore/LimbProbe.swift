@@ -62,7 +62,19 @@ public enum LimbEdge {
                     return g[yi * bw + xi]
                 }
                 let (bright, dark) = (at(Double(k)), at(-Double(k)))
-                guard bright >= lo + 0.5 * contrast, dark <= lo + 0.12 * contrast else { continue }
+                // A sharp step from the lit disk down toward the sky. The
+                // sky side is judged against the step, not the frame's
+                // darkest: in haze the glow just outside the limb is a
+                // sixth of the disk's brightness or more (2026-11-21, a
+                // hazy night's DWARF frame), yet the edge is still a step.
+                // Further out it must stay as dark or darken on (sky and
+                // glow), not brighten again (a shadow inside the disk).
+                let far = at(-3 * Double(k))
+                guard bright >= lo + 0.5 * contrast,
+                    dark <= lo + 0.12 * contrast
+                        || (dark <= lo + 0.3 * (bright - lo) && far <= dark + 0.02 * contrast
+                            && far <= lo + 0.25 * contrast)
+                else { continue }
                 // Only the edge's steepest pixel across it.
                 let ahead = abs(at(2) - at(0)) / 2
                 let behind = abs(at(0) - at(-2)) / 2

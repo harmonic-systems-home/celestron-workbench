@@ -8,7 +8,8 @@ import Testing
 /// A frame of a bright disk (sky offset `centre`, radius `r`″) with a glow
 /// fading outside it, as the camera at `pointing` sees it through `m`.
 private func diskFrame(
-    centre: SkyOffset, r: Double, pointing: SkyOffset, m: CameraCalibration, width: Int = 960, height: Int = 540
+    centre: SkyOffset, r: Double, pointing: SkyOffset, m: CameraCalibration, width: Int = 960, height: Int = 540,
+    glow: Double = 25, glowReach: Double = 60, blur: Double = 0.8
 ) -> Frame {
     var px = [UInt8](repeating: 0, count: width * height)
     for y in 0..<height {
@@ -18,8 +19,8 @@ private func diskFrame(
             let s = SkyOffset(x: pointing.x - d.x, y: pointing.y - d.y)
             let dist = hypot(s.x - centre.x, s.y - centre.y)
             // The limb blurred over ~2″; outside, glow fading over ~60″.
-            let edge = 1 / (1 + exp((dist - r) / 0.8))
-            let glow = dist > r ? 25 * exp(-(dist - r) / 60) : 0
+            let edge = 1 / (1 + exp((dist - r) / blur))
+            let glow = dist > r ? glow * exp(-(dist - r) / glowReach) : 0
             let v = 5 + 190 * edge + glow + Double((x * 7 + y * 13) % 5)
             px[y * width + x] = UInt8(min(255, max(0, v)))
         }
@@ -27,7 +28,8 @@ private func diskFrame(
     return Frame(width: width, height: height, pixels: px, time: Date())
 }
 
-@Test func limbCircleComesFromTheSharpEdgeNotTheGlow() throws {
+@Test(arguments: [(25.0, 60.0, 0.8), (60.0, 200.0, 1.5)])
+func limbCircleComesFromTheSharpEdgeNotTheGlow(haze: (Double, Double, Double)) throws {
     // 0.56″ a pixel, turned 20° and mirrored.
     let k = 1 / 0.56
     let t = 20 * Double.pi / 180
@@ -40,7 +42,7 @@ private func diskFrame(
         let e = SkyOffset(x: sin(a), y: cos(a))
         // Pointing a little inside the limb, as after a probe's crossing.
         let p = SkyOffset(x: centre.x + e.x * (r - 40), y: centre.y + e.y * (r - 40))
-        let f = diskFrame(centre: centre, r: r, pointing: p, m: m)
+        let f = diskFrame(centre: centre, r: r, pointing: p, m: m, glow: haze.0, glowReach: haze.1, blur: haze.2)
         let pts = LimbEdge.points(f, pointing: p, calibration: m, outward: e)
         #expect(pts.count > 30, "\(pts.count) points at \(turnDeg)°")
         all += pts
