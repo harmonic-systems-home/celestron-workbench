@@ -690,7 +690,8 @@ struct ContentView: View {
 /// The Moon map: the Moon as the camera shows it, with the plan's tiles
 /// (coloured by state; tap to select for Redo) and where the camera points
 /// now, from Here on: the sky as seen by eye until the camera is oriented,
-/// then as the camera sees it. While simulating, the true frame is dashed.
+/// then as the camera sees it. While simulating it shows the truth (the
+/// simulated Moon and the real frame) and, dashed, where the model puts the Moon.
 struct TileGrid: View {
     @ObservedObject var model: AppModel
     let palette: Palette
@@ -773,11 +774,15 @@ struct TileGrid: View {
                 path.addLines(map.trail.map(layout.point))
                 ctx.stroke(path, with: .color(grid.opacity(0.5)), lineWidth: 1)
             }
-            if let t = map.truthFrame {
-                ctx.stroke(poly(t), with: .color(.cyan.opacity(0.8)), style: StrokeStyle(lineWidth: 1.5, dash: [4, 3]))
-                var top = Path()
-                top.addLines([layout.point(t[0]), layout.point(t[1])])
-                ctx.stroke(top, with: .color(.cyan.opacity(0.8)), lineWidth: 3)
+            // While simulating: where the model puts the Moon, once Orient
+            // Moon has found its centre; how well it matches the simulated
+            // Moon shows how well the centring went.
+            if let c = map.modelMoon, map.centred {
+                let p = layout.point(c)
+                let r = layout.moonDiameter / 2
+                ctx.stroke(
+                    Path(ellipseIn: CGRect(x: p.x - r, y: p.y - r, width: 2 * r, height: 2 * r)),
+                    with: .color(.cyan.opacity(0.9)), style: StrokeStyle(lineWidth: 1.5, dash: [5, 3]))
             }
             do {
                 let f = map.frame
@@ -830,13 +835,16 @@ struct TileGrid: View {
                         at: CGPoint(x: o.x + 30 * v.x, y: o.y + 30 * v.y))
                 }
             }
+            let sim = map.modelMoon != nil
             let note =
-                map.oriented
-                ? (map.truthFrame == nil ? "As the camera sees it" : "As the camera sees it; the simulator's truth dashed")
-                : "The sky as seen by eye until Orient Camera"
+                (map.oriented ? "As the camera sees it" : "The sky as seen by eye until Orient Camera")
+                + (sim ? (map.centred ? "; the simulated Moon, the model's dashed" : "; the simulated Moon") : "")
             if !map.centred {
                 ctx.draw(
-                    Text("Moon's centre not found yet: the frame is good to about a radius")
+                    Text(
+                        sim
+                            ? "The model's Moon appears after Orient Moon"
+                            : "Moon's centre not found yet: the frame is good to about a radius")
                         .font(.system(size: 10)).foregroundColor(.orange),
                     at: CGPoint(x: 6, y: size.height - 18), anchor: .bottomLeading)
             }
@@ -870,6 +878,10 @@ struct TileGrid: View {
         let scale: Double
         let centre: CGPoint
         let moonDiameter: Double
+        /// Where the plan's tiles are aimed from: the model's Moon centre
+        /// while simulating (the map shows the simulated Moon), else the
+        /// Moon's centre.
+        var tileShift = PixelOffset(x: 0, y: 0)
 
         init?(plan: MosaicPlan?, map: MoonMap?, size: CGSize) {
             let radius: Double
@@ -892,6 +904,7 @@ struct TileGrid: View {
             scale = min((size.width - 12) / (2 * span.x), (size.height - 12) / (2 * span.y))
             centre = CGPoint(x: size.width / 2, y: size.height / 2)
             moonDiameter = 2 * radius * scale
+            if let c = map?.modelMoon { tileShift = c }
         }
 
         func point(_ p: PixelOffset) -> CGPoint {
@@ -900,7 +913,7 @@ struct TileGrid: View {
 
         func rect(_ tile: Tile, _ plan: MosaicPlan) -> CGRect {
             let (w, h) = (Double(plan.frameWidth) * scale, Double(plan.frameHeight) * scale)
-            let c = point(tile.center)
+            let c = point(PixelOffset(x: tile.center.x + tileShift.x, y: tile.center.y + tileShift.y))
             return CGRect(x: c.x - w / 2, y: c.y - h / 2, width: w, height: h)
         }
     }

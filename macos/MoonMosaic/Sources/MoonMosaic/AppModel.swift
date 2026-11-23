@@ -1552,10 +1552,17 @@ final class AppModel: ObservableObject {
             aimTrailTimes = []
             aimTrailHere = session.here?.time
         }
+        // While simulating, the map shows the truth: the simulated Moon, the
+        // camera's real frame and path, and where the app's model puts the
+        // Moon. With the real mount, the model's Moon and frame.
+        let truth: SkyOffset? =
+            simulator.attached && simulator.footprint.count == 4
+            ? SkyOffset(x: simulator.pointing.x, y: simulator.pointing.y) : nil
+        let now = truth ?? aim
         let wall = Date()
-        if let last = aimTrail.last, hypot(last.x - aim.x, last.y - aim.y) < 0.02 * Double(w) * m.arcsecPerPixel {
+        if let last = aimTrail.last, hypot(last.x - now.x, last.y - now.y) < 0.02 * Double(w) * m.arcsecPerPixel {
         } else {
-            aimTrail.append(aim)
+            aimTrail.append(now)
             aimTrailTimes.append(wall)
         }
         if let k = aimTrailTimes.firstIndex(where: { wall.timeIntervalSince($0) < 60 }), k > 0 {
@@ -1576,17 +1583,18 @@ final class AppModel: ObservableObject {
                 return px(SkyOffset(x: s.x + sign * d.x, y: s.y + sign * d.y))
             }
         }
-        var truthFrame: [PixelOffset]?
-        if simulator.attached, simulator.footprint.count == 4 {
-            truthFrame = simulator.footprint.map { px(SkyOffset(x: $0.x, y: $0.y)) }
-        }
+        let frameNow =
+            truth != nil ? simulator.footprint.map { px(SkyOffset(x: $0.x, y: $0.y)) } : frame(at: aim)
+        // The model's Moon centre, from the camera's true place less its aim
+        // as the app reckons it.
+        let modelMoon = truth.map { px(SkyOffset(x: $0.x - aim.x, y: $0.y - aim.y)) }
         let moon = session.moonInImage(at: t, map: m)
         func unit(_ p: PixelOffset) -> PixelOffset {
             let n = max(hypot(p.x, p.y), 1e-12)
             return PixelOffset(x: p.x / n, y: p.y / n)
         }
         let map = MoonMap(
-            radiusPx: moon.radiusPx, outline: moon.outline, frame: frame(at: aim), truthFrame: truthFrame,
+            radiusPx: moon.radiusPx, outline: moon.outline, frame: frameNow, modelMoon: modelMoon,
             trail: aimTrail.map(px), aimSky: aim, radiusArcsec: moon.radiusPx * m.arcsecPerPixel,
             frameWidth: w, frameHeight: h, oriented: session.calibration != nil,
             centred: session.hereCentred, azAxis: unit(px(SkyOffset(x: 1, y: 0))),
@@ -1871,8 +1879,10 @@ struct MoonMap: Equatable {
     var outline: [PixelOffset]
     /// The estimated frame (from Here), corners in order from the top left.
     var frame: [PixelOffset]
-    /// The simulator's true frame.
-    var truthFrame: [PixelOffset]?
+    /// While simulating, the map is the truth (the simulated Moon, the real
+    /// frame) and this is where the app's model puts the Moon's centre;
+    /// the plan's tiles are aimed from it.
+    var modelMoon: PixelOffset?
     var trail: [PixelOffset]
     /// The aim from the Moon's centre on the sky (″), and the Moon's radius.
     var aimSky: SkyOffset
