@@ -251,7 +251,10 @@ struct ContentView: View {
 
     private var controls: some View {
         let idle = model.busy == nil
-        let aimed = model.calibrated && model.hereSet && idle
+        // The features are placed from the Moon's centre, so only once
+        // Orient Moon has found it: before that Here is just where the
+        // search found some part of the Moon.
+        let aimed = model.calibrated && model.hereSet && model.centreFound && idle
         return VStack(alignment: .leading, spacing: 6) {
 
             if let reason = model.latchedReason {
@@ -316,13 +319,15 @@ struct ContentView: View {
                         .help("Recheck the Moon's place after fine focus")
                 }
                 HStack(spacing: 6) {
-                    Text("Go to").foregroundStyle(palette.dim).frame(width: 40, alignment: .leading)
+                    Text("Go to").foregroundStyle(aimed ? palette.dim : palette.dim.opacity(0.5))
+                        .frame(width: 40, alignment: .leading)
                     button("Limb", enabled: aimed) { model.goTo(.limb) }
                     button("Terminator", enabled: aimed) { model.goTo(.terminator) }
                     button(model.bestCrater ?? "Crater", enabled: aimed && model.bestCrater != nil) {
                         model.goTo(.crater)
                     }
                 }
+                .help(model.centreFound ? "" : "After Orient Moon: the features are placed from the Moon's centre")
                 row {
                     button("Plan", enabled: model.calibrated && idle) { model.makePlan() }
                     button("Start", enabled: model.plan != nil && idle) { model.start() }
