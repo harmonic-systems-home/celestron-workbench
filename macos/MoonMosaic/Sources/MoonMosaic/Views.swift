@@ -810,6 +810,26 @@ struct TileGrid: View {
                         at: CGPoint(x: tip.x - 26 * cos(a), y: tip.y - 26 * sin(a)))
                 }
             }
+            if map.oriented {
+                // Which way the mount's axes run in the camera's view: a
+                // turn, or a mirror (with a star diagonal).
+                let o = CGPoint(x: 40, y: 44)
+                for (v, label) in [(map.azAxis, "Az"), (map.altAxis, "Alt")] {
+                    let tip = CGPoint(x: o.x + 20 * v.x, y: o.y + 20 * v.y)
+                    var line = Path()
+                    line.move(to: o)
+                    line.addLine(to: tip)
+                    let a = atan2(v.y, v.x)
+                    for da in [2.6, -2.6] {
+                        line.move(to: tip)
+                        line.addLine(to: CGPoint(x: tip.x + 6 * cos(a + da), y: tip.y + 6 * sin(a + da)))
+                    }
+                    ctx.stroke(line, with: .color(grid), lineWidth: 1.2)
+                    ctx.draw(
+                        Text(label).font(.system(size: 9)).foregroundColor(grid),
+                        at: CGPoint(x: o.x + 30 * v.x, y: o.y + 30 * v.y))
+                }
+            }
             let note =
                 map.oriented
                 ? (map.truthFrame == nil ? "As the camera sees it" : "As the camera sees it; the simulator's truth dashed")

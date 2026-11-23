@@ -1581,11 +1581,16 @@ final class AppModel: ObservableObject {
             truthFrame = simulator.footprint.map { px(SkyOffset(x: $0.x, y: $0.y)) }
         }
         let moon = session.moonInImage(at: t, map: m)
+        func unit(_ p: PixelOffset) -> PixelOffset {
+            let n = max(hypot(p.x, p.y), 1e-12)
+            return PixelOffset(x: p.x / n, y: p.y / n)
+        }
         let map = MoonMap(
             radiusPx: moon.radiusPx, outline: moon.outline, frame: frame(at: aim), truthFrame: truthFrame,
             trail: aimTrail.map(px), aimSky: aim, radiusArcsec: moon.radiusPx * m.arcsecPerPixel,
             frameWidth: w, frameHeight: h, oriented: session.calibration != nil,
-            centred: session.hereCentred)
+            centred: session.hereCentred, azAxis: unit(px(SkyOffset(x: 1, y: 0))),
+            altAxis: unit(px(SkyOffset(x: 0, y: 1))))
         if map != moonMap { moonMap = map }
     }
 
@@ -1879,4 +1884,8 @@ struct MoonMap: Equatable {
     /// Here is the Moon's centre; before Orient Moon it is only some point
     /// on the Moon, so the aim is good to about a radius.
     var centred: Bool
+    /// Which way increasing azimuth and altitude run on the map (unit
+    /// vectors in its pixels, y down).
+    var azAxis: PixelOffset
+    var altAxis: PixelOffset
 }
