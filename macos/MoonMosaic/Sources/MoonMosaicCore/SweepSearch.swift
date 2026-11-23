@@ -10,6 +10,9 @@ import Foundation
 /// converges onto the disk. Tracking under the sweep makes the pattern ride
 /// on the Moon. Rows run back and forth from the start's row outward.
 extension MosaicSession {
+    /// The share of the frame lit for the Moon to count as in view already.
+    static let inViewLitFraction = 0.2
+
     public func searchSweep(
         halfWidthDeg: Double, halfHeightDeg: Double, rowSpacingDeg: Double = 0.4,
         speedDegS: Double = 1.0,
@@ -34,8 +37,20 @@ extension MosaicSession {
         }
         // Already in view? Then there's nothing to search for (2026-11-20,
         // first night: the Moon centred, and the sweep went off anyway).
+        // Only with a good share of the frame on the disk: a sliver of limb
+        // along an edge (1% lit, 2026-11-22, the simulator) left Here off the
+        // Moon and Orient Camera nothing to follow. A sweep from here crosses
+        // it and stops at its middle.
         _ = try? await grabFrame()
-        if let now = try? await grabFrame(), case let b = Blob.find(now, thresholdFraction: 0.3), found(b), let b {
+        let inView = (try? await grabFrame()).flatMap { Blob.find($0, thresholdFraction: 0.3) }
+        if let b = inView, found(b), b.brightFraction < Self.inViewLitFraction {
+            onEvent(
+                .message(
+                    String(
+                        format: "Sweep: only an edge of the Moon in view (%.0f%% lit); sweeping through it.",
+                        b.brightFraction * 100)))
+        }
+        if let b = inView, found(b), b.brightFraction >= Self.inViewLitFraction {
             onEvent(.message("Sweep: the Moon is in view already; no search needed."))
             markOnMoon(p0, at: searchStart)
             if let converge, calibration != nil {

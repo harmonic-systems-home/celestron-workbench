@@ -98,6 +98,20 @@ extension MosaicSession {
             try await Task.sleep(for: .milliseconds(max(1000, Int(settings.settleSeconds * 2000))))
         }
 
+        // The drift needs Moon detail to follow: refuse at once, without
+        // moving, when the frame holds only an edge of it (2026-11-22, the
+        // simulator: 1% lit, three attempts failed with nothing matched).
+        if let f = try? await grabFrame() {
+            let lit = Blob.find(f, thresholdFraction: 0.3)?.brightFraction ?? 0
+            if lit < 0.1 {
+                throw MosaicError(
+                    description: String(
+                        format:
+                            "Too little Moon in view for Orient Camera (%.0f%% of the frame lit). Search again, or nudge the Moon into the frame (the terminator is best), then try again.",
+                        lit * 100))
+            }
+        }
+
         var why = ""
         for attempt in 1...3 {
             // Held on the Moon, wherever it is now, and still: at least 3 s
@@ -174,10 +188,14 @@ extension MosaicSession {
             let scores = drift.map { Registration.detail($0.0) }
             let best = scores.indices.max { scores[$0].weak < scores[$1].weak } ?? 0
             let detail = scores.isEmpty ? (strong: 0.0, weak: 0.0) : scores[best]
-            let spot = drift.isEmpty ? home : offset(of: drift[best].1.1, at: drift[best].1.0)
-            onEvent(.detail("Back to the drift's most detailed spot, tracking again"))
+            let followed = used >= 2 && hypot(dPx.x, dPx.y) > 10
+            // A drift that couldn't be followed goes back to where it started:
+            // its "most detailed" frame is then only noise, perhaps off the
+            // Moon (2026-11-22, the simulator: left beside the limb).
+            let spot = drift.isEmpty || !followed ? home : offset(of: drift[best].1.1, at: drift[best].1.0)
+            onEvent(.detail(followed ? "Back to the drift's most detailed spot, tracking again" : "Back to the start, tracking again"))
             try await back(to: spot)
-            guard used >= 2, hypot(dPx.x, dPx.y) > 10 else {
+            guard followed else {
                 why = "the drift couldn't be followed (\(used) of \(settings.driftFrames) steps matched)"
                 note("orient", ["time": stamp, "attempt": attempt, "drift": records, "result": why])
                 onEvent(.message("Orient camera attempt \(attempt) of 3: \(why); trying again."))
