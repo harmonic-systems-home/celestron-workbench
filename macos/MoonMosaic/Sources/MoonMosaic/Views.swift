@@ -75,9 +75,11 @@ struct ContentView: View {
                         } else if model.simulator.attached {
                             SkyMap(sim: model.simulator, steady: true, estimate: estimate)
                                 .background(Color.black)
+                                .nightRed(model.isNight)
                                 .clipShape(RoundedRectangle(cornerRadius: 10))
                         } else if let progress = model.searchProgress {
                             SearchMap(model: model, sim: model.simulator, progress: progress, estimate: estimate)
+                                .nightRed(model.isNight)
                         } else {
                             TileGrid(model: model, palette: palette)
                         }
@@ -205,13 +207,16 @@ struct ContentView: View {
                     let t = model.trackingStatus
                     Label(t.text, systemImage: t.symbol)
                         .font(.system(size: 13, weight: .semibold, design: .rounded))
-                        .foregroundStyle([Color.green, Color.orange, Color.blue, palette.dim][t.kind])
+                        .foregroundStyle(
+                            (model.isNight
+                                ? [palette.bright, palette.text, palette.text, palette.dim]
+                                : [Color.green, Color.orange, Color.blue, palette.dim])[t.kind])
                 }
                 if model.connected {
                     if let sv = model.savingNow {
                         Label(sv.product ? "\(sv.text) (\(sv.frames) frames)" : sv.text, systemImage: "record.circle")
                             .font(.system(size: 12, weight: .semibold, design: .rounded))
-                            .foregroundStyle(sv.product ? Color.red : Color.orange)
+                            .foregroundStyle(model.isNight ? (sv.product ? palette.bright : palette.text) : (sv.product ? Color.red : Color.orange))
                             .lineLimit(1)
                     } else {
                         Label("Not saving frames", systemImage: "circle")
@@ -220,7 +225,7 @@ struct ContentView: View {
                 }
                 if let m = model.moveProgress {
                     VStack(alignment: .leading, spacing: 2) {
-                        ProgressView(value: m.fraction).tint(.blue)
+                        ProgressView(value: m.fraction).tint(model.isNight ? palette.bright : .blue)
                         Text(
                             String(format: "%.1f° on %@, %.0f%%", m.degrees, m.axis, m.fraction * 100)
                                 + (m.eta.map { String(format: ", about %.0f s left", $0) } ?? "")
@@ -289,7 +294,7 @@ struct ContentView: View {
                 HStack(alignment: .center, spacing: 12) {
                     panControls
                     VStack(spacing: 6) {
-                        Toggle("Fine nudges", isOn: $fineP).toggleStyle(.checkbox)
+                        Toggle("Fine nudges", isOn: $fineP).toggleStyle(PaletteCheckbox(palette: palette))
                             .frame(maxWidth: .infinity, alignment: .leading)
                         button("Stop nudge", enabled: model.following) { model.stopNudge() }
                         button(
@@ -371,33 +376,37 @@ struct ContentView: View {
     private var searchControls: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 10) {
-                Picker("Sky", selection: $model.searchSky) {
-                    Text("Auto").tag("auto")
-                    Text("Clear night").tag(Blob.Sky.clearNight.rawValue)
-                    Text("Cloudy night").tag(Blob.Sky.cloudyNight.rawValue)
-                    Text("Day").tag(Blob.Sky.day.rawValue)
-                }
+                Text("Sky").foregroundStyle(palette.text)
+                PaletteMenu(
+                    options: [
+                        ("auto", "Auto"), (Blob.Sky.clearNight.rawValue, "Clear night"),
+                        (Blob.Sky.cloudyNight.rawValue, "Cloudy night"), (Blob.Sky.day.rawValue, "Day"),
+                    ],
+                    selection: $model.searchSky, palette: palette
+                )
                 .disabled(model.searching)
-                Stepper(value: $model.searchReachDeg, in: 0.25...4, step: 0.25) {
-                    Text(String(format: "Area ±%.2g°", model.searchReachDeg)).monospacedDigit()
-                }
+                .opacity(model.searching ? 0.35 : 1)
+                PaletteStepper(
+                    title: String(format: "Area ±%.2g°", model.searchReachDeg), palette: palette,
+                    down: { model.searchReachDeg = max(0.25, model.searchReachDeg - 0.25) },
+                    up: { model.searchReachDeg = min(4, model.searchReachDeg + 0.25) }
+                )
                 .disabled(model.searching)
+                .opacity(model.searching ? 0.35 : 1)
                 .help("How far the search reaches from where the scope points")
             }
             HStack(spacing: 10) {
-                Picker("", selection: $model.searchPattern) {
-                    Text("Spiral").tag(SearchPattern.spiral)
-                    Text("Raster").tag(SearchPattern.raster)
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
+                PaletteSegmented(
+                    options: [(SearchPattern.spiral, "Spiral"), (SearchPattern.raster, "Raster")],
+                    selection: $model.searchPattern, palette: palette
+                )
                 .frame(width: 150)
                 .disabled(model.searching || model.busy != nil)
+                .opacity(model.searching || model.busy != nil ? 0.35 : 1)
                 Toggle(isOn: $model.testMode) { Text("Test mode") }
-                    .toggleStyle(.switch)
-                    .controlSize(.small)
-                    .tint(palette.bright)
+                    .toggleStyle(PaletteSwitch(palette: palette))
                     .disabled(!model.connected || model.searching || model.busy != nil)
+                    .opacity(!model.connected || model.searching || model.busy != nil ? 0.35 : 1)
                     .help("Drainpipe test: a fixed target, no tracking")
             }
             if model.testMode {
@@ -482,13 +491,11 @@ struct ContentView: View {
     private var imagePanel: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 18) {
-                Picker("", selection: $panel) {
-                    Text("Camera").tag(Panel.camera)
-                    Text("Focus").tag(Panel.focus)
-                    Text("Mosaic preview").tag(Panel.preview)
-                }
-                .pickerStyle(.segmented)
-                .frame(width: 300)
+                PaletteSegmented(
+                    options: [(Panel.camera, "Camera"), (Panel.focus, "Focus"), (Panel.preview, "Mosaic preview")],
+                    selection: $panel, palette: palette
+                )
+                .frame(width: 350)
                 Spacer()
                 stepper(
                     exposureText, enabled: model.busy == nil,
@@ -506,6 +513,7 @@ struct ContentView: View {
                         .aspectRatio(contentMode: .fit)
                         .colorMultiply(palette.imageTint)
                         .padding(6)
+                        .padding(.trailing, statsInset)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     Text(panel == .preview ? "No preview yet" : "No camera image")
@@ -518,13 +526,13 @@ struct ContentView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .overlay(alignment: .topTrailing) {
-                if panel == .camera, let st = model.frameStats { brightnessPanel(st) }
+                if panel == .camera, let st = model.frameStats { brightnessPanel(st).nightRed(model.isNight) }
             }
             .overlay {
                 // Only once the camera is oriented: before that a click can't
                 // be turned into a move on the sky reliably.
                 if panel == .camera, model.connected, model.calibrated, let img = model.liveImage {
-                    clickToRecentre(img)
+                    clickToRecentre(img).padding(.trailing, statsInset)
                 }
             }
             if panel == .camera {
@@ -588,6 +596,10 @@ struct ContentView: View {
     /// A transparent layer over the camera image that turns a click into a
     /// recentre (ADR 0022): the click's position as a fraction of the shown
     /// image (aspect-fit inside the panel, 6 pt padding) goes to the model.
+    /// Room kept clear on the right for the brightness panel, so it doesn't
+    /// cover the camera's image (the image centres in what's left).
+    private var statsInset: CGFloat { panel == .camera && model.frameStats != nil ? 176 : 0 }
+
     private func clickToRecentre(_ img: CGImage) -> some View {
         GeometryReader { geo in
             Color.clear
@@ -784,7 +796,8 @@ struct TileGrid: View {
             if map.trail.count > 1 {
                 var path = Path()
                 path.addLines(map.trail.map(layout.point))
-                ctx.stroke(path, with: .color(grid.opacity(0.5)), lineWidth: 1)
+                // Light enough to see on the Moon in either palette.
+                ctx.stroke(path, with: .color(model.isNight ? palette.bright.opacity(0.85) : .white.opacity(0.75)), lineWidth: 1.2)
             }
             // While simulating: where the model puts the Moon, once Orient
             // Moon has found its centre; how well it matches the simulated
@@ -794,7 +807,8 @@ struct TileGrid: View {
                 let r = layout.moonDiameter / 2
                 ctx.stroke(
                     Path(ellipseIn: CGRect(x: p.x - r, y: p.y - r, width: 2 * r, height: 2 * r)),
-                    with: .color(.cyan.opacity(0.9)), style: StrokeStyle(lineWidth: 1.5, dash: [5, 3]))
+                    with: .color(model.isNight ? palette.bright : .cyan.opacity(0.9)),
+                    style: StrokeStyle(lineWidth: 1.5, dash: [5, 3]))
             }
             do {
                 let f = map.frame
@@ -859,7 +873,7 @@ struct TileGrid: View {
                         sim
                             ? "The model's Moon appears after Orient Moon"
                             : "Moon's centre not found yet: the frame is good to about a radius")
-                        .font(.system(size: 10)).foregroundColor(.orange),
+                        .font(.system(size: 10)).foregroundColor(model.isNight ? palette.bright : .orange),
                     at: CGPoint(x: 6, y: size.height - 18), anchor: .bottomLeading)
             }
             if !note.isEmpty {
@@ -1102,17 +1116,19 @@ struct SimulatorBox: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack {
-                Picker("Simulator scene", selection: $sim.libraryScene) {
-                    ForEach(sim.library, id: \.self) { url in
-                        Text(sim.libraryNames[url] ?? url.deletingPathExtension().lastPathComponent).tag(Optional(url))
-                    }
-                }
+                Text("Simulator scene").foregroundStyle(palette.text)
+                PaletteMenu(
+                    options: sim.library.map {
+                        (Optional($0), sim.libraryNames[$0] ?? $0.deletingPathExtension().lastPathComponent)
+                    },
+                    selection: $sim.libraryScene, palette: palette
+                )
                 .onChange(of: sim.libraryScene) { if sim.sceneChoice != .library { sim.sceneChoice = .library } }
                 .disabled(sim.library.isEmpty)
                 if sim.loadingScene { ProgressView().controlSize(.small) }
             }
             if sim.library.isEmpty {
-                Button("Choose scene folder…") { sim.chooseLibraryFolder() }
+                small("Choose scene folder…") { sim.chooseLibraryFolder() }
             }
             Text(
                 sim.library.isEmpty
@@ -1123,17 +1139,27 @@ struct SimulatorBox: View {
                         ?? "Pick a scene, then Connect.")
             ).font(.system(size: 10)).foregroundStyle(palette.dim).lineLimit(2)
             HStack {
-                Text("Speed \(Int(sim.speed))×").monospacedDigit()
-                Slider(value: $sim.speed, in: 1...10, step: 1).disabled(!model.simulate).frame(width: 90)
+                PaletteStepper(
+                    title: "Speed \(Int(sim.speed))×", palette: palette,
+                    down: { sim.speed = max(1, sim.speed - 1) }, up: { sim.speed = min(10, sim.speed + 1) }
+                )
+                .disabled(!model.simulate)
                 Spacer()
-                Button("Random") { sim.randomize(reachDeg: model.searchReachDeg) }
+                small("Random") { sim.randomize(reachDeg: model.searchReachDeg) }
                     .help("Random scenario")
-                Button("More…") { openWindow(id: "simulator") }
+                small("More…") { openWindow(id: "simulator") }
             }
         }
         .font(.system(size: 12))
         .padding(8)
         .background(RoundedRectangle(cornerRadius: 8).stroke(palette.dim.opacity(0.5), lineWidth: 1))
+    }
+
+    private func small(_ title: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title).font(.system(size: 12, weight: .semibold)).padding(.horizontal, 10).frame(minHeight: 22)
+        }
+        .buttonStyle(BigButton(palette: palette))
     }
 }
 
@@ -1152,4 +1178,17 @@ struct SkyEstimate: Equatable {
     /// The circle to draw (″) and its label.
     var drawnRadius: Double { centred ? radiusArcsec : 2 * radiusArcsec }
     var label: String { centred ? "Moon by Here" : "Moon somewhere in here" }
+}
+
+extension View {
+    /// Night vision: the view's colours turned to shades of the night
+    /// palette's red (for views drawn in the day's colours: the sky maps, the
+    /// brightness readout).
+    @ViewBuilder func nightRed(_ on: Bool) -> some View {
+        if on {
+            self.grayscale(1).colorMultiply(Palette.night.imageTint)
+        } else {
+            self
+        }
+    }
 }
