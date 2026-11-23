@@ -1,0 +1,10 @@
+[
+  {
+    "name": "Moon Mosaic",
+    "path": "macos/MoonMosaic",
+    "bundle_id": "com.popperbiz.MoonMosaic",
+    "platforms": ["macOS"],
+    "version": "0.1.0",
+    "icon": "macos/MoonMosaic/Icon/AppIcon.icns"
+  }
+]
