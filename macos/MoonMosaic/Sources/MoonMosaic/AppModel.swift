@@ -1597,7 +1597,7 @@ final class AppModel: ObservableObject {
             radiusPx: moon.radiusPx, outline: moon.outline, north: moon.north, frame: frameNow, modelMoon: modelMoon,
             trail: aimTrail.map(px), aimSky: aim, radiusArcsec: moon.radiusPx * m.arcsecPerPixel,
             frameWidth: w, frameHeight: h, oriented: session.calibration != nil,
-            centred: session.hereCentred, azAxis: unit(px(SkyOffset(x: 1, y: 0))),
+            centred: session.hereCentred, surveyReachRadii: session.settings.surveyReach, azAxis: unit(px(SkyOffset(x: 1, y: 0))),
             altAxis: unit(px(SkyOffset(x: 0, y: 1))))
         if map != moonMap { moonMap = map }
     }
@@ -1896,6 +1896,8 @@ struct MoonMap: Equatable {
     /// Here is the Moon's centre; before Orient Moon it is only some point
     /// on the Moon, so the aim is good to about a radius.
     var centred: Bool
+    /// How far Orient Moon's survey reaches from Here (Moon radii).
+    var surveyReachRadii: Double
     /// Which way increasing azimuth and altitude run on the map (unit
     /// vectors in its pixels, y down).
     var azAxis: PixelOffset

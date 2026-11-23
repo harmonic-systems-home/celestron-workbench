@@ -929,6 +929,19 @@ struct TileGrid: View {
             // larger). The frame doesn't move the zoom; off the view, an arrow
             // points to it.
             span = (max(span.x, 1.8 * radius), max(span.y, 1.5 * radius))
+            // Until Orient Moon has found the centre, room for its survey:
+            // frames to `surveyReach` radii around Here, and Here itself may
+            // be a radius off (2026-11-22: the survey ran off the view).
+            // Still steady: it changes only with Here.
+            if let map, !map.centred {
+                let here = map.modelMoon ?? PixelOffset(x: 0, y: 0)
+                let reach = map.surveyReachRadii * radius
+                span.x = max(span.x, abs(here.x) + reach + Double(map.frameWidth) / 2)
+                span.y = max(span.y, abs(here.y) + reach + Double(map.frameHeight) / 2)
+                // In quarter radii, so the model's small changes don't jiggle it.
+                let q = radius / 4
+                span = ((span.x / q).rounded(.up) * q, (span.y / q).rounded(.up) * q)
+            }
             scale = min((size.width - 12) / (2 * span.x), (size.height - 12) / (2 * span.y))
             centre = CGPoint(x: size.width / 2, y: size.height / 2)
             moonDiameter = 2 * radius * scale
