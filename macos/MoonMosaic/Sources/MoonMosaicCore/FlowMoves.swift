@@ -13,6 +13,9 @@ extension MosaicSession {
         case terminator
         /// The catalogue's best crater for focusing now (`Craters.best`).
         case crater
+        /// The Moon's centre: nothing special to see, but where the plan
+        /// and Orient Moon start from.
+        case centre
     }
 
     /// The sky offset from the Moon's centre that puts `feature` mid-frame.
@@ -24,9 +27,11 @@ extension MosaicSession {
         let r = here.moon.diameterDeg / 2 * 3600
         let (lx, ly) = phase.brightLimb
         switch feature {
+        case .centre:
+            return SkyOffset(x: 0, y: 0)
         case .crater:
             guard let c = Craters.best(at: clock(), from: settings.site) else {
-                throw MosaicError(description: "No catalogue crater has the Sun 5–15° up over it now; use Go to Terminator.")
+                throw MosaicError(description: "No catalogue crater is sunlit away from the limb now; use Go to Terminator.")
             }
             return SkyOffset(x: c.x * r, y: c.y * r)
         case .terminator:
@@ -54,6 +59,7 @@ extension MosaicSession {
         try await goToSky(o)
         let name: String
         switch feature {
+        case .centre: name = "the centre"
         case .limb: name = "the bright limb"
         case .terminator: name = "the terminator"
         case .crater:

@@ -34,7 +34,7 @@ struct ContentView: View {
 
     /// The pointing panel's view, chosen by the phase: the search's field
     /// until the camera is oriented, then the Moon.
-    private var autoMoonView: Bool { (model.calibrated || model.plan != nil) && !model.searching }
+    private var autoMoonView: Bool { (model.hereSet || model.plan != nil) && !model.searching }
     @State private var mapOverride: Bool?
     private var showMoonView: Bool { mapOverride ?? autoMoonView }
     /// Where Here puts the Moon, as the camera's aim from its centre (″).
@@ -326,10 +326,13 @@ struct ContentView: View {
                 HStack(spacing: 6) {
                     Text("Go to").foregroundStyle(aimed ? palette.dim : palette.dim.opacity(0.5))
                         .frame(width: 40, alignment: .leading)
+                    button("Centre", enabled: aimed) { model.goTo(.centre) }
                     button("Limb", enabled: aimed) { model.goTo(.limb) }
                     button("Terminator", enabled: aimed) { model.goTo(.terminator) }
-                    button(model.bestCrater ?? "Crater", enabled: aimed && model.bestCrater != nil) {
-                        model.goTo(.crater)
+                    // Only when a catalogue crater has the Sun low over it
+                    // (none near full Moon).
+                    if let crater = model.bestCrater {
+                        button(crater, enabled: aimed) { model.goTo(.crater) }
                     }
                 }
                 .help(model.centreFound ? "" : "After Orient Moon: the features are placed from the Moon's centre")
@@ -802,6 +805,19 @@ struct TileGrid: View {
             // While simulating: where the model puts the Moon, once Orient
             // Moon has found its centre; how well it matches the simulated
             // Moon shows how well the centring went.
+            // Until Orient Moon: Here is only some point on the Moon, so the
+            // Moon is somewhere within two radii of it, as in the sky view.
+            if !map.centred {
+                let p = layout.point(map.modelMoon ?? PixelOffset(x: 0, y: 0))
+                let r = layout.moonDiameter
+                let colour = model.isNight ? palette.bright : Color.orange
+                ctx.stroke(
+                    Path(ellipseIn: CGRect(x: p.x - r, y: p.y - r, width: 2 * r, height: 2 * r)),
+                    with: .color(colour), style: StrokeStyle(lineWidth: 1.5, dash: [5, 3]))
+                ctx.draw(
+                    Text("Moon somewhere in here").font(.system(size: 10)).foregroundColor(colour),
+                    at: CGPoint(x: p.x, y: p.y - r - 2), anchor: .bottom)
+            }
             if let c = map.modelMoon, map.centred {
                 let p = layout.point(c)
                 let r = layout.moonDiameter / 2
@@ -867,12 +883,10 @@ struct TileGrid: View {
             let note =
                 (map.oriented ? "As the camera sees it" : "The sky as seen by eye until Orient Camera")
                 + (sim ? (map.centred ? "; the simulated Moon, the model's dashed" : "; the simulated Moon") : "")
-            if !map.centred {
+            // (While simulating, the "somewhere in here" circle says it.)
+            if !map.centred, !sim {
                 ctx.draw(
-                    Text(
-                        sim
-                            ? "The model's Moon appears after Orient Moon"
-                            : "Moon's centre not found yet: the frame is good to about a radius")
+                    Text("Moon's centre not found yet: the frame is good to about a radius")
                         .font(.system(size: 10)).foregroundColor(model.isNight ? palette.bright : .orange),
                     at: CGPoint(x: 6, y: size.height - 18), anchor: .bottomLeading)
             }
@@ -936,8 +950,11 @@ struct TileGrid: View {
             if let map, !map.centred {
                 let here = map.modelMoon ?? PixelOffset(x: 0, y: 0)
                 let reach = map.surveyReachRadii * radius
-                span.x = max(span.x, abs(here.x) + reach + Double(map.frameWidth) / 2)
-                span.y = max(span.y, abs(here.y) + reach + Double(map.frameHeight) / 2)
+                // The survey's frames, and the "somewhere in here" circle.
+                let rx = max(reach + Double(map.frameWidth) / 2, 2.15 * radius)
+                let ry = max(reach + Double(map.frameHeight) / 2, 2.3 * radius)
+                span.x = max(span.x, abs(here.x) + rx)
+                span.y = max(span.y, abs(here.y) + ry)
                 // In quarter radii, so the model's small changes don't jiggle it.
                 let q = radius / 4
                 span = ((span.x / q).rounded(.up) * q, (span.y / q).rounded(.up) * q)

@@ -195,6 +195,8 @@ final class AppModel: ObservableObject {
     private var aimTrailTimes: [Date] = []
     /// The Here the trail is measured from (a new Here starts a new trail).
     private var aimTrailHere: Date?
+    private var lastTruth: SkyOffset?
+    private var lastModelMoon: PixelOffset?
     @Published private(set) var hereSet = false
     @Published private(set) var calibrated = false
     @Published private(set) var centreFound = false
@@ -1587,7 +1589,24 @@ final class AppModel: ObservableObject {
             truth != nil ? simulator.footprint.map { px(SkyOffset(x: $0.x, y: $0.y)) } : frame(at: aim)
         // The model's Moon centre, from the camera's true place less its aim
         // as the app reckons it.
-        let modelMoon = truth.map { px(SkyOffset(x: $0.x - aim.x, y: $0.y - aim.y)) }
+        // Only while the camera is still: the simulator's place and the
+        // mount's axes are read at slightly different moments, and during a
+        // move at 1.5°/s that put the model's Moon degrees off for a moment
+        // (2026-11-22: the map zoomed far out near the survey's end). While
+        // moving, the last still value holds.
+        var modelMoon = lastModelMoon
+        if let truth {
+            let still = lastTruth.map { hypot(truth.x - $0.x, truth.y - $0.y) < 0.05 * Double(w) * m.arcsecPerPixel } ?? false
+            if still || lastModelMoon == nil {
+                modelMoon = px(SkyOffset(x: truth.x - aim.x, y: truth.y - aim.y))
+                lastModelMoon = modelMoon
+            }
+            lastTruth = truth
+        } else {
+            modelMoon = nil
+            lastModelMoon = nil
+            lastTruth = nil
+        }
         let moon = session.moonInImage(at: t, map: m)
         func unit(_ p: PixelOffset) -> PixelOffset {
             let n = max(hypot(p.x, p.y), 1e-12)

@@ -239,7 +239,10 @@ public final class MosaicSession: @unchecked Sendable {
         let dAz = wrap180(moon.azDeg - here.moon.horizontal.azDeg) + b.az - b0.az
         let dAlt = moon.altDeg - here.moon.horizontal.altDeg + b.alt - b0.alt
         let offAz = wrap180(axes[0] - here.azimuthDeg - dAz)
-        let offAlt = axes[1] - here.altitudeDeg - dAlt
+        // Wrapped too: the altitude encoder's count can read just under 360
+        // for just under zero (2026-11-22, the simulator: 359.9° against
+        // Here's 0.1° put the aim 360° off).
+        let offAlt = wrap180(axes[1] - here.altitudeDeg - dAlt)
         return SkyOffset(x: offAz * 3600 * cos(moon.altDeg * .pi / 180), y: offAlt * 3600)
     }
 

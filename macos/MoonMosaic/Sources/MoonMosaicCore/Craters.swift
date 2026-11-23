@@ -64,10 +64,15 @@ public enum Craters {
     }
 
     /// The best crater to focus on now: on the near side, away from the
-    /// limb, with the Sun 5–15° up over it (nearest 10°); nil if none.
+    /// limb, with the Sun 5–15° up over it (nearest 10°). Near full Moon no
+    /// catalogue crater has the Sun that low away from the limb (2026-11-22,
+    /// 97% lit: the button went missing), so then the sunlit one with the
+    /// Sun lowest over it: the most relief there is. Nil only if none is lit.
     public static func best(at date: Date, from site: Site) -> Place? {
-        catalogue.map { place($0, at: date, from: site) }
-            .filter { $0.visible && hypot($0.x, $0.y) < 0.85 && $0.sunAltitudeDeg > 4 && $0.sunAltitudeDeg < 16 }
+        let places = catalogue.map { place($0, at: date, from: site) }
+            .filter { $0.visible && hypot($0.x, $0.y) < 0.85 }
+        return places.filter { $0.sunAltitudeDeg > 4 && $0.sunAltitudeDeg < 16 }
             .min { abs($0.sunAltitudeDeg - 10) < abs($1.sunAltitudeDeg - 10) }
+            ?? places.filter { $0.sunAltitudeDeg > 4 }.min { $0.sunAltitudeDeg < $1.sunAltitudeDeg }
     }
 }
