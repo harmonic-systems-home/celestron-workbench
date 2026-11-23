@@ -123,12 +123,12 @@ struct SearchMap: View {
             }
             if let now, let e = estimate {
                 let c = pt(CGPoint(x: now.x - e.aim.x / 3600, y: now.y - e.aim.y / 3600))
-                let r = e.radiusArcsec / 3600 * k
+                let r = e.drawnRadius / 3600 * k
                 ctx.stroke(
                     Path(ellipseIn: CGRect(x: c.x - r, y: c.y - r, width: 2 * r, height: 2 * r)),
                     with: .color(.orange), style: StrokeStyle(lineWidth: 1.5, dash: [5, 3]))
                 ctx.draw(
-                    Text("Moon by Here").font(.system(size: 10)).foregroundColor(.orange),
+                    Text(e.label).font(.system(size: 10)).foregroundColor(.orange),
                     at: CGPoint(x: c.x, y: c.y + r + 2), anchor: .top)
             }
             let label = progress.caption ?? (progress.finished

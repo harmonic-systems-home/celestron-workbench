@@ -150,6 +150,9 @@ public final class MosaicSession: @unchecked Sendable {
     public private(set) var settings: MosaicSettings
     public internal(set) var here: Here?
     public internal(set) var calibration: CameraCalibration?
+    /// Here is the Moon's centre (Orient Moon found it), not just a point
+    /// somewhere on the Moon (a search's find, or centred by eye).
+    public var hereCentred: Bool { here != nil && centreFit != nil }
     /// The survey's fit, once the centre has been found.
     public private(set) var centreFit: MoonCentre.Fit?
     /// The survey's sunlit cells, relative to the Moon's centre.

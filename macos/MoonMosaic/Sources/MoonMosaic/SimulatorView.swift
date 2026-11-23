@@ -323,12 +323,12 @@ struct SkyMap: View {
             }
             if let e = estimate {
                 let c = pt(CGPoint(x: sim.pointing.x - e.aim.x, y: sim.pointing.y - e.aim.y))
-                let r = e.radiusArcsec * k
+                let r = e.drawnRadius * k
                 ctx.stroke(
                     Path(ellipseIn: CGRect(x: c.x - r, y: c.y - r, width: 2 * r, height: 2 * r)),
                     with: .color(.orange), style: StrokeStyle(lineWidth: 1.5, dash: [5, 3]))
                 ctx.draw(
-                    Text("Moon by Here").font(.caption2).foregroundColor(.orange),
+                    Text(e.label).font(.caption2).foregroundColor(.orange),
                     at: CGPoint(x: c.x, y: c.y + r + 2), anchor: .top)
             }
             ctx.draw(

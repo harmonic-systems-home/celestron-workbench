@@ -39,7 +39,7 @@ struct ContentView: View {
     private var showMoonView: Bool { mapOverride ?? autoMoonView }
     /// Where Here puts the Moon, as the camera's aim from its centre (″).
     private var estimate: SkyEstimate? {
-        model.moonMap.map { SkyEstimate(aim: CGPoint(x: $0.aimSky.x, y: $0.aimSky.y), radiusArcsec: $0.radiusArcsec) }
+        model.moonMap.map { SkyEstimate(aim: CGPoint(x: $0.aimSky.x, y: $0.aimSky.y), radiusArcsec: $0.radiusArcsec, centred: $0.centred) }
     }
 
     var palette: Palette { model.isNight ? .night : .day }
@@ -809,6 +809,12 @@ struct TileGrid: View {
                 map.oriented
                 ? (map.truthFrame == nil ? "As the camera sees it" : "As the camera sees it; the simulator's truth dashed")
                 : "The sky as seen by eye until Orient Camera"
+            if !map.centred {
+                ctx.draw(
+                    Text("Moon's centre not found yet: the frame is good to about a radius")
+                        .font(.system(size: 10)).foregroundColor(.orange),
+                    at: CGPoint(x: 6, y: size.height - 18), anchor: .bottomLeading)
+            }
             if !note.isEmpty {
                 ctx.draw(
                     Text(note).font(.system(size: 10)).foregroundColor(grid),
@@ -1085,4 +1091,13 @@ struct SimulatorBox: View {
 struct SkyEstimate: Equatable {
     let aim: CGPoint
     let radiusArcsec: Double
+    /// Here is the Moon's centre (after Orient Moon). Before that it is only
+    /// where the search found some part of the Moon, so the Moon's centre is
+    /// within a radius of it and its disk within two: the circle drawn is
+    /// that whole region, until Orient Moon pins the centre.
+    var centred = true
+
+    /// The circle to draw (″) and its label.
+    var drawnRadius: Double { centred ? radiusArcsec : 2 * radiusArcsec }
+    var label: String { centred ? "Moon by Here" : "Moon somewhere in here" }
 }

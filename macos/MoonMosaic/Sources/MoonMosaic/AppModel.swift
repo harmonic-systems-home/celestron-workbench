@@ -1584,7 +1584,8 @@ final class AppModel: ObservableObject {
         let map = MoonMap(
             radiusPx: moon.radiusPx, outline: moon.outline, frame: frame(at: aim), truthFrame: truthFrame,
             trail: aimTrail.map(px), aimSky: aim, radiusArcsec: moon.radiusPx * m.arcsecPerPixel,
-            frameWidth: w, frameHeight: h, oriented: session.calibration != nil)
+            frameWidth: w, frameHeight: h, oriented: session.calibration != nil,
+            centred: session.hereCentred)
         if map != moonMap { moonMap = map }
     }
 
@@ -1875,4 +1876,7 @@ struct MoonMap: Equatable {
     var frameHeight: Int
     /// Calibrated, rather than turned by the focal-length guess.
     var oriented: Bool
+    /// Here is the Moon's centre; before Orient Moon it is only some point
+    /// on the Moon, so the aim is good to about a radius.
+    var centred: Bool
 }
