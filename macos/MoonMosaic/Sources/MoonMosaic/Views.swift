@@ -714,6 +714,18 @@ struct TileGrid: View {
                             lit.closeSubpath()
                             ctx.fill(lit, with: .color(sunlit))
                         }
+                        // The Moon's axis, through the poles, with N beyond
+                        // lunar north.
+                        if let n = model.moonMap?.north {
+                            let (ux, uy) = (n.x * layout.scale, n.y * layout.scale)
+                            var axis = Path()
+                            axis.move(to: CGPoint(x: c.x - 1.12 * ux, y: c.y - 1.12 * uy))
+                            axis.addLine(to: CGPoint(x: c.x + 1.12 * ux, y: c.y + 1.12 * uy))
+                            ctx.stroke(axis, with: .color(grid.opacity(0.8)), style: StrokeStyle(lineWidth: 1, dash: [6, 4]))
+                            ctx.draw(
+                                Text("N").font(.system(size: 10, weight: .semibold)).foregroundColor(grid),
+                                at: CGPoint(x: c.x + 1.24 * ux, y: c.y + 1.24 * uy))
+                        }
                     }
                     .allowsHitTesting(false)
                     if let plan = model.plan {
@@ -812,7 +824,9 @@ struct TileGrid: View {
                     let radii = hypot(dx, dy) / max(layout.moonDiameter / 2, 1)
                     ctx.draw(
                         Text(String(format: "%.1f radii", radii)).font(.system(size: 11)).foregroundColor(palette.bright),
-                        at: CGPoint(x: tip.x - 26 * cos(a), y: tip.y - 26 * sin(a)))
+                        // Behind the arrowhead, its near side towards it.
+                        at: CGPoint(x: tip.x - 18 * cos(a), y: tip.y - 18 * sin(a)),
+                        anchor: UnitPoint(x: 0.5 + 0.5 * cos(a), y: 0.5 + 0.5 * sin(a)))
                 }
             }
             if map.oriented {

@@ -246,7 +246,9 @@ public final class MosaicSession: @unchecked Sendable {
     /// The Moon now as the camera shows it, in the plan's pixels (from the
     /// Moon's centre): its radius and sunlit outline. A part of the Moon at
     /// sky offset s shows at −M·s, and the frame aimed at s is centred there.
-    public func moonInImage(at time: Date, map: CameraCalibration? = nil) -> (radiusPx: Double, outline: [PixelOffset]) {
+    public func moonInImage(at time: Date, map: CameraCalibration? = nil) -> (
+        radiusPx: Double, outline: [PixelOffset], north: PixelOffset
+    ) {
         let m = map ?? imageMap
         let r = Ephemeris.moon(at: time, from: settings.site).diameterDeg / 2 * 3600
         let phase = Ephemeris.phase(at: time, from: settings.site)
@@ -256,7 +258,10 @@ public final class MosaicSession: @unchecked Sendable {
             let p = m.image(for: SkyOffset(x: $0.x * r, y: $0.y * r))
             return PixelOffset(x: -p.x, y: -p.y)
         }
-        return (r / m.arcsecPerPixel, outline)
+        // Lunar north: the end of the Moon's axis, on its limb.
+        let t = Ephemeris.moonNorthFromZenithDeg(at: time, from: settings.site) * .pi / 180
+        let n = m.image(for: SkyOffset(x: sin(t) * r, y: cos(t) * r))
+        return (r / m.arcsecPerPixel, outline, PixelOffset(x: -n.x, y: -n.y))
     }
 
     /// The camera's frame size (pixels).

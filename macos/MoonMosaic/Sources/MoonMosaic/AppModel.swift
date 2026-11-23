@@ -1594,7 +1594,7 @@ final class AppModel: ObservableObject {
             return PixelOffset(x: p.x / n, y: p.y / n)
         }
         let map = MoonMap(
-            radiusPx: moon.radiusPx, outline: moon.outline, frame: frameNow, modelMoon: modelMoon,
+            radiusPx: moon.radiusPx, outline: moon.outline, north: moon.north, frame: frameNow, modelMoon: modelMoon,
             trail: aimTrail.map(px), aimSky: aim, radiusArcsec: moon.radiusPx * m.arcsecPerPixel,
             frameWidth: w, frameHeight: h, oriented: session.calibration != nil,
             centred: session.hereCentred, azAxis: unit(px(SkyOffset(x: 1, y: 0))),
@@ -1877,6 +1877,8 @@ final class Flag: @unchecked Sendable {
 struct MoonMap: Equatable {
     var radiusPx: Double
     var outline: [PixelOffset]
+    /// Lunar north on the limb (the axis runs from the centre through it).
+    var north: PixelOffset
     /// The estimated frame (from Here), corners in order from the top left.
     var frame: [PixelOffset]
     /// While simulating, the map is the truth (the simulated Moon, the real
